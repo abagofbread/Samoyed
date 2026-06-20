@@ -1,6 +1,6 @@
 # Samoyed
 
-BloodHound for cloud — ingest identity and resource data, build an attack-path graph, and query blast radius from leaked credentials, compromised workloads, and supply-chain pivots.
+BloodHound for cloud — ingest identity and resource data, build an attack-path graph, and query blast radius from leaked credentials, compromised workloads, and supply-chain pivots. Very much a work in progress, user beware.
 
 ## Features (v0.1)
 
