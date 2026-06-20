@@ -213,14 +213,21 @@ def apply_attack_analysis(
         provider=provider,
         start_node_ids=start_node_ids,
     )
+    added: set[tuple[str, str, str]] = set()
+    applied: list[AttackEdge] = []
     for edge in edges:
+        key = (edge.src_id, "CAN_PRIVESC_TO", edge.dst_id)
+        if key in added:
+            continue
+        added.add(key)
         builder.add_edge(
             src_id=edge.src_id,
             rel_type="CAN_PRIVESC_TO",
             dst_id=edge.dst_id,
             props=edge.props,
         )
-    return edges
+        applied.append(edge)
+    return applied
 
 
 def _resolve_targets(

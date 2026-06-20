@@ -44,22 +44,30 @@ header strong { font-size: 15px; letter-spacing: 0.02em; }
 
 .layout {
   display: grid;
-  grid-template-columns: 280px 1fr 380px;
+  grid-template-columns: 280px minmax(0, 1fr) 380px;
   min-height: 0;
+  overflow: hidden;
 }
 
 aside, .panel {
   background: var(--panel);
   overflow: auto;
   padding: 12px;
+  min-width: 0;
 }
-aside { border-right: 1px solid var(--border); }
-.panel { border-left: 1px solid var(--border); }
+aside { border-right: 1px solid var(--border); width: 280px; }
+.panel {
+  border-left: 1px solid var(--border);
+  width: 380px;
+  max-width: 380px;
+}
 
 main {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 
@@ -120,6 +128,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #graph {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   background: radial-gradient(ellipse at center, #161b22 0%, #0d1117 70%);
 }
 

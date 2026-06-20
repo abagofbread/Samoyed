@@ -440,6 +440,16 @@ def create_sample_azure_session():
     }
 
 
+@app.post("/api/sessions/sample-host")
+def create_sample_host_session():
+    record = SESSION_STORE.load_sample_host_session()
+    return {
+        "session_id": record.session_id,
+        "caller_arn": record.caller_arn,
+        "metadata": record.metadata,
+    }
+
+
 def _serialize_path(p):
     return {
         "path_id": p.path_id,

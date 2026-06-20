@@ -75,3 +75,25 @@ def test_blast_radius_by_principal_id():
     data = res.json()
     assert data["start"] == start
     assert len(data["paths"]) >= 1
+
+
+def test_create_sample_host_session():
+    res = client.post("/api/sessions/sample-host")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["session_id"]
+    assert data["caller_arn"] == "host:workstation:bob-laptop"
+    assert data["metadata"]["scenario"] == "host-compromise"
+
+    graph = client.get(f"/api/sessions/{data['session_id']}/graph")
+    assert graph.status_code == 200
+    nodes = graph.json()["nodes"]
+    assert any(n.get("native_kind") == "CompromisedHost" for n in nodes)
+
+    paths = client.post(
+        f"/api/sessions/{data['session_id']}/paths/query",
+        json={"start": "caller", "target_concept": "SecretStore", "max_depth": 8},
+    )
+    assert paths.status_code == 200
+    assert paths.json()["paths"]
+    assert max(len(p["steps"]) for p in paths.json()["paths"]) >= 3

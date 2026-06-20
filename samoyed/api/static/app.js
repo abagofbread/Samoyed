@@ -10,6 +10,8 @@ const state = {
   selectedNodeId: null,
   highlightedPath: null,
   callerNodeId: null,
+  nodePositions: {},
+  layoutRootId: null,
 };
 
 const NODE_COLORS = {
@@ -70,7 +72,7 @@ function nodeColor(label) {
   return NODE_COLORS[label] || NODE_COLORS.Unknown;
 }
 
-function toVisNode(node) {
+function toVisNode(node, position) {
   const label = node.label || "Unknown";
   const colors = nodeColor(label);
   const title = [
@@ -80,7 +82,7 @@ function toVisNode(node) {
     node.native_id ? `Native: ${node.native_id}` : null,
   ].filter(Boolean).join("\n");
 
-  return {
+  const visNode = {
     id: node.id,
     label: shortId(displayName(node)),
     title,
@@ -91,6 +93,12 @@ function toVisNode(node) {
     size: label === "Principal" ? 18 : undefined,
     _raw: node,
   };
+
+  if (position) {
+    visNode.x = position.x;
+    visNode.y = position.y;
+  }
+  return visNode;
 }
 
 function graphNodeMap(nodes) {
@@ -115,21 +123,162 @@ function formatEdgeHint(edge, nodeById) {
   return lines.join("\n");
 }
 
-function toVisEdge(edge, nodeById) {
-  const hint = formatEdgeHint(edge, nodeById);
-  return {
-    id: `${edge.src}|${edge.rel}|${edge.dst}`,
-    from: edge.src,
-    to: edge.dst,
-    label: edge.rel,
-    title: hint,
-    arrows: "to",
-    font: { align: "middle", size: 9, color: "#8b949e", strokeWidth: 0 },
-    color: { color: "#484f58", highlight: "#58a6ff", hover: "#8b949e" },
-    smooth: { type: "curvedCW", roundness: 0.15 },
-    _raw: edge,
-    _hint: hint,
-  };
+function computeLayeredLayout(nodes, edges, rootId) {
+  const nodeIds = nodes.map((n) => n.id);
+  const idSet = new Set(nodeIds);
+  const outEdges = new Map();
+
+  edges.forEach((edge) => {
+    if (!idSet.has(edge.src) || !idSet.has(edge.dst)) return;
+    if (!outEdges.has(edge.src)) outEdges.set(edge.src, []);
+    outEdges.get(edge.src).push(edge.dst);
+  });
+
+  const levels = new Map();
+  const roots = [];
+  if (rootId && idSet.has(rootId)) roots.push(rootId);
+  nodes.forEach((node) => {
+    if (node.is_caller && idSet.has(node.id) && !roots.includes(node.id)) roots.push(node.id);
+  });
+  if (!roots.length && nodeIds.length) roots.push(nodeIds[0]);
+
+  const queue = [...roots];
+  roots.forEach((id) => levels.set(id, 0));
+
+  while (queue.length) {
+    const id = queue.shift();
+    const level = levels.get(id) ?? 0;
+    for (const dst of outEdges.get(id) || []) {
+      const nextLevel = level + 1;
+      if (!levels.has(dst) || levels.get(dst) > nextLevel) {
+        levels.set(dst, nextLevel);
+        queue.push(dst);
+      }
+    }
+  }
+
+  let fallbackLevel = levels.size ? Math.max(...levels.values()) + 1 : 0;
+  nodeIds.forEach((id) => {
+    if (!levels.has(id)) {
+      levels.set(id, fallbackLevel);
+      fallbackLevel += 1;
+    }
+  });
+
+  const byLevel = new Map();
+  levels.forEach((level, id) => {
+    if (!byLevel.has(level)) byLevel.set(level, []);
+    byLevel.get(level).push(id);
+  });
+
+  const xGap = 260;
+  const yGap = 120;
+  const positions = {};
+  [...byLevel.entries()]
+    .sort(([a], [b]) => a - b)
+    .forEach(([level, ids]) => {
+      ids.sort();
+      const offset = ((ids.length - 1) * yGap) / 2;
+      ids.forEach((id, index) => {
+        positions[id] = { x: level * xGap, y: index * yGap - offset };
+      });
+    });
+
+  return positions;
+}
+
+function visEdgeId(edge, idCounts) {
+  let base = `${edge.src}|${edge.rel}|${edge.dst}`;
+  if (edge.pattern_id) base += `|${edge.pattern_id}`;
+  else if (edge.action) base += `|${edge.action}`;
+  const seen = idCounts.get(base) || 0;
+  idCounts.set(base, seen + 1);
+  return seen === 0 ? base : `${base}#${seen}`;
+}
+
+function edgeMatchesStep(visEdge, step) {
+  return visEdge.from === step.src && visEdge.to === step.dst && visEdge.label === step.rel;
+}
+
+function buildVisEdges(edges, nodeById) {
+  const pairCounts = new Map();
+  const pairSeen = new Map();
+  const sourceCounts = new Map();
+  const idCounts = new Map();
+
+  edges.forEach((edge) => {
+    const pairKey = edge.src === edge.dst ? `self:${edge.src}` : `${edge.src}|${edge.dst}`;
+    pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + 1);
+    sourceCounts.set(edge.src, (sourceCounts.get(edge.src) || 0) + 1);
+  });
+
+  return edges.map((edge) => {
+    const hint = formatEdgeHint(edge, nodeById);
+    const pairKey = edge.src === edge.dst ? `self:${edge.src}` : `${edge.src}|${edge.dst}`;
+    const pairIndex = pairSeen.get(pairKey) || 0;
+    pairSeen.set(pairKey, pairIndex + 1);
+    const pairTotal = pairCounts.get(pairKey) || 1;
+    const sourceIndex = edge._sourceIndex ?? 0;
+    const sourceTotal = sourceCounts.get(edge.src) || 1;
+
+    let smooth;
+    if (edge.src === edge.dst) {
+      smooth = {
+        type: "curvedCW",
+        roundness: 0.55,
+      };
+    } else if (pairTotal === 1 && sourceTotal === 1) {
+      smooth = { type: "cubicBezier", forceDirection: "horizontal", roundness: 0.22 };
+    } else if (pairTotal > 1) {
+      const spread = pairIndex - (pairTotal - 1) / 2;
+      smooth = {
+        type: spread <= 0 ? "curvedCCW" : "curvedCW",
+        roundness: 0.28 + Math.abs(spread) * 0.32,
+      };
+    } else {
+      const spread = sourceIndex - (sourceTotal - 1) / 2;
+      smooth = {
+        type: spread % 2 === 0 ? "curvedCW" : "curvedCCW",
+        roundness: 0.14 + Math.abs(spread) * 0.1,
+      };
+    }
+
+    const hideLabel = pairTotal > 1;
+    const visEdge = {
+      id: visEdgeId(edge, idCounts),
+      from: edge.src,
+      to: edge.dst,
+      label: hideLabel ? "" : edge.rel,
+      title: hint,
+      arrows: "to",
+      font: { align: "horizontal", size: 9, color: "#8b949e", strokeWidth: 0 },
+      color: { color: "#484f58", highlight: "#58a6ff", hover: "#8b949e" },
+      smooth,
+      _raw: edge,
+      _hint: hint,
+      _relLabel: edge.rel,
+      _hideLabel: hideLabel,
+    };
+
+    if (edge.src === edge.dst) {
+      visEdge.selfReference = {
+        size: 24,
+        angle: 270,
+        renderBehindTheNode: false,
+      };
+    }
+
+    return visEdge;
+  });
+}
+
+function annotateEdgeSourceIndex(edges) {
+  const sourceSeen = new Map();
+  return edges.map((edge) => {
+    const index = sourceSeen.get(edge.src) || 0;
+    sourceSeen.set(edge.src, index + 1);
+    return { ...edge, _sourceIndex: index };
+  });
 }
 
 let edgeTooltipEl = null;
@@ -180,23 +329,26 @@ function positionEdgeTooltip(el, event) {
   }
 }
 
+function findScenarioStartNode(nodes) {
+  return (
+    nodes.find((n) => n.is_caller)?.id ||
+    nodes.find((n) => n.native_kind === "CompromisedHost")?.id ||
+    nodes.find((n) => n.is_scenario_start)?.id ||
+    null
+  );
+}
+
 function initNetwork() {
   const container = document.getElementById("graph");
   state.nodesDS = new vis.DataSet([]);
   state.edgesDS = new vis.DataSet([]);
 
   const options = {
+    layout: {
+      improvedLayout: true,
+    },
     physics: {
-      enabled: true,
-      solver: "forceAtlas2Based",
-      forceAtlas2Based: {
-        gravitationalConstant: -38,
-        centralGravity: 0.008,
-        springLength: 120,
-        springConstant: 0.06,
-        damping: 0.42,
-      },
-      stabilization: { iterations: 150 },
+      enabled: false,
     },
     interaction: {
       hover: true,
@@ -232,12 +384,44 @@ function initNetwork() {
   state.network.on("hoverEdge", (params) => {
     if (!params.edge) return;
     const visEdge = state.edgesDS.get(params.edge);
+    if (visEdge?._hideLabel) {
+      state.edgesDS.update({ id: params.edge, label: visEdge._relLabel });
+    }
     showEdgeTooltip(params.event, visEdge?._hint || visEdge?.title);
   });
 
-  state.network.on("blurEdge", hideEdgeTooltip);
+  state.network.on("blurEdge", (params) => {
+    hideEdgeTooltip();
+    if (!params.edge) return;
+    const visEdge = state.edgesDS.get(params.edge);
+    if (!visEdge?._hideLabel) return;
+    const onPath =
+      state.highlightedPath &&
+      (state.highlightedPath.steps || []).some((step) => edgeMatchesStep(visEdge, step));
+    if (!onPath) {
+      state.edgesDS.update({ id: params.edge, label: "" });
+    }
+  });
   state.network.on("dragStart", hideEdgeTooltip);
   state.network.on("zoom", hideEdgeTooltip);
+
+  window.addEventListener("resize", () => {
+    if (state.network) state.network.redraw();
+  });
+}
+
+function fitGraphView() {
+  if (!state.network || !state.nodesDS.get().length) return;
+  state.network.fit({ animation: { duration: 350, easingFunction: "easeInOutQuad" } });
+}
+
+function applyGraphLayout(visibleNodes, edges, { fit = false } = {}) {
+  state.callerNodeId = findScenarioStartNode(visibleNodes);
+  state.layoutRootId = state.callerNodeId || visibleNodes[0]?.id || null;
+  state.nodePositions = computeLayeredLayout(visibleNodes, edges, state.layoutRootId);
+
+  state.nodesDS.update(visibleNodes.map((node) => toVisNode(node, state.nodePositions[node.id])));
+  if (fit) fitGraphView();
 }
 
 function renderGraph(graph) {
@@ -245,15 +429,19 @@ function renderGraph(graph) {
   const visibleNodes = graph.nodes.filter((n) => n.label !== "CollectionSession");
   state.nodesDS.clear();
   state.edgesDS.clear();
-  state.nodesDS.add(visibleNodes.map(toVisNode));
 
   const nodeIds = new Set(visibleNodes.map((n) => n.id));
   const nodeById = graphNodeMap(visibleNodes);
-  const edges = graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED");
-  state.edgesDS.add(edges.map((e) => toVisEdge(e, nodeById)));
+  const edges = annotateEdgeSourceIndex(
+    graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED"),
+  );
 
-  state.callerNodeId = visibleNodes.find((n) => n.is_caller)?.id || null;
+  state.nodesDS.add(visibleNodes.map((node) => toVisNode(node)));
+  state.edgesDS.add(buildVisEdges(edges, nodeById));
+  applyGraphLayout(visibleNodes, edges);
+
   populateNodeDatalist(visibleNodes);
+  requestAnimationFrame(fitGraphView);
 }
 
 function populateNodeDatalist(nodes) {
@@ -273,22 +461,20 @@ function populateNodeDatalist(nodes) {
 function clearHighlight() {
   state.highlightedPath = null;
   const visibleNodes = state.graph.nodes.filter((n) => n.label !== "CollectionSession");
-  state.nodesDS.update(visibleNodes.map(toVisNode));
+  state.nodesDS.update(visibleNodes.map((node) => toVisNode(node, state.nodePositions[node.id])));
   const nodeIds = new Set(visibleNodes.map((n) => n.id));
   const nodeById = graphNodeMap(visibleNodes);
-  const edges = state.graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED");
-  state.edgesDS.update(edges.map((e) => toVisEdge(e, nodeById)));
+  const edges = annotateEdgeSourceIndex(
+    state.graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED"),
+  );
+  state.edgesDS.update(buildVisEdges(edges, nodeById));
 }
 
 function highlightPath(path) {
   if (!path) return;
   state.highlightedPath = path;
   const nodeSet = new Set(path.node_ids || []);
-  const edgeKeys = new Set();
-
-  (path.steps || []).forEach((s) => {
-    edgeKeys.add(`${s.src}|${s.rel}|${s.dst}`);
-  });
+  const steps = path.steps || [];
 
   state.nodesDS.get().forEach((n) => {
     if (nodeSet.has(n.id)) {
@@ -299,18 +485,21 @@ function highlightPath(path) {
   });
 
   state.edgesDS.get().forEach((e) => {
-    if (edgeKeys.has(e.id)) {
+    if (steps.some((step) => edgeMatchesStep(e, step))) {
       state.edgesDS.update({
         id: e.id,
+        label: e._relLabel || e.label,
         color: PATH_EDGE_COLOR,
         width: 3,
-        font: { size: 11, color: "#ffa657", strokeWidth: 0 },
+        font: { size: 11, color: "#ffa657", strokeWidth: 0, align: "horizontal" },
       });
     } else {
       state.edgesDS.update({
         id: e.id,
+        label: e._hideLabel ? "" : e._relLabel || e.label,
         color: { color: "#30363d", highlight: "#484f58" },
         width: 1,
+        font: { size: 9, color: "#8b949e", strokeWidth: 0, align: "horizontal" },
       });
     }
   });
@@ -487,12 +676,6 @@ async function loadSession(sessionId) {
     document.querySelectorAll("#sessions li").forEach((li) => {
       li.classList.toggle("active", li.dataset.id === sessionId);
     });
-
-    if (state.callerNodeId) {
-      setTimeout(() => state.network.focus(state.callerNodeId, { scale: 1.1, animation: true }), 400);
-    } else {
-      state.network.fit({ animation: true });
-    }
   } catch (err) {
     console.error("Failed to load session", sessionId, err);
     alert(`Could not load session: ${err.message || err}`);
@@ -576,8 +759,21 @@ document.getElementById("loadAzureSample").onclick = async () => {
   await refreshSessions();
   await loadSession(s.session_id);
 };
+document.getElementById("loadHostSample").onclick = async () => {
+  const s = await fetchJSON("/api/sessions/sample-host", { method: "POST" });
+  await refreshSessions();
+  await loadSession(s.session_id);
+};
 document.getElementById("runSearch").onclick = () => runPathQuery({});
-document.getElementById("fitGraph").onclick = () => state.network.fit({ animation: true });
+document.getElementById("fitGraph").onclick = fitGraphView;
+document.getElementById("relayoutGraph").onclick = () => {
+  const visibleNodes = state.graph.nodes.filter((n) => n.label !== "CollectionSession");
+  const nodeIds = new Set(visibleNodes.map((n) => n.id));
+  const edges = annotateEdgeSourceIndex(
+    state.graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED"),
+  );
+  applyGraphLayout(visibleNodes, edges, { fit: true });
+};
 document.getElementById("clearHighlight").onclick = clearHighlight;
 document.getElementById("focusCaller").onclick = () => {
   if (state.callerNodeId) state.network.focus(state.callerNodeId, { scale: 1.2, animation: true });

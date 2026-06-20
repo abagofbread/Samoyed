@@ -70,6 +70,17 @@ def test_host_pivot_logged_in_session():
     assert host.props.get("is_scenario_start")
 
 
+def test_host_sample_has_no_duplicate_privesc_edges():
+    from collections import Counter
+
+    from samoyed.graph.sample_host import build_sample_host_graph
+
+    snapshot = build_sample_host_graph("host-dedupe-test")
+    counts = Counter((e.src_id, e.rel_type, e.dst_id) for e in snapshot.edges)
+    duplicates = {key: count for key, count in counts.items() if count > 1}
+    assert not duplicates, duplicates
+
+
 def test_host_compromise_scenario_reaches_cloud_identity():
     from samoyed.graph.sample_host import build_sample_host_graph
 

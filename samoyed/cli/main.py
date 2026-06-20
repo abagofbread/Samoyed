@@ -161,6 +161,16 @@ def load_sample_azure_cmd(session_id: str = typer.Option("sample-azure", help="S
     typer.echo("Run: samoyed scenario leaked-credential --session-id " + record.session_id)
 
 
+@app.command("load-sample-host")
+def load_sample_host_cmd(session_id: str = typer.Option("sample-host", help="Session ID for host compromise sample graph")) -> None:
+    """Load offline host-compromise sample (multi-hop laptop → cloud pivot)."""
+    record = SESSION_STORE.load_sample_host_session(session_id)
+    typer.echo(f"Session {record.session_id}")
+    typer.echo(f"Caller: {record.caller_arn}")
+    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
+    typer.echo("Run: samoyed scenario host-compromise --session-id " + record.session_id)
+
+
 @app.command("import-cartography")
 def import_cartography_cmd(
     caller_arn: str | None = typer.Option(None, help="Principal ARN to treat as blast-radius start"),
