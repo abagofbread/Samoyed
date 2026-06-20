@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Samoyed</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+  <header>
+    <strong>Samoyed</strong>
+    <span>cloud attack-path graph</span>
+    <span id="sessionBadge">No session loaded</span>
+    <button id="logoutBtn" class="ghost" style="margin-left:auto;display:none">Sign out</button>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <div class="section">
+        <h3>Sessions</h3>
+        <div class="row">
+          <button id="refreshSessions" class="ghost">Refresh</button>
+          <button id="loadAwsSample" class="ghost">AWS sample</button>
+        </div>
+        <div class="row">
+          <button id="loadGcpSample" class="ghost">GCP sample</button>
+          <button id="loadAzureSample" class="ghost">Azure sample</button>
+        </div>
+        <button id="loadK8sSample" class="ghost" style="margin-top:8px;width:100%">K8s sample</button>
+        <ul id="sessions" class="list"></ul>
+      </div>
+
+      <div class="section">
+        <h3>Top searches</h3>
+        <p class="empty" id="suggestionsHint">Load a session to see suggestions</p>
+        <ul id="suggestions" class="list"></ul>
+      </div>
+    </aside>
+
+    <main>
+      <div id="graphToolbar">
+        <button id="fitGraph" class="ghost">Fit view</button>
+        <button id="clearHighlight" class="ghost">Clear highlight</button>
+        <button id="focusCaller" class="ghost">Focus caller</button>
+      </div>
+      <div id="graph"></div>
+    </main>
+
+    <div class="panel">
+      <div class="tabs">
+        <button class="tab active" data-tab="search">Path search</button>
+        <button class="tab" data-tab="node">Node</button>
+      </div>
+
+      <div id="tab-search" class="tab-panel active">
+        <label>Start node</label>
+        <input id="startSearch" list="nodeOptions" placeholder="caller or search nodes…" value="caller" />
+        <datalist id="nodeOptions"></datalist>
+
+        <label>Mode</label>
+        <select id="searchMode">
+          <option value="paths">Find attack paths</option>
+          <option value="blast">Blast radius</option>
+          <option value="neighbors">1-hop neighbors</option>
+        </select>
+
+        <div id="targetFields">
+          <label>Target concept</label>
+          <select id="targetConcept">
+            <option value="">Any high-value target</option>
+            <option value="SecretStore">SecretStore</option>
+            <option value="DataStore">DataStore</option>
+            <option value="Identity">Identity</option>
+            <option value="ManagementEndpoint">ManagementEndpoint</option>
+            <option value="EscapeSurface">EscapeSurface</option>
+            <option value="RuntimeBinding">RuntimeBinding</option>
+            <option value="Workload">Workload</option>
+          </select>
+
+          <label>Target resource type (optional)</label>
+          <input id="targetResourceType" placeholder="e.g. S3Bucket, KubernetesSecret" />
+
+          <label>Max depth</label>
+          <input id="maxDepth" type="number" min="1" max="12" value="6" />
+        </div>
+
+        <button id="runSearch" class="primary" style="margin-top:12px">Search paths</button>
+
+        <h3 style="margin-top:20px">Results <span id="pathCount" class="badge">0</span></h3>
+        <ul id="paths" class="list"></ul>
+      </div>
+
+      <div id="tab-node" class="tab-panel">
+        <p class="empty" id="nodeHint">Click a node in the graph</p>
+        <div id="nodeDetail" style="display:none">
+          <div id="nodeTitle" style="font-weight:600;font-size:13px;margin-bottom:8px"></div>
+          <pre id="nodeProps"></pre>
+
+          <h3 style="margin-top:16px">Append property</h3>
+          <label>Key</label>
+          <input id="propKey" placeholder="e.g. owner, risk, notes" />
+          <label>Value</label>
+          <input id="propValue" placeholder="string or JSON value" />
+          <button id="appendProp" class="primary" style="margin-top:10px">Add property</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

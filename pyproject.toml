@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["samoyed"]
+
+[project]
+name = "samoyed"
+version = "0.1.0"
+description = "BloodHound for cloud — attack-path graph platform"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "boto3",
+    "botocore",
+    "fastapi",
+    "httpx",
+    "neo4j",
+    "pydantic",
+    "python-multipart",
+    "typer",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+mcp = ["mcp"]
+k8s = ["kubernetes"]
+gcp = [
+    "google-auth>=2.0",
+    "google-cloud-iam>=2.0",
+    "google-cloud-storage>=2.0",
+    "google-cloud-secret-manager>=2.0",
+    "google-cloud-resource-manager>=1.0",
+]
+azure = [
+    "azure-identity>=1.15",
+    "azure-mgmt-authorization>=4.0",
+    "azure-mgmt-storage>=21.0",
+    "azure-mgmt-keyvault>=10.0",
+    "azure-keyvault-secrets>=4.0",
+    "azure-mgmt-resource>=23.0",
+]
+
+[project.scripts]
+samoyed = "samoyed.cli.main:app"
+
+[project.entry-points."samoyed.enumerators"]
+# user plugins register here
+
+[project.entry-points."samoyed.connectors"]
+# user plugins register here
+
+[project.entry-points."samoyed.scenarios"]
+# user plugins register here
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -1,0 +1,196 @@
+:root {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --accent-dim: #1f6feb;
+  --danger: #f85149;
+  --success: #3fb950;
+  --warn: #ffa657;
+  --purple: #d2a8ff;
+  font-family: "SF Pro Text", system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: grid;
+  grid-template-rows: 48px 1fr;
+  overflow: hidden;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+header strong { font-size: 15px; letter-spacing: 0.02em; }
+#sessionBadge {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr 380px;
+  min-height: 0;
+}
+
+aside, .panel {
+  background: var(--panel);
+  overflow: auto;
+  padding: 12px;
+}
+aside { border-right: 1px solid var(--border); }
+.panel { border-left: 1px solid var(--border); }
+
+main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+
+h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+button, select, input, textarea {
+  background: #21262d;
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  width: 100%;
+}
+button {
+  cursor: pointer;
+  font-weight: 500;
+}
+button:hover { border-color: var(--accent); }
+button.primary {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+button.ghost { background: transparent; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.row { display: flex; gap: 8px; margin-top: 8px; }
+.row > * { flex: 1; }
+
+.list { list-style: none; padding: 0; margin: 0; }
+.list li {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.list li:hover, .list li.active { border-color: var(--accent); }
+.list li .title { font-weight: 600; margin-bottom: 4px; }
+.list li .desc { color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+#graphToolbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+#graphToolbar button { width: auto; padding: 6px 12px; font-size: 12px; }
+
+#graph {
+  flex: 1;
+  min-height: 0;
+  background: radial-gradient(ellipse at center, #161b22 0%, #0d1117 70%);
+}
+
+.section { margin-bottom: 20px; }
+.section + .section { padding-top: 4px; border-top: 1px solid var(--border); }
+
+.score { color: var(--warn); font-weight: 700; }
+.path-step { color: var(--muted); font-size: 11px; margin-top: 4px; word-break: break-all; }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.tab {
+  flex: 1;
+  padding: 8px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+.tab.active { background: #21262d; border-color: var(--accent); }
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 10px 0 4px;
+}
+
+#nodeProps {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.suggestion-rank {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 4px;
+  background: #21262d;
+  font-size: 10px;
+  margin-right: 6px;
+  color: var(--muted);
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 16px 8px;
+  text-align: center;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #21262d;
+  color: var(--muted);
+  margin-left: 6px;
+}
