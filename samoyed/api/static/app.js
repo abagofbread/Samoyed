@@ -93,19 +93,91 @@ function toVisNode(node) {
   };
 }
 
-function toVisEdge(edge) {
+function graphNodeMap(nodes) {
+  return new Map(nodes.map((n) => [n.id, n]));
+}
+
+function formatEdgeHint(edge, nodeById) {
+  const src = nodeById.get(edge.src);
+  const dst = nodeById.get(edge.dst);
+  const srcLabel = src ? `${src.label}: ${displayName(src)}` : edge.src;
+  const dstLabel = dst ? `${dst.label}: ${displayName(dst)}` : edge.dst;
+  const lines = [edge.rel, `${shortId(srcLabel)} → ${shortId(dstLabel)}`];
+
+  const meta = [];
+  if (edge.confidence) meta.push(`confidence: ${edge.confidence}`);
+  if (edge.action) meta.push(`action: ${edge.action}`);
+  if (edge.source) meta.push(`source: ${edge.source}`);
+  if (edge.discovered_via) meta.push(`via: ${edge.discovered_via}`);
+  if (edge.cartography_rel) meta.push(`cartography: ${edge.cartography_rel}`);
+  if (meta.length) lines.push(meta.join(" · "));
+
+  return lines.join("\n");
+}
+
+function toVisEdge(edge, nodeById) {
+  const hint = formatEdgeHint(edge, nodeById);
   return {
     id: `${edge.src}|${edge.rel}|${edge.dst}`,
     from: edge.src,
     to: edge.dst,
     label: edge.rel,
-    title: edge.rel,
+    title: hint,
     arrows: "to",
     font: { align: "middle", size: 9, color: "#8b949e", strokeWidth: 0 },
     color: { color: "#484f58", highlight: "#58a6ff", hover: "#8b949e" },
     smooth: { type: "curvedCW", roundness: 0.15 },
     _raw: edge,
+    _hint: hint,
   };
+}
+
+let edgeTooltipEl = null;
+
+function ensureEdgeTooltip() {
+  if (!edgeTooltipEl) {
+    edgeTooltipEl = document.createElement("div");
+    edgeTooltipEl.id = "edgeTooltip";
+    edgeTooltipEl.className = "graph-tooltip";
+    edgeTooltipEl.setAttribute("role", "tooltip");
+    document.body.appendChild(edgeTooltipEl);
+  }
+  return edgeTooltipEl;
+}
+
+function showEdgeTooltip(event, hint) {
+  if (!hint) return;
+  const el = ensureEdgeTooltip();
+  const [head, ...rest] = hint.split("\n");
+  el.replaceChildren();
+  const strong = document.createElement("strong");
+  strong.textContent = head;
+  el.appendChild(strong);
+  rest.forEach((line) => {
+    el.appendChild(document.createElement("br"));
+    el.appendChild(document.createTextNode(line));
+  });
+  el.style.display = "block";
+  positionEdgeTooltip(el, event);
+}
+
+function hideEdgeTooltip() {
+  if (edgeTooltipEl) edgeTooltipEl.style.display = "none";
+}
+
+function positionEdgeTooltip(el, event) {
+  const pad = 14;
+  let x = event.clientX + pad;
+  let y = event.clientY + pad;
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  const rect = el.getBoundingClientRect();
+  if (rect.right > window.innerWidth - 8) {
+    el.style.left = `${event.clientX - rect.width - pad}px`;
+  }
+  if (rect.bottom > window.innerHeight - 8) {
+    el.style.top = `${event.clientY - rect.height - pad}px`;
+  }
 }
 
 function initNetwork() {
@@ -128,12 +200,14 @@ function initNetwork() {
     },
     interaction: {
       hover: true,
-      tooltipDelay: 120,
+      hoverConnectedEdges: true,
+      tooltipDelay: 80,
       multiselect: false,
     },
     edges: {
       width: 1.5,
       selectionWidth: 2.5,
+      hoverWidth: 3,
     },
     nodes: {
       borderWidth: 2,
@@ -154,6 +228,16 @@ function initNetwork() {
       state.network.focus(params.nodes[0], { scale: 1.2, animation: true });
     }
   });
+
+  state.network.on("hoverEdge", (params) => {
+    if (!params.edge) return;
+    const visEdge = state.edgesDS.get(params.edge);
+    showEdgeTooltip(params.event, visEdge?._hint || visEdge?.title);
+  });
+
+  state.network.on("blurEdge", hideEdgeTooltip);
+  state.network.on("dragStart", hideEdgeTooltip);
+  state.network.on("zoom", hideEdgeTooltip);
 }
 
 function renderGraph(graph) {
@@ -164,8 +248,9 @@ function renderGraph(graph) {
   state.nodesDS.add(visibleNodes.map(toVisNode));
 
   const nodeIds = new Set(visibleNodes.map((n) => n.id));
+  const nodeById = graphNodeMap(visibleNodes);
   const edges = graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED");
-  state.edgesDS.add(edges.map(toVisEdge));
+  state.edgesDS.add(edges.map((e) => toVisEdge(e, nodeById)));
 
   state.callerNodeId = visibleNodes.find((n) => n.is_caller)?.id || null;
   populateNodeDatalist(visibleNodes);
@@ -190,8 +275,9 @@ function clearHighlight() {
   const visibleNodes = state.graph.nodes.filter((n) => n.label !== "CollectionSession");
   state.nodesDS.update(visibleNodes.map(toVisNode));
   const nodeIds = new Set(visibleNodes.map((n) => n.id));
+  const nodeById = graphNodeMap(visibleNodes);
   const edges = state.graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED");
-  state.edgesDS.update(edges.map(toVisEdge));
+  state.edgesDS.update(edges.map((e) => toVisEdge(e, nodeById)));
 }
 
 function highlightPath(path) {
@@ -256,13 +342,19 @@ function switchTab(name) {
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
 }
 
-function renderPaths(paths) {
+function renderPaths(paths, mode = "paths") {
   const ul = document.getElementById("paths");
   document.getElementById("pathCount").textContent = String(paths.length);
   ul.innerHTML = "";
 
   if (!paths.length) {
-    ul.innerHTML = '<li class="empty">No paths found</li>';
+    const hint =
+      mode === "blast"
+        ? "No blast-radius paths found — the start node may have no outgoing edges in this session."
+        : mode === "neighbors"
+          ? "No neighbors found for this node."
+          : "No paths found for this query.";
+    ul.innerHTML = `<li class="empty">${hint}</li>`;
     return;
   }
 
@@ -279,26 +371,60 @@ function renderPaths(paths) {
   });
 }
 
+function resolveStartNodeId(input) {
+  const raw = (input || "").trim();
+  if (!raw || raw === "caller") {
+    return state.callerNodeId || "caller";
+  }
+  const nodes = (state.graph.nodes || []).filter((n) => n.label !== "CollectionSession");
+  const exact = nodes.find((n) => n.id === raw);
+  if (exact) return exact.id;
+
+  const lower = raw.toLowerCase();
+  const matches = nodes.filter((n) => {
+    const fields = [n.id, n.arn, n.native_id, n.display_name, n.name].filter(Boolean);
+    return fields.some((f) => String(f).toLowerCase() === lower)
+      || fields.some((f) => String(f).toLowerCase().includes(lower) || lower.includes(String(f).toLowerCase()));
+  });
+  if (matches.length === 1) return matches[0].id;
+  return raw;
+}
+
 async function runPathQuery(query) {
   if (!state.sessionId) return alert("Select a session first");
-  const body = {
-    start: query.start ?? document.getElementById("startSearch").value || "caller",
-    target_concept: query.target_concept ?? document.getElementById("targetConcept").value || null,
-    target_resource_type: query.target_resource_type ?? document.getElementById("targetResourceType").value || null,
-    max_depth: Number(query.max_depth ?? document.getElementById("maxDepth").value || 6),
-    mode: query.mode ?? document.getElementById("searchMode").value,
-  };
-  if (!body.target_concept) delete body.target_concept;
-  if (!body.target_resource_type) delete body.target_resource_type;
+  const mode = query.mode ?? document.getElementById("searchMode").value;
+  const startInput = query.start ?? (document.getElementById("startSearch").value || "caller");
+  const maxDepthRaw = query.max_depth ?? document.getElementById("maxDepth").value;
+  const maxDepth = Number(maxDepthRaw) > 0 ? Number(maxDepthRaw) : 6;
 
-  const data = await fetchJSON(`/api/sessions/${state.sessionId}/paths/query`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  renderPaths(data.paths || []);
-  if (data.paths?.length) highlightPath(data.paths[0]);
-  return data;
+  try {
+    const body = {
+      start: resolveStartNodeId(startInput),
+      target_concept: query.target_concept ?? (document.getElementById("targetConcept").value || null),
+      target_resource_type: query.target_resource_type ?? (document.getElementById("targetResourceType").value || null),
+      max_depth: maxDepth,
+      mode,
+    };
+    if (!body.target_concept) delete body.target_concept;
+    if (!body.target_resource_type) delete body.target_resource_type;
+
+    const data = await fetchJSON(`/api/sessions/${state.sessionId}/paths/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (data.start && data.start !== body.start && body.start !== "caller") {
+      document.getElementById("startSearch").value = data.start;
+    }
+
+    renderPaths(data.paths || [], mode);
+    if (data.paths?.length) highlightPath(data.paths[0]);
+    return data;
+  } catch (err) {
+    console.error("Path search failed", err);
+    alert(`Path search failed: ${err.message || err}`);
+  }
 }
 
 async function runSuggestion(suggestion) {
@@ -311,7 +437,7 @@ async function runSuggestion(suggestion) {
     const data = await fetchJSON(`/api/scenarios/${suggestion.scenario}/run?session_id=${state.sessionId}`, {
       method: "POST",
     });
-    renderPaths(data.paths || []);
+    renderPaths(data.paths || [], suggestion.mode === "scenario" ? "paths" : suggestion.mode);
     if (data.paths?.length) highlightPath(data.paths[0]);
     switchTab("search");
     return;
@@ -344,26 +470,32 @@ async function loadSuggestions() {
 }
 
 async function loadSession(sessionId) {
-  state.sessionId = sessionId;
-  const [meta, graph] = await Promise.all([
-    fetchJSON(`/api/sessions/${sessionId}`),
-    fetchJSON(`/api/sessions/${sessionId}/graph`),
-  ]);
-  state.sessionMeta = meta;
-  document.getElementById("sessionBadge").textContent = `${sessionId} · ${shortId(meta.caller_arn)}`;
-  renderGraph(graph);
-  clearHighlight();
-  renderPaths([]);
-  await loadSuggestions();
+  if (!sessionId) return;
+  try {
+    state.sessionId = sessionId;
+    const [meta, graph] = await Promise.all([
+      fetchJSON(`/api/sessions/${sessionId}`),
+      fetchJSON(`/api/sessions/${sessionId}/graph`),
+    ]);
+    state.sessionMeta = meta;
+    document.getElementById("sessionBadge").textContent = `${sessionId} · ${shortId(meta.caller_arn)}`;
+    renderGraph(graph);
+    clearHighlight();
+    renderPaths([]);
+    await loadSuggestions();
 
-  document.querySelectorAll("#sessions li").forEach((li) => {
-    li.classList.toggle("active", li.dataset.id === sessionId);
-  });
+    document.querySelectorAll("#sessions li").forEach((li) => {
+      li.classList.toggle("active", li.dataset.id === sessionId);
+    });
 
-  if (state.callerNodeId) {
-    setTimeout(() => state.network.focus(state.callerNodeId, { scale: 1.1, animation: true }), 400);
-  } else {
-    state.network.fit({ animation: true });
+    if (state.callerNodeId) {
+      setTimeout(() => state.network.focus(state.callerNodeId, { scale: 1.1, animation: true }), 400);
+    } else {
+      state.network.fit({ animation: true });
+    }
+  } catch (err) {
+    console.error("Failed to load session", sessionId, err);
+    alert(`Could not load session: ${err.message || err}`);
   }
 }
 
@@ -374,15 +506,20 @@ async function refreshSessions() {
   sessions.forEach((s) => {
     const li = document.createElement("li");
     li.dataset.id = s.session_id;
+    li.setAttribute("role", "button");
+    li.tabIndex = 0;
     li.innerHTML = `
       <div class="title">${s.session_id}</div>
       <div class="desc">${shortId(s.caller_arn || "")}</div>
     `;
-    li.onclick = () => loadSession(s.session_id);
     ul.appendChild(li);
   });
   if (sessions.length && !state.sessionId) {
     await loadSession(sessions[0].session_id);
+  } else if (state.sessionId) {
+    document.querySelectorAll("#sessions li").forEach((li) => {
+      li.classList.toggle("active", li.dataset.id === state.sessionId);
+    });
   }
 }
 
@@ -450,6 +587,20 @@ document.getElementById("searchMode").onchange = updateTargetFieldsVisibility;
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.onclick = () => switchTab(tab.dataset.tab);
+});
+
+document.getElementById("sessions").addEventListener("click", (event) => {
+  const li = event.target.closest("li[data-id]");
+  if (!li) return;
+  loadSession(li.dataset.id);
+});
+
+document.getElementById("sessions").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const li = event.target.closest("li[data-id]");
+  if (!li) return;
+  event.preventDefault();
+  loadSession(li.dataset.id);
 });
 
 initNetwork();

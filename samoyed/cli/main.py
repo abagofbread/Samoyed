@@ -14,10 +14,110 @@ from samoyed.credentials.loader import (
 )
 from samoyed.probes.runner import get_probe_catalog, run_api_probes
 from samoyed.extensions.discovery import init_extension
+from samoyed.firing_range import (
+    DEFAULT_ENDPOINT,
+    DEFAULT_REGION,
+    compose_down,
+    compose_up,
+    ping_emulator,
+    seed_aws_lab,
+)
 from samoyed.sessions import SESSION_STORE
 from samoyed.cloud.concepts import CloudProvider
 
 app = typer.Typer(no_args_is_help=True, help="Samoyed — BloodHound for cloud")
+firing_range_app = typer.Typer(help="Emulated vulnerable clouds (LocalStack, no lab data in repo)")
+app.add_typer(firing_range_app, name="firing-range")
+
+
+@firing_range_app.command("status")
+def firing_range_status_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+) -> None:
+    """Check whether the emulated AWS endpoint is reachable."""
+    typer.echo(
+        json.dumps(
+            {
+                "endpoint": endpoint_url,
+                "region": region,
+                "reachable": ping_emulator(endpoint_url=endpoint_url, region=region),
+            },
+            indent=2,
+        )
+    )
+
+
+@firing_range_app.command("up")
+def firing_range_up_cmd() -> None:
+    """Start LocalStack via docker compose (firing-range/docker-compose.yml)."""
+    try:
+        compose_up()
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    except Exception as exc:
+        typer.echo(f"docker compose failed: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo("LocalStack starting on http://localhost:4566")
+    typer.echo("Run: samoyed firing-range seed")
+
+
+@firing_range_app.command("down")
+def firing_range_down_cmd() -> None:
+    """Stop LocalStack."""
+    try:
+        compose_down()
+    except Exception as exc:
+        typer.echo(f"docker compose failed: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo("LocalStack stopped")
+
+
+@firing_range_app.command("seed")
+def firing_range_seed_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+) -> None:
+    """Seed vulnerable IAM/S3/Secrets topology into the emulator via API."""
+    if not ping_emulator(endpoint_url=endpoint_url, region=region):
+        typer.echo(f"Emulator not reachable at {endpoint_url}. Run: samoyed firing-range up", err=True)
+        raise typer.Exit(1)
+    try:
+        meta = seed_aws_lab(endpoint_url=endpoint_url, region=region)
+    except Exception as exc:
+        typer.echo(f"Seed failed: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(json.dumps(meta, indent=2))
+    typer.echo("Run: samoyed firing-range enum")
+
+
+@firing_range_app.command("enum")
+def firing_range_enum_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+    with_probe: bool = typer.Option(False, "--with-probe", help="Also run API probes"),
+) -> None:
+    """Enumerate the emulated AWS lab (uses test/test credentials)."""
+    from samoyed.credentials.aws import AwsCredential
+
+    if not ping_emulator(endpoint_url=endpoint_url, region=region):
+        typer.echo(f"Emulator not reachable at {endpoint_url}. Run: samoyed firing-range up", err=True)
+        raise typer.Exit(1)
+    cred = AwsCredential(
+        access_key="test",
+        secret_key="test",
+        region=region,
+        endpoint_url=endpoint_url,
+    )
+    if with_probe:
+        record = SESSION_STORE.create_probe_session(cred, with_enum=True)
+    else:
+        record = SESSION_STORE.create_session(cred)
+    typer.echo(f"Session {record.session_id}")
+    typer.echo(f"Caller: {record.caller_arn}")
+    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
+    typer.echo("Run: samoyed scenario leaked-credential --session-id " + record.session_id)
 
 
 @app.command("load-sample")

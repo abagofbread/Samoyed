@@ -16,7 +16,10 @@ def load_aws_credential(
     endpoint_url: str | None = None,
 ) -> AwsCredential:
     if key_file:
-        return AwsCredential.from_key_file(key_file, region=region)
+        cred = AwsCredential.from_key_file(key_file, region=region)
+        if endpoint_url and not cred.endpoint_url:
+            cred.endpoint_url = endpoint_url
+        return cred
     if profile:
         return AwsCredential.from_profile(profile, region=region, endpoint_url=endpoint_url)
     return AwsCredential.from_env(region=region, endpoint_url=endpoint_url)

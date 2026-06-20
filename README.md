@@ -28,6 +28,12 @@ docker compose up -d   # optional Neo4j persistence
 samoyed load-sample
 samoyed scenario leaked-credential --session-id sample-lab
 
+# Emulated vulnerable AWS lab (LocalStack — no lab data in repo)
+samoyed firing-range up
+samoyed firing-range seed
+samoyed firing-range enum
+# See firing-range/README.md
+
 # Offline Kubernetes sample (no cluster needed)
 samoyed load-sample-k8s
 samoyed scenario compromised-sa --session-id sample-k8s

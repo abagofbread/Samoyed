@@ -37,6 +37,18 @@ samoyed ui
 
 If you bind to a non-localhost address without credentials, `samoyed ui` generates a random password and prints it to stderr.
 
+## Firing range (emulated clouds)
+
+Vulnerable lab topology is **not** stored in the repo. Use LocalStack + API seeding:
+
+```bash
+samoyed firing-range up
+samoyed firing-range seed
+samoyed firing-range enum
+```
+
+See [firing-range/README.md](firing-range/README.md). Offline `load-sample` graphs remain for UI/tests only.
+
 ## Extension boundary
 
 Implement `ConceptEnumerator` in `.samoyed/enumerators/my_enum.py`:

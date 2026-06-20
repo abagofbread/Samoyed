@@ -327,7 +327,9 @@ def query_paths_post(session_id: str, req: PathQueryRequest):
         if not start:
             raise HTTPException(400, "Start node not found")
         if req.mode == "blast":
-            paths = SESSION_STORE.blast_radius(session_id, start_node_id=start)
+            paths = SESSION_STORE.blast_radius(
+                session_id, start_node_id=start, max_depth=req.max_depth
+            )
         elif req.mode == "neighbors":
             neighbors = SESSION_STORE.get_neighbors(session_id, start)
             paths = [

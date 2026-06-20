@@ -47,3 +47,31 @@ def test_paths_query_post():
     data = res.json()
     assert data["paths"]
     assert data["start"]
+
+
+def test_resolve_start_node_by_arn():
+    record = SESSION_STORE.load_sample_session("ui-resolve-arn")
+    caller_arn = "arn:aws:iam::111111111111:user/leaked-user"
+    resolved = SESSION_STORE.resolve_start_node(record.session_id, caller_arn)
+    assert resolved
+    assert resolved.endswith("user/leaked-user")
+
+    res = client.post(
+        f"/api/sessions/{record.session_id}/paths/query",
+        json={"start": caller_arn, "mode": "blast", "max_depth": 6},
+    )
+    assert res.status_code == 200
+    assert len(res.json()["paths"]) >= 1
+
+
+def test_blast_radius_by_principal_id():
+    record = SESSION_STORE.load_sample_session("ui-blast-test")
+    start = "Principal:arn:aws:iam::111111111111:user/leaked-user"
+    res = client.post(
+        f"/api/sessions/{record.session_id}/paths/query",
+        json={"start": start, "mode": "blast", "max_depth": 6},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["start"] == start
+    assert len(data["paths"]) >= 1

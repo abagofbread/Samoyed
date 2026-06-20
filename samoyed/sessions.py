@@ -443,14 +443,20 @@ class SessionStore:
             max_depth=max_depth,
         )
 
-    def blast_radius(self, session_id: str, start_node_id: str | None = None) -> list[PathResult]:
+    def blast_radius(
+        self,
+        session_id: str,
+        start_node_id: str | None = None,
+        *,
+        max_depth: int = 6,
+    ) -> list[PathResult]:
         session = self.get(session_id)
         if not session:
             raise KeyError(session_id)
         start = start_node_id or self.find_caller_node(session)
         if not start:
             return []
-        return get_blast_radius(session.snapshot, start_node_id=start)
+        return get_blast_radius(session.snapshot, start_node_id=start, max_depth=max_depth)
 
     def get_neighbors(
         self,
@@ -544,8 +550,37 @@ class SessionStore:
             return self.find_caller_node(session)
         if start == "host":
             return self.find_host_node(session) or self.find_caller_node(session)
-        if start in session.snapshot.nodes:
-            return start
+
+        needle = start.strip()
+        if needle in session.snapshot.nodes:
+            return needle
+
+        needle_lower = needle.lower()
+        matches: list[str] = []
+        for node_id, node in session.snapshot.nodes.items():
+            if node.label == "CollectionSession":
+                continue
+            fields = (
+                node_id,
+                str(node.props.get("arn") or ""),
+                str(node.props.get("native_id") or ""),
+                str(node.props.get("display_name") or ""),
+                str(node.props.get("name") or ""),
+            )
+            if any(f and f.lower() == needle_lower for f in fields):
+                matches.append(node_id)
+                continue
+            if any(
+                f
+                and (needle_lower in f.lower() or f.lower().endswith(needle_lower.split("/")[-1]))
+                for f in fields
+                if f
+            ):
+                matches.append(node_id)
+
+        unique = list(dict.fromkeys(matches))
+        if len(unique) == 1:
+            return unique[0]
         return None
 
     def _neo4j_meta(self, record: SessionRecord) -> dict[str, Any]:

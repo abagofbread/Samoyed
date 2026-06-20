@@ -10,7 +10,7 @@ from samoyed.graph.model import GraphSnapshot
 
 def build_sample_graph(session_id: str = "sample-lab") -> GraphSnapshot:
     """
-    Offline vulnerable-ish AWS graph for UI/path testing without live cloud APIs.
+    Offline graph for UI/tests. For a live emulated lab, use `samoyed firing-range`.
     Path: leaked user -> assume admin role -> read prod secret.
     """
     builder = GraphBuilder(session_id)

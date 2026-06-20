@@ -123,6 +123,26 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: radial-gradient(ellipse at center, #161b22 0%, #0d1117 70%);
 }
 
+.graph-tooltip {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  max-width: 320px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.graph-tooltip strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .section { margin-bottom: 20px; }
 .section + .section { padding-top: 4px; border-top: 1px solid var(--border); }
 
