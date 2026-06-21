@@ -93,7 +93,7 @@ def test_list_sessions_is_lightweight(tmp_path, monkeypatch):
 
 def test_graph_query_end_id_contains(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    record = SESSION_STORE.load_sample_session("graph-query-test")
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="graph-query-test")
     start = SESSION_STORE.find_caller_node(record)
     res = client.post(
         f"/api/sessions/{record.session_id}/graph/query",
@@ -112,7 +112,7 @@ def test_graph_query_end_id_contains(tmp_path, monkeypatch):
 
 def test_graph_query_rel_types_filter(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    record = SESSION_STORE.load_sample_session("rel-filter-test")
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="rel-filter-test")
     start = SESSION_STORE.find_caller_node(record)
     res = client.post(
         f"/api/sessions/{record.session_id}/graph/query",

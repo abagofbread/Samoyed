@@ -364,6 +364,34 @@ class NodePropertiesRequest(BaseModel):
     properties: dict[str, Any]
 
 
+class MarkNodesRequest(BaseModel):
+    refs: list[str]
+    compromised: bool | None = None
+    high_value: bool | None = None
+    source: str = "analyst"
+    clear: bool = False
+
+
+class MarkAlertRequest(BaseModel):
+    compromised: list[str] = []
+    high_value: list[str] = []
+    source: str = "alert"
+
+
+class DeclareRelationshipRequest(BaseModel):
+    relationship: str = "depends_on"
+    from_ref: str | None = None
+    to_ref: str | None = None
+    supplier: str | None = None
+    consumer: str | None = None
+    dependent: str | None = None
+    dependency: str | None = None
+    compromise_flow: str = "downstream"
+    source: str = "analyst"
+    notes: str = ""
+    propagate: bool = True
+
+
 @app.get("/api/sessions/{session_ref}/nodes")
 def search_nodes(session_ref: str, q: str = "", concept_type: str | None = None, limit: int = 50):
     session = _resolve_session_ref(session_ref)
@@ -382,6 +410,91 @@ def patch_node_properties(session_ref: str, req: NodePropertiesRequest):
         raise HTTPException(404, "Session not found")
     except ValueError as exc:
         raise HTTPException(404, str(exc))
+
+
+@app.get("/api/sessions/{session_ref}/markings")
+def get_markings(session_ref: str):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.list_markings(session.session_id)
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+
+
+@app.post("/api/sessions/{session_ref}/markings")
+def post_markings(session_ref: str, req: MarkNodesRequest):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.mark_nodes(
+            session.session_id,
+            req.refs,
+            compromised=req.compromised,
+            high_value=req.high_value,
+            source=req.source,
+            clear=req.clear,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/sessions/{session_ref}/markings/alert")
+def post_markings_from_alert(session_ref: str, req: MarkAlertRequest):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.mark_from_alert(
+            session.session_id,
+            compromised_refs=req.compromised or None,
+            high_value_refs=req.high_value or None,
+            source=req.source,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/sessions/{session_ref}/relationships")
+def post_relationship(session_ref: str, req: DeclareRelationshipRequest):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.declare_relationship(
+            session.session_id,
+            relationship=req.relationship,
+            from_ref=req.from_ref,
+            to_ref=req.to_ref,
+            supplier=req.supplier,
+            consumer=req.consumer,
+            dependent=req.dependent,
+            dependency=req.dependency,
+            compromise_flow=req.compromise_flow,
+            source=req.source,
+            notes=req.notes,
+            propagate=req.propagate,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/sessions/{session_ref}/relationships")
+def get_relationships(session_ref: str):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.list_relationships(session.session_id)
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+
+
+@app.post("/api/sessions/{session_ref}/relationships/propagate")
+def post_propagate_compromise(session_ref: str):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.propagate_compromise(session.session_id)
+    except KeyError:
+        raise HTTPException(404, "Session not found")
 
 
 @app.get("/api/sessions/{session_ref}/search-suggestions")
@@ -414,13 +527,16 @@ def _run_session_graph_query(
         start = SESSION_STORE.resolve_start_node(session_id, req.start)
         if not start:
             raise HTTPException(400, "Start node not found")
+        end_node_id = req.end_node_id
+        if end_node_id:
+            end_node_id = SESSION_STORE.resolve_end_node(session_id, end_node_id) or end_node_id
         result = SESSION_STORE.run_graph_query(
             session_id,
             start_node_id=start,
             mode=req.mode,
             target_concept=req.target_concept,
             target_resource_type=req.target_resource_type,
-            end_node_id=req.end_node_id,
+            end_node_id=end_node_id,
             end_id_contains=req.end_id_contains,
             rel_types=req.rel_types,
             max_depth=req.max_depth,
@@ -548,62 +664,26 @@ def ontology():
     return export_ontology()
 
 
-@app.post("/api/sessions/sample")
-def create_sample_session():
-    record = SESSION_STORE.load_sample_session()
+@app.get("/api/fixtures")
+def list_fixtures():
+    from samoyed.fixtures.registry import list_fixtures
+
+    return list_fixtures(demo_only=True)
+
+
+@app.post("/api/sessions/fixtures/{fixture_id}")
+def import_fixture_session(fixture_id: str):
+    try:
+        record = SESSION_STORE.load_fixture(fixture_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown fixture: {fixture_id}")
+    except FileNotFoundError as exc:
+        raise HTTPException(500, str(exc))
     return {
         "session_id": record.session_id,
+        "short_name": record.metadata.get("short_name"),
         "caller_arn": record.caller_arn,
-        "metadata": record.metadata,
-    }
-
-
-@app.post("/api/sessions/sample-k8s")
-def create_sample_k8s_session():
-    record = SESSION_STORE.load_sample_k8s_session()
-    return {
-        "session_id": record.session_id,
-        "caller_arn": record.caller_arn,
-        "metadata": record.metadata,
-    }
-
-
-@app.post("/api/sessions/sample-gcp")
-def create_sample_gcp_session():
-    record = SESSION_STORE.load_sample_gcp_session()
-    return {
-        "session_id": record.session_id,
-        "caller_arn": record.caller_arn,
-        "metadata": record.metadata,
-    }
-
-
-@app.post("/api/sessions/sample-azure")
-def create_sample_azure_session():
-    record = SESSION_STORE.load_sample_azure_session()
-    return {
-        "session_id": record.session_id,
-        "caller_arn": record.caller_arn,
-        "metadata": record.metadata,
-    }
-
-
-@app.post("/api/sessions/sample-host")
-def create_sample_host_session():
-    record = SESSION_STORE.load_sample_host_session()
-    return {
-        "session_id": record.session_id,
-        "caller_arn": record.caller_arn,
-        "metadata": record.metadata,
-    }
-
-
-@app.post("/api/sessions/sample-enterprise")
-def create_sample_enterprise_session():
-    record = SESSION_STORE.load_sample_enterprise_session()
-    return {
-        "session_id": record.session_id,
-        "caller_arn": record.caller_arn,
+        "fixture_id": record.metadata.get("fixture_id"),
         "metadata": record.metadata,
     }
 

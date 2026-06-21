@@ -842,7 +842,7 @@ async function refreshSessions(opts = {}) {
       hint.textContent =
         scope === "ids"
           ? "No matching session"
-          : "No sessions yet — run enum/probe/import, or load a demo sample above";
+          : "No sessions yet — run enum/probe/import, or import a demo report above";
       hint.style.display = "block";
     }
     return;
@@ -884,10 +884,55 @@ async function refreshSessions(opts = {}) {
   }
 }
 
-async function loadDemoSample(endpoint) {
-  const s = await fetchJSON(endpoint, { method: "POST" });
+async function loadFixturesCatalog() {
+  const select = document.getElementById("fixtureSelect");
+  if (!select) return;
+  const fixtures = await fetchJSON("/api/fixtures");
+  select.innerHTML = "";
+  fixtures.forEach((f) => {
+    const opt = document.createElement("option");
+    opt.value = f.id;
+    opt.textContent = `${f.id} — ${f.description}`;
+    select.appendChild(opt);
+  });
+}
+
+async function loadFixtureSession() {
+  const fixtureId = document.getElementById("fixtureSelect")?.value;
+  if (!fixtureId) return;
+  const s = await fetchJSON(`/api/sessions/fixtures/${fixtureId}`, { method: "POST" });
   await refreshSessions({ scope: "ids", ids: [s.session_id], autoLoad: true, loadId: s.session_id });
   return s;
+}
+
+async function markSelectedNode({ compromised, high_value, clear = false }) {
+  if (!state.sessionId || !state.selectedNodeId) return alert("Select a node first");
+  const status = document.getElementById("markStatus");
+  status.textContent = "Updating…";
+  try {
+    const body = {
+      refs: [state.selectedNodeId],
+      source: "ui",
+      clear,
+    };
+    if (compromised !== undefined) body.compromised = compromised;
+    if (high_value !== undefined) body.high_value = high_value;
+    const result = await fetchJSON(`/api/sessions/${state.sessionId}/markings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
+    renderGraph(graph);
+    selectNode(state.selectedNodeId);
+    const marked = result.marked?.[0];
+    status.textContent = marked
+      ? `Marked — compromised: ${!!marked.is_compromised}, high-value: ${!!marked.is_high_value}`
+      : "No changes";
+  } catch (err) {
+    status.textContent = "";
+    alert(`Mark failed: ${err.message || err}`);
+  }
 }
 
 async function appendProperty() {
@@ -939,12 +984,7 @@ document.getElementById("sessionScope").onchange = (event) => {
     refreshSessions({ scope: "recent", limit: 1, autoLoad: true });
   }
 };
-document.getElementById("loadAwsSample").onclick = () => loadDemoSample("/api/sessions/sample");
-document.getElementById("loadK8sSample").onclick = () => loadDemoSample("/api/sessions/sample-k8s");
-document.getElementById("loadGcpSample").onclick = () => loadDemoSample("/api/sessions/sample-gcp");
-document.getElementById("loadAzureSample").onclick = () => loadDemoSample("/api/sessions/sample-azure");
-document.getElementById("loadHostSample").onclick = () => loadDemoSample("/api/sessions/sample-host");
-document.getElementById("loadEnterpriseSample").onclick = () => loadDemoSample("/api/sessions/sample-enterprise");
+document.getElementById("loadFixture").onclick = () => loadFixtureSession();
 document.getElementById("runSearch").onclick = () => runPathQuery({});
 document.getElementById("startSearch").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -969,6 +1009,10 @@ document.getElementById("focusCaller").onclick = () => {
   if (state.callerNodeId) state.network.focus(state.callerNodeId, { scale: 1.2, animation: true });
 };
 document.getElementById("appendProp").onclick = appendProperty;
+document.getElementById("markCompromised").onclick = () => markSelectedNode({ compromised: true });
+document.getElementById("markHighValue").onclick = () => markSelectedNode({ high_value: true });
+document.getElementById("clearMarkings").onclick = () =>
+  markSelectedNode({ compromised: false, high_value: false, clear: true });
 document.getElementById("searchMode").onchange = updateTargetFieldsVisibility;
 
 document.querySelectorAll(".tab").forEach((tab) => {
@@ -992,5 +1036,5 @@ document.getElementById("sessions").addEventListener("keydown", (event) => {
 initNetwork();
 updateTargetFieldsVisibility();
 initAuth()
-  .then(() => Promise.all([loadConnectors(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
-  .catch(() => Promise.all([loadConnectors(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));
+  .then(() => Promise.all([loadConnectors(), loadFixturesCatalog(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
+  .catch(() => Promise.all([loadConnectors(), loadFixturesCatalog(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));

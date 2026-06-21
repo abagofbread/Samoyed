@@ -369,68 +369,25 @@ def firing_range_enum_cmd(
     typer.echo("Run: samoyed scenario leaked-credential --session-id " + record.session_id)
 
 
-@app.command("load-sample")
-def load_sample_cmd(session_id: str = typer.Option("sample-lab", help="Session ID for sample graph")) -> None:
-    """Load offline sample graph (no cloud APIs required)."""
-    record = SESSION_STORE.load_sample_session(session_id)
-    typer.echo(f"Session {record.session_id}")
-    typer.echo(f"Caller: {record.caller_arn}")
-    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
-    typer.echo("Run: samoyed scenario leaked-credential --session-id " + record.session_id)
-
-
-@app.command("load-sample-k8s")
-def load_sample_k8s_cmd(session_id: str = typer.Option("sample-k8s", help="Session ID for K8s sample graph")) -> None:
-    """Load offline Kubernetes sample graph (no cluster required)."""
-    record = SESSION_STORE.load_sample_k8s_session(session_id)
-    typer.echo(f"Session {record.session_id}")
-    typer.echo(f"Caller: {record.caller_arn}")
-    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
-    typer.echo("Run: samoyed scenario compromised-sa --session-id " + record.session_id)
-    typer.echo("Run: samoyed scenario pod-escape --session-id " + record.session_id)
-
-
-@app.command("load-sample-gcp")
-def load_sample_gcp_cmd(session_id: str = typer.Option("sample-gcp", help="Session ID for GCP sample graph")) -> None:
-    """Load offline GCP sample graph (no cloud account required)."""
-    record = SESSION_STORE.load_sample_gcp_session(session_id)
-    typer.echo(f"Session {record.session_id}")
-    typer.echo(f"Caller: {record.caller_arn}")
-    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
-    typer.echo("Run: samoyed scenario leaked-credential --session-id " + record.session_id)
-
-
-@app.command("load-sample-azure")
-def load_sample_azure_cmd(session_id: str = typer.Option("sample-azure", help="Session ID for Azure sample graph")) -> None:
-    """Load offline Azure sample graph (no cloud account required)."""
-    record = SESSION_STORE.load_sample_azure_session(session_id)
-    typer.echo(f"Session {record.session_id}")
-    typer.echo(f"Caller: {record.caller_arn}")
-    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
-    typer.echo("Run: samoyed scenario leaked-credential --session-id " + record.session_id)
-
-
-@app.command("load-sample-host")
-def load_sample_host_cmd(session_id: str = typer.Option("sample-host", help="Session ID for host compromise sample graph")) -> None:
-    """Load offline host-compromise sample (multi-hop laptop → cloud pivot)."""
-    record = SESSION_STORE.load_sample_host_session(session_id)
-    typer.echo(f"Session {record.session_id}")
-    typer.echo(f"Caller: {record.caller_arn}")
-    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
-    typer.echo("Run: samoyed scenario host-compromise --session-id " + record.session_id)
-
-
-@app.command("load-sample-enterprise")
-def load_sample_enterprise_cmd(
-    session_id: str = typer.Option("sample-enterprise", help="Session ID for enterprise mock environment"),
+@app.command("import-fixture")
+def import_fixture_cmd(
+    fixture_id: str = typer.Argument(..., help="Fixture id (lab-aws, enterprise-aws, k8s-lab, …)"),
+    session_id: str | None = typer.Option(None, help="Optional session id override"),
 ) -> None:
-    """Load dense corp mock graph (marketing, EKS, EC2 metadata STS chains)."""
-    record = SESSION_STORE.load_sample_enterprise_session(session_id)
+    """Import a bundled field report through the connector pipeline (no cloud APIs)."""
+    try:
+        record = SESSION_STORE.load_fixture(fixture_id, session_id=session_id)
+    except KeyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
     typer.echo(f"Session {record.session_id}")
+    typer.echo(f"Fixture: {record.metadata.get('fixture_id')}")
     typer.echo(f"Caller: {record.caller_arn}")
     typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
-    typer.echo(f"Storylines: {', '.join(record.metadata.get('storylines', []))}")
-    typer.echo("Try path search: caller → SecretStore (max depth 12)")
+    typer.echo(f"Source: {record.metadata.get('source')} ({record.metadata.get('collected_via', 'file')})")
 
 
 @app.command("import-cartography")

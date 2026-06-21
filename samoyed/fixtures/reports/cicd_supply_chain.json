@@ -1,0 +1,47 @@
+{
+  "account_id": "123456789012",
+  "provider": "aws",
+  "source": "samoyed-client",
+  "collected_via": "fixture-export",
+  "identities": [
+    {
+      "arn": "arn:aws:iam::123456789012:user/leaked-dev",
+      "id": "arn:aws:iam::123456789012:user/leaked-dev",
+      "name": "leaked-dev",
+      "kind": "User",
+      "is_caller": true,
+      "display_name": "leaked-dev"
+    }
+  ],
+  "resources": [
+    {
+      "id": "S3Bucket:artifact-bucket",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "artifact-bucket",
+      "display_name": "artifact-bucket"
+    },
+    {
+      "id": "aws:codebuild:build-pipeline",
+      "concept": "Workload",
+      "type": "CICDPipeline",
+      "name": "build-pipeline",
+      "display_name": "build-pipeline"
+    },
+    {
+      "id": "kubernetes:workload:prod:payment-api",
+      "concept": "Workload",
+      "type": "Resource",
+      "name": "payment-api",
+      "display_name": "prod-workloads"
+    }
+  ],
+  "grants": [
+    {
+      "from": "arn:aws:iam::123456789012:user/leaked-dev",
+      "to": "S3Bucket:artifact-bucket",
+      "rel": "WRITES"
+    }
+  ],
+  "caller_arn": "arn:aws:iam::123456789012:user/leaked-dev"
+}

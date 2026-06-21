@@ -1,0 +1,103 @@
+{
+  "account_id": "samoyed-lab",
+  "provider": "kubernetes",
+  "source": "samoyed-client",
+  "collected_via": "fixture-export",
+  "identities": [
+    {
+      "id": "kubernetes:serviceaccount:default:app-sa",
+      "name": "app-sa",
+      "kind": "ServiceAccount",
+      "is_caller": true,
+      "display_name": "default/app-sa",
+      "namespace": "default"
+    },
+    {
+      "id": "kubernetes:serviceaccount:default:irsa-sa",
+      "name": "irsa-sa",
+      "kind": "ServiceAccount",
+      "namespace": "default"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/eks-workload-admin",
+      "id": "arn:aws:iam::111111111111:role/eks-workload-admin",
+      "kind": "Role",
+      "provider": "aws"
+    }
+  ],
+  "resources": [
+    {
+      "id": "kubernetes:secret:default:db-credentials",
+      "concept": "SecretStore",
+      "type": "KubernetesSecret",
+      "name": "db-credentials",
+      "namespace": "default"
+    },
+    {
+      "id": "kubernetes:api:samoyed-lab",
+      "concept": "ManagementEndpoint",
+      "type": "KubernetesAPI",
+      "cluster": "samoyed-lab"
+    },
+    {
+      "id": "kubernetes:pod:default:evil-pod",
+      "concept": "Workload",
+      "type": "Pod",
+      "name": "evil-pod",
+      "namespace": "default"
+    },
+    {
+      "id": "kubernetes:escape:default:evil-pod:docker-socket",
+      "concept": "EscapeSurface",
+      "type": "Resource",
+      "severity": "critical"
+    },
+    {
+      "id": "kubernetes:node:host:samoyed-lab",
+      "concept": "RuntimeBinding",
+      "type": "NodeHost",
+      "cluster": "samoyed-lab"
+    }
+  ],
+  "grants": [
+    {
+      "from": "kubernetes:serviceaccount:default:app-sa",
+      "to": "kubernetes:secret:default:db-credentials",
+      "rel": "READS",
+      "confidence": "explicit",
+      "role": "secret-reader"
+    },
+    {
+      "from": "kubernetes:serviceaccount:default:app-sa",
+      "to": "kubernetes:api:samoyed-lab",
+      "rel": "CAN_ACCESS",
+      "confidence": "explicit",
+      "role": "secret-reader"
+    },
+    {
+      "from": "kubernetes:serviceaccount:default:irsa-sa",
+      "to": "arn:aws:iam::111111111111:role/eks-workload-admin",
+      "rel": "PROJECTS_TO",
+      "binding_type": "IRSA"
+    },
+    {
+      "from": "kubernetes:pod:default:evil-pod",
+      "to": "kubernetes:serviceaccount:default:app-sa",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "kubernetes:pod:default:evil-pod",
+      "to": "kubernetes:escape:default:evil-pod:docker-socket",
+      "rel": "HAS_ESCAPE_SURFACE"
+    },
+    {
+      "from": "kubernetes:escape:default:evil-pod:docker-socket",
+      "to": "kubernetes:node:host:samoyed-lab",
+      "rel": "CAN_ESCAPE_TO",
+      "severity": "critical"
+    }
+  ],
+  "caller_arn": "kubernetes:serviceaccount:default:app-sa",
+  "scope_id": "kubernetes:cluster:samoyed-lab"
+}

@@ -17,6 +17,7 @@ CAPABILITY_WEIGHT = {
     "PROJECTS_TO": 0.85,
     "USES_IMAGE": 0.6,
     "PULLS_FROM": 0.6,
+    "DEPENDS_ON": 0.75,
     "CAN_REACH": 0.4,
     "HAS_ESCAPE_SURFACE": 0.3,
 }

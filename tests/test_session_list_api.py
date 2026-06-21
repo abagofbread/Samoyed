@@ -8,8 +8,9 @@ from samoyed.sessions import SESSION_STORE, is_demo_session
 client = TestClient(app)
 
 
-def test_is_demo_session_detects_samples():
+def test_is_demo_session_detects_fixtures():
     assert is_demo_session("sample-lab", {"sample": True})
+    assert is_demo_session("fixture-lab-aws", {"fixture_id": "lab-aws"})
     assert is_demo_session("sample-enterprise", {})
     assert not is_demo_session("a43f7186-1e9d-42f0-beb2-e5ba459aaa69", {"source": "cloudfox"})
 
@@ -20,33 +21,33 @@ def test_list_sessions_recent_excludes_demos(tmp_path, monkeypatch):
         "cloudfox",
         b'{"account_id":"1","findings":[{"principal":"arn:aws:iam::1:user/x","resource":"S3Bucket:a","capability":"reads"}]}',
     )
-    SESSION_STORE.load_sample_session("sample-lab")
+    SESSION_STORE.load_fixture("lab-aws", session_id="fixture-lab-aws")
 
     recent = client.get("/api/sessions?scope=recent&limit=1")
     assert recent.status_code == 200
     data = recent.json()
     assert len(data) == 1
     assert not data[0].get("is_demo")
-    assert data[0]["session_id"] != "sample-lab"
+    assert data[0]["session_id"] != "fixture-lab-aws"
 
     all_resp = client.get("/api/sessions?scope=all")
     assert all_resp.status_code == 200
     ids = {s["session_id"] for s in all_resp.json()}
-    assert "sample-lab" not in ids
+    assert "fixture-lab-aws" not in ids
 
     with_demos = client.get("/api/sessions?scope=all&include_demos=true")
-    assert "sample-lab" in {s["session_id"] for s in with_demos.json()}
+    assert "fixture-lab-aws" in {s["session_id"] for s in with_demos.json()}
 
 
 def test_list_sessions_by_ids(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    record = SESSION_STORE.load_sample_enterprise_session("sample-enterprise")
+    record = SESSION_STORE.load_fixture("enterprise-aws", session_id="fixture-enterprise")
 
     res = client.get(f"/api/sessions?scope=ids&ids={record.session_id}")
     assert res.status_code == 200
     data = res.json()
     assert len(data) == 1
-    assert data[0]["session_id"] == "sample-enterprise"
+    assert data[0]["session_id"] == "fixture-enterprise"
     assert data[0]["is_demo"] is True
 
 

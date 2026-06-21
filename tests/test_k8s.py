@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from samoyed.enumerators.k8s.escape_surface import analyze_pod_spec
 from samoyed.enumerators.k8s.helpers import rule_grants
-from samoyed.graph.sample_k8s import build_sample_k8s_graph
 from samoyed.path_engine.search import find_attack_paths
 from samoyed.scenarios.k8s import CompromisedSaScenario, PodEscapeScenario
+from samoyed.sessions import SESSION_STORE
+
+
+def _k8s_snapshot(tmp_path, monkeypatch, session_id: str):
+    monkeypatch.chdir(tmp_path)
+    return SESSION_STORE.load_fixture("k8s-lab", session_id=session_id).snapshot
 
 
 def test_analyze_pod_privileged_and_docker_sock():
@@ -41,8 +46,8 @@ def test_rule_grants_cluster_admin():
     assert ("CAN_ACCESS", "ManagementEndpoint") in grants
 
 
-def test_sample_k8s_compromised_sa_scenario():
-    snapshot = build_sample_k8s_graph("k8s-test")
+def test_k8s_fixture_compromised_sa_scenario(tmp_path, monkeypatch):
+    snapshot = _k8s_snapshot(tmp_path, monkeypatch, "k8s-test")
     caller = next(n for n in snapshot.nodes.values() if n.props.get("is_caller"))
     paths = CompromisedSaScenario().run(snapshot, caller.node_id)
     assert len(paths) >= 1
@@ -55,8 +60,8 @@ def test_sample_k8s_compromised_sa_scenario():
     assert len(secret_paths) >= 1
 
 
-def test_sample_k8s_pod_escape_scenario():
-    snapshot = build_sample_k8s_graph("k8s-escape-test")
+def test_k8s_fixture_pod_escape_scenario(tmp_path, monkeypatch):
+    snapshot = _k8s_snapshot(tmp_path, monkeypatch, "k8s-escape-test")
     pod = next(n for n in snapshot.nodes.values() if n.props.get("name") == "evil-pod")
     paths = PodEscapeScenario().run(snapshot, pod.node_id)
     assert len(paths) >= 1

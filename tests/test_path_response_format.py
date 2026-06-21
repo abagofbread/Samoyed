@@ -9,8 +9,9 @@ from samoyed.sessions import SESSION_STORE
 client = TestClient(app)
 
 
-def test_format_path_query_response_summary():
-    record = SESSION_STORE.load_sample_session("format-test")
+def test_format_path_query_response_summary(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="format-test")
     start = SESSION_STORE.find_caller_node(record)
     raw = {
         "paths": [
@@ -42,7 +43,7 @@ def test_format_path_query_response_summary():
 
 def test_blast_get_jq_friendly(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    record = SESSION_STORE.load_sample_session("jq-blast-test")
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="jq-blast-test")
     start = SESSION_STORE.find_caller_node(record)
     res = client.get(
         f"/api/sessions/{record.session_id}/paths/blast",
@@ -58,7 +59,7 @@ def test_blast_get_jq_friendly(tmp_path, monkeypatch):
 
 def test_paths_query_post_includes_summary(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    record = SESSION_STORE.load_sample_session("jq-post-test")
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="jq-post-test")
     res = client.post(
         f"/api/sessions/{record.session_id}/paths/query",
         json={"start": "caller", "mode": "blast", "max_depth": 6},

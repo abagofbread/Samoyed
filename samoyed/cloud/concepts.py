@@ -74,6 +74,7 @@ TRAVERSABLE_REL_TYPES = frozenset(
         "CAN_ESCAPE_TO",
         "USES_IMAGE",
         "PULLS_FROM",
+        "DEPENDS_ON",
         "CAN_ACCESS",
         "PROJECTS_TO",
         "HOSTED_IN",

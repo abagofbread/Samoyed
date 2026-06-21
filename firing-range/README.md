@@ -94,7 +94,7 @@ pytest tests/test_firing_range.py tests/test_client_iam_report.py -m "not integr
 
 | Mode | Use when |
 |------|----------|
-| `samoyed load-sample` | UI/tests without Docker |
+| `samoyed import-fixture lab-aws` | UI/tests without Docker — field report JSON via connector pipeline |
 | `samoyed firing-range *` | Live enum, probes, client reports, ScoutSuite against LocalStack |
 
 ## Teardown

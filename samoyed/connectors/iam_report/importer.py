@@ -12,9 +12,15 @@ CONCEPT_MAP = {
     "DataStore": ConceptType.DATA_STORE,
     "SecretStore": ConceptType.SECRET_STORE,
     "RuntimeBinding": ConceptType.RUNTIME_BINDING,
+    "Workload": ConceptType.WORKLOAD,
+    "EscapeSurface": ConceptType.ESCAPE_SURFACE,
     "Entitlement": ConceptType.ENTITLEMENT,
     "Trust": ConceptType.TRUST,
     "ManagementEndpoint": ConceptType.MANAGEMENT_ENDPOINT,
+    "OrchestrationScope": ConceptType.ORCHESTRATION_SCOPE,
+    "ScopeBoundary": ConceptType.SCOPE_BOUNDARY,
+    "RegistryStore": ConceptType.REGISTRY_STORE,
+    "NetworkExposure": ConceptType.NETWORK_EXPOSURE,
 }
 
 
@@ -28,9 +34,19 @@ def import_iam_report(
     if not isinstance(data, dict):
         raise ValueError("IAM report must be a JSON object")
 
+    provider_name = str(data.get("provider") or "aws").lower()
+    provider = CloudProvider(provider_name)
     account_id = str(data.get("account_id") or data.get("account") or "unknown")
-    scope_id, scope_display = aws_scope(account_id)
-    artifacts = list(_artifacts_from_report(data, scope_id=scope_id, account_id=account_id))
+    if data.get("scope_id"):
+        scope_id = str(data["scope_id"])
+        scope_display = data.get("scope_display") or scope_id
+    elif provider == CloudProvider.AWS:
+        scope_id, scope_display = aws_scope(account_id)
+    else:
+        scope_id = data.get("scope_id") or f"{provider_name}:scope:{account_id}"
+        scope_display = data.get("scope_display") or scope_id
+
+    artifacts = list(_artifacts_from_report(data, scope_id=scope_id, account_id=account_id, provider=provider))
     resolved_caller = caller_arn or data.get("caller_arn")
     builder, meta = build_session_from_artifacts(
         artifacts,
@@ -39,8 +55,16 @@ def import_iam_report(
         scope_id=scope_id,
         scope_display=scope_display,
         caller_arn=resolved_caller,
-        account_id=account_id,
+        provider=provider,
+        account_id=account_id if provider == CloudProvider.AWS else None,
     )
+    if data.get("scenario"):
+        meta["scenario"] = data["scenario"]
+    if data.get("metadata"):
+        meta.update(data["metadata"])
+    meta["report_source"] = data.get("source")
+    meta["collected_via"] = data.get("collected_via")
+    meta["provider"] = provider.value
     return builder, meta
 
 
@@ -49,23 +73,32 @@ def _artifacts_from_report(
     *,
     scope_id: str,
     account_id: str,
+    provider: CloudProvider = CloudProvider.AWS,
 ) -> Iterator[ConceptArtifact]:
     for identity in data.get("identities") or []:
         arn = identity.get("arn") or identity.get("id")
         if not arn:
             continue
+        props = {
+            "native_kind": identity.get("kind") or _kind_from_arn(arn),
+            "arn": identity.get("arn") or (arn if arn.startswith("arn:") else None),
+            "name": identity.get("name"),
+            "display_name": identity.get("display_name") or identity.get("name") or arn,
+            "source": "iam-report",
+        }
+        if identity.get("is_caller"):
+            props["is_caller"] = True
+        if identity.get("is_scenario_start"):
+            props["is_scenario_start"] = True
+        for key in ("ou", "namespace", "provider", "notes"):
+            if identity.get(key) is not None:
+                props[key] = identity[key]
         yield ConceptArtifact(
             concept_type=ConceptType.IDENTITY,
-            provider=CloudProvider.AWS,
+            provider=provider,
             native_id=arn,
             scope_id=scope_id,
-            properties={
-                "native_kind": identity.get("kind") or _kind_from_arn(arn),
-                "arn": arn,
-                "name": identity.get("name"),
-                "display_name": identity.get("display_name") or identity.get("name") or arn,
-                "source": "iam-report",
-            },
+            properties=props,
             evidence=Evidence("iam-report:identity", {"arn": arn}),
             edges=_grants_for(data, from_id=arn),
         )
@@ -76,18 +109,25 @@ def _artifacts_from_report(
             continue
         concept_name = resource.get("concept") or resource.get("concept_type") or "DataStore"
         concept = CONCEPT_MAP.get(concept_name, ConceptType.DATA_STORE)
+        props = {
+            "resource_type": resource.get("type") or resource.get("resource_type"),
+            "name": resource.get("name"),
+            "display_name": resource.get("display_name") or resource.get("name") or native_id,
+            "source": "iam-report",
+        }
+        if resource.get("is_scenario_start"):
+            props["is_scenario_start"] = True
+        for key in ("bucket_name", "function_name", "namespace", "cluster", "ou", "severity", "instance_id"):
+            if resource.get(key) is not None:
+                props[key] = resource[key]
         yield ConceptArtifact(
             concept_type=concept,
-            provider=CloudProvider.AWS,
+            provider=provider,
             native_id=native_id,
             scope_id=scope_id,
-            properties={
-                "resource_type": resource.get("type") or resource.get("resource_type"),
-                "name": resource.get("name"),
-                "display_name": resource.get("display_name") or resource.get("name") or native_id,
-                "source": "iam-report",
-            },
+            properties=props,
             evidence=Evidence("iam-report:resource", {"id": native_id}),
+            edges=_grants_for(data, from_id=native_id),
         )
 
     if not data.get("identities") and data.get("grants"):
@@ -97,7 +137,7 @@ def _artifacts_from_report(
                 continue
             yield ConceptArtifact(
                 concept_type=ConceptType.IDENTITY,
-                provider=CloudProvider.AWS,
+                provider=provider,
                 native_id=src,
                 scope_id=scope_id,
                 properties={

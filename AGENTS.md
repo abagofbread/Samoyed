@@ -47,7 +47,7 @@ samoyed firing-range seed
 samoyed firing-range enum
 ```
 
-See [firing-range/README.md](firing-range/README.md). Offline `load-sample` graphs remain for UI/tests only.
+See [firing-range/README.md](firing-range/README.md). Offline demos use bundled field report fixtures (`import-fixture`) imported through the connector pipeline.
 
 ## Extension boundary
 
@@ -85,9 +85,31 @@ class MyInternalApiEnumerator:
 ## MCP tools
 
 - `list_sessions`, `get_session_summary`
+- `list_markings`, `mark_nodes`, `mark_from_alert` — declare compromised starts and crown-jewel targets
 - `find_attack_paths`, `get_blast_radius`
 - `search_nodes`, `run_scenario`
 - Resource: `samoyed://ontology`
+
+Mark nodes over MCP (session_id optional — defaults to most recent):
+
+```json
+mark_nodes('["arn:aws:iam::123:user/jane"]', compromised=true)
+mark_nodes('["prod-db", "corp-vault"]', high_value=true)
+mark_from_alert('{"compromised":["arn:..."], "high_value":["prod-db"]}')
+```
+
+Declare controlling dependencies (compromise propagates dependency → dependent):
+
+```python
+declare_relationship(dependent="build-pipeline", dependency="artifact-bucket")
+declare_relationship(dependent="prod-workloads", dependency="build-pipeline")
+mark_nodes('["leaked-dev"]', compromised=True)
+# WRITES taints bucket; DEPENDS_ON chains to pipeline and prod
+```
+
+`PULLS_FROM` / `USES_IMAGE` remain factual enum edges; use `DEPENDS_ON` for analyst supply-chain control points.
+
+Start aliases: `caller`, `host`, `compromised`. Target alias: `target_concept=high_value`.
 
 ## API access probing (bug bounty / low-priv keys)
 

@@ -3,9 +3,9 @@ from __future__ import annotations
 from samoyed.cloud.ontology import export_ontology
 from samoyed.cloud.providers import make_scope_id, parse_scope_id
 from samoyed.cloud.concepts import CloudProvider
-from samoyed.graph.sample import build_sample_graph
 from samoyed.path_engine.search import find_attack_paths
 from samoyed.scenarios.leaked_credential import LeakedCredentialScenario
+from samoyed.sessions import SESSION_STORE
 
 
 def test_export_ontology_has_mappings():
@@ -24,8 +24,10 @@ def test_scope_id_roundtrip():
     assert ident == "123456789012"
 
 
-def test_sample_graph_scenario():
-    snapshot = build_sample_graph("test-sample")
+def test_lab_fixture_leaked_credential_scenario(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="test-sample")
+    snapshot = record.snapshot
     caller = next(n for n in snapshot.nodes.values() if n.props.get("is_caller"))
     paths = LeakedCredentialScenario().run(snapshot, caller.node_id)
     assert len(paths) >= 1

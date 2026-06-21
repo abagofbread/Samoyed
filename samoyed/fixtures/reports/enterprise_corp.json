@@ -1,0 +1,661 @@
+{
+  "account_id": "111111111111",
+  "provider": "aws",
+  "source": "samoyed-client",
+  "collected_via": "fixture-export",
+  "identities": [
+    {
+      "arn": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "id": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "name": "marketing-analyst",
+      "kind": "User",
+      "display_name": "marketing-analyst",
+      "ou": "marketing-sales"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/marketing-lambda-exec",
+      "id": "arn:aws:iam::111111111111:role/marketing-lambda-exec",
+      "name": "marketing-lambda-exec",
+      "kind": "Role",
+      "display_name": "marketing-lambda-exec",
+      "ou": "marketing-sales"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "id": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "name": "marketing-web-instance",
+      "kind": "Role",
+      "display_name": "marketing-web-instance",
+      "ou": "marketing-sales"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/codepipeline-deploy",
+      "id": "arn:aws:iam::111111111111:role/codepipeline-deploy",
+      "name": "codepipeline-deploy",
+      "kind": "Role",
+      "display_name": "codepipeline-deploy",
+      "ou": "platform"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/cicd-build-runner-instance",
+      "id": "arn:aws:iam::111111111111:role/cicd-build-runner-instance",
+      "name": "cicd-build-runner-instance",
+      "kind": "Role",
+      "display_name": "cicd-build-runner-instance",
+      "ou": "platform"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/stray-security-audit",
+      "id": "arn:aws:iam::111111111111:role/stray-security-audit",
+      "name": "stray-security-audit",
+      "kind": "Role",
+      "display_name": "stray-security-audit",
+      "ou": "legacy",
+      "notes": "Orphaned read-only role with unexpected sts:AssumeRole grants"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/engineering-poweruser",
+      "id": "arn:aws:iam::111111111111:role/engineering-poweruser",
+      "name": "engineering-poweruser",
+      "kind": "Role",
+      "display_name": "engineering-poweruser",
+      "ou": "engineering"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/organization-admin",
+      "id": "arn:aws:iam::111111111111:role/organization-admin",
+      "name": "organization-admin",
+      "kind": "Role",
+      "display_name": "organization-admin",
+      "ou": "corp"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "id": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "name": "CIDeployEngineering",
+      "kind": "Role",
+      "display_name": "CIDeployEngineering",
+      "ou": "engineering"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/engineering-eks-access",
+      "id": "arn:aws:iam::111111111111:role/engineering-eks-access",
+      "name": "engineering-eks-access",
+      "kind": "Role",
+      "display_name": "engineering-eks-access",
+      "ou": "engineering"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/eks-irsa-vault-reader",
+      "id": "arn:aws:iam::111111111111:role/eks-irsa-vault-reader",
+      "name": "eks-irsa-vault-reader",
+      "kind": "Role",
+      "display_name": "eks-irsa-vault-reader",
+      "ou": "engineering"
+    },
+    {
+      "id": "kubernetes:serviceaccount:platform:secrets-writer",
+      "name": "platform/secrets-writer",
+      "kind": "ServiceAccount",
+      "display_name": "platform/secrets-writer",
+      "provider": "kubernetes",
+      "namespace": "platform"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/readonly-auditor",
+      "id": "arn:aws:iam::111111111111:role/readonly-auditor",
+      "name": "readonly-auditor",
+      "kind": "Role",
+      "display_name": "readonly-auditor",
+      "ou": "security"
+    }
+  ],
+  "resources": [
+    {
+      "id": "aws:account:111111111111",
+      "concept": "ScopeBoundary",
+      "type": "Resource",
+      "name": "Corp production account",
+      "display_name": "Corp production account"
+    },
+    {
+      "id": "aws:ou:marketing-sales",
+      "concept": "ScopeBoundary",
+      "type": "Resource",
+      "name": "Marketing / Sales OU",
+      "display_name": "Marketing / Sales OU"
+    },
+    {
+      "id": "aws:ou:engineering",
+      "concept": "ScopeBoundary",
+      "type": "Resource",
+      "name": "Engineering OU",
+      "display_name": "Engineering OU"
+    },
+    {
+      "id": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:campaign-sync",
+      "concept": "RuntimeBinding",
+      "type": "LambdaFunction",
+      "function_name": "campaign-sync",
+      "ou": "marketing-sales"
+    },
+    {
+      "id": "S3Bucket:marketing-assets",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "marketing-assets",
+      "bucket_name": "marketing-assets",
+      "ou": "marketing-sales"
+    },
+    {
+      "id": "S3Bucket:sales-leads-export",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "sales-leads-export",
+      "bucket_name": "sales-leads-export",
+      "ou": "marketing-sales"
+    },
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:sales/hubspot-token",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "sales/hubspot-token",
+      "ou": "marketing-sales"
+    },
+    {
+      "id": "S3Bucket:marketing-creative-archive",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "marketing-creative-archive",
+      "bucket_name": "marketing-creative-archive",
+      "ou": "marketing-sales"
+    },
+    {
+      "id": "policy:marketing-lambda-passrole",
+      "concept": "Entitlement",
+      "type": "Resource"
+    },
+    {
+      "id": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-marketing-web",
+      "concept": "RuntimeBinding",
+      "type": "EC2Instance",
+      "name": "marketing-web (IMDS)",
+      "is_scenario_start": true,
+      "display_name": "marketing-web (IMDS)",
+      "ou": "marketing-sales"
+    },
+    {
+      "id": "CodePipeline:arn:aws:codepipeline:us-east-1:111111111111:corp-deploy-pipeline",
+      "concept": "ManagementEndpoint",
+      "type": "CodePipeline",
+      "ou": "platform"
+    },
+    {
+      "id": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-cicd-build-runner",
+      "concept": "RuntimeBinding",
+      "type": "EC2Instance",
+      "name": "cicd-build-runner (IMDS)",
+      "display_name": "cicd-build-runner (IMDS)",
+      "ou": "platform"
+    },
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:prod/platform-master",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "prod/platform-master"
+    },
+    {
+      "id": "S3Bucket:corp-secret-vault",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "corp-secret-vault",
+      "bucket_name": "corp-secret-vault",
+      "ou": "engineering"
+    },
+    {
+      "id": "EKSCluster:arn:aws:eks:us-east-1:111111111111:cluster/corp-dev-eks",
+      "concept": "OrchestrationScope",
+      "type": "EKSCluster",
+      "ou": "engineering"
+    },
+    {
+      "id": "EKSApi:arn:aws:eks:us-east-1:111111111111:cluster/corp-dev-eks",
+      "concept": "ManagementEndpoint",
+      "type": "EKSCluster",
+      "ou": "engineering"
+    },
+    {
+      "id": "kubernetes:pod:platform:secret-harvest",
+      "concept": "Workload",
+      "type": "Pod",
+      "name": "secret-harvest",
+      "namespace": "platform",
+      "ou": "engineering"
+    },
+    {
+      "id": "kubernetes:secret:platform:vault-bootstrap-token",
+      "concept": "SecretStore",
+      "type": "KubernetesSecret",
+      "name": "vault-bootstrap-token",
+      "namespace": "platform"
+    },
+    {
+      "id": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:ci-worker",
+      "concept": "RuntimeBinding",
+      "type": "LambdaFunction",
+      "function_name": "ci-worker",
+      "ou": "engineering"
+    },
+    {
+      "id": "S3Bucket:public-website-static",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "public-website-static",
+      "bucket_name": "public-website-static"
+    },
+    {
+      "id": "policy:ci-deploy-lambda-privesc",
+      "concept": "Entitlement",
+      "type": "Resource"
+    }
+  ],
+  "grants": [
+    {
+      "from": "aws:ou:marketing-sales",
+      "to": "aws:account:111111111111",
+      "rel": "HOSTED_IN",
+      "confidence": "explicit"
+    },
+    {
+      "from": "aws:ou:engineering",
+      "to": "aws:account:111111111111",
+      "rel": "HOSTED_IN",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:campaign-sync",
+      "rel": "CONTROLS",
+      "action": "lambda:UpdateFunctionCode",
+      "confidence": "explicit"
+    },
+    {
+      "from": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:campaign-sync",
+      "to": "arn:aws:iam::111111111111:role/marketing-lambda-exec",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit",
+      "execution_role_arn": "arn:aws:iam::111111111111:role/marketing-lambda-exec"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/marketing-lambda-exec",
+      "to": "S3Bucket:marketing-assets",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/marketing-lambda-exec",
+      "to": "S3Bucket:sales-leads-export",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/marketing-lambda-exec",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:sales/hubspot-token",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "S3Bucket:marketing-creative-archive",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-marketing-web",
+      "to": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit",
+      "source": "instance-profile"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "to": "CodePipeline:arn:aws:codepipeline:us-east-1:111111111111:corp-deploy-pipeline",
+      "rel": "CONTROLS",
+      "action": "codepipeline:StartPipelineExecution",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "to": "arn:aws:iam::111111111111:role/codepipeline-deploy",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit",
+      "via": "pipeline-start-passrole"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/codepipeline-deploy",
+      "to": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-cicd-build-runner",
+      "rel": "CONTROLS",
+      "action": "ssm:StartSession",
+      "confidence": "explicit"
+    },
+    {
+      "from": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-cicd-build-runner",
+      "to": "arn:aws:iam::111111111111:role/cicd-build-runner-instance",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit",
+      "source": "instance-profile"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/cicd-build-runner-instance",
+      "to": "arn:aws:iam::111111111111:role/stray-security-audit",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/stray-security-audit",
+      "to": "arn:aws:iam::111111111111:role/engineering-poweruser",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/engineering-poweruser",
+      "to": "arn:aws:iam::111111111111:role/organization-admin",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/organization-admin",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:prod/platform-master",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/organization-admin",
+      "to": "S3Bucket:corp-secret-vault",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/engineering-eks-access",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/engineering-eks-access",
+      "to": "EKSApi:arn:aws:eks:us-east-1:111111111111:cluster/corp-dev-eks",
+      "rel": "CAN_ACCESS",
+      "action": "eks:AccessKubernetesApi",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/engineering-eks-access",
+      "to": "kubernetes:pod:platform:secret-harvest",
+      "rel": "CONTROLS",
+      "action": "rbac:pods:create",
+      "confidence": "explicit"
+    },
+    {
+      "from": "kubernetes:pod:platform:secret-harvest",
+      "to": "kubernetes:serviceaccount:platform:secrets-writer",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "kubernetes:serviceaccount:platform:secrets-writer",
+      "to": "kubernetes:secret:platform:vault-bootstrap-token",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "kubernetes:serviceaccount:platform:secrets-writer",
+      "to": "arn:aws:iam::111111111111:role/eks-irsa-vault-reader",
+      "rel": "PROJECTS_TO",
+      "confidence": "explicit",
+      "binding_type": "IRSA"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/eks-irsa-vault-reader",
+      "to": "S3Bucket:corp-secret-vault",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/engineering-poweruser",
+      "to": "arn:aws:iam::111111111111:role/engineering-eks-access",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/engineering-poweruser",
+      "to": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:ci-worker",
+      "rel": "CONTROLS",
+      "action": "lambda:UpdateFunctionCode",
+      "confidence": "explicit"
+    },
+    {
+      "from": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:ci-worker",
+      "to": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "EKSCluster:arn:aws:eks:us-east-1:111111111111:cluster/corp-dev-eks",
+      "to": "aws:ou:engineering",
+      "rel": "HOSTED_IN",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/readonly-auditor",
+      "to": "S3Bucket:public-website-static",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "to": "S3Bucket:public-website-static",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/marketing-lambda-exec",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/codepipeline-deploy",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/cicd-build-runner-instance",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/stray-security-audit",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/engineering-poweruser",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/organization-admin",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/engineering-eks-access",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/eks-irsa-vault-reader",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "kubernetes:serviceaccount:platform:secrets-writer",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/marketing-analyst",
+      "to": "arn:aws:iam::111111111111:role/readonly-auditor",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/marketing-lambda-exec",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/codepipeline-deploy",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/cicd-build-runner-instance",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/stray-security-audit",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/engineering-poweruser",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/organization-admin",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/engineering-eks-access",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/eks-irsa-vault-reader",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "kubernetes:serviceaccount:platform:secrets-writer",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/readonly-auditor",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "to": "arn:aws:iam::111111111111:role/CIDeployEngineering",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "explicit",
+      "source": "hacktricks",
+      "severity": "critical"
+    }
+  ],
+  "caller_arn": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-marketing-web",
+  "scenario": "enterprise-mock"
+}

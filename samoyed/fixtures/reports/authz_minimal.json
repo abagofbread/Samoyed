@@ -1,0 +1,59 @@
+{
+  "source": "aws:get-account-authorization-details",
+  "account_id": "111111111111",
+  "UserDetailList": [
+    {
+      "Arn": "arn:aws:iam::111111111111:user/alice",
+      "UserName": "alice",
+      "AttachedManagedPolicies": [],
+      "UserPolicyList": [
+        {
+          "PolicyName": "assume-admin",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": "sts:AssumeRole",
+                "Resource": "arn:aws:iam::111111111111:role/admin"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "RoleDetailList": [
+    {
+      "Arn": "arn:aws:iam::111111111111:role/admin",
+      "RoleName": "admin",
+      "AssumeRolePolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {"AWS": "arn:aws:iam::111111111111:user/alice"},
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "AttachedManagedPolicies": [],
+      "RolePolicyList": [
+        {
+          "PolicyName": "read-secrets",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": "arn:aws:secretsmanager:us-east-1:111111111111:secret:prod-db"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "Policies": []
+}

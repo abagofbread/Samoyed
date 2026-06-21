@@ -12,9 +12,22 @@ References:
 from samoyed.attack.analyzer import apply_attack_analysis
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.graph.builder import GraphBuilder
-from samoyed.graph.sample_host import build_sample_host_graph
 from samoyed.path_engine.explain import explain_path
 from samoyed.path_engine.search import find_attack_paths, get_blast_radius
+from samoyed.sessions import SESSION_STORE
+
+
+def _host_snapshot(tmp_path, monkeypatch, session_id: str):
+    monkeypatch.chdir(tmp_path)
+    return SESSION_STORE.load_fixture("host-pivot", session_id=session_id).snapshot
+
+
+def _host_node(snapshot):
+    return next(
+        n
+        for n in snapshot.nodes.values()
+        if n.props.get("resource_type") == "CompromisedHost" or n.props.get("is_scenario_start")
+    )
 
 
 def _build_aws_deployment_role_chain() -> tuple[object, str, str]:
@@ -176,19 +189,15 @@ def test_rhino_lambda_passrole_three_hop_chain():
     assert "Lambda create + invoke" in (privesc_step.evidence.get("pattern_name") or "")
 
 
-def test_host_compromise_lambda_pivot_four_hop_chain():
+def test_host_compromise_lambda_pivot_four_hop_chain(tmp_path, monkeypatch):
     """
     Compromised laptop → harvest dev creds → Lambda code takeover → execution role → secret.
 
-    Longest path in sample-host uses Rhino-style lambda:UpdateFunctionCode against
+    Longest path in host-pivot uses Rhino-style lambda:UpdateFunctionCode against
     internal-tool, which EXECUTES_AS the admin role.
     """
-    snapshot = build_sample_host_graph("host-chain-test")
-    host = next(
-        n.node_id
-        for n in snapshot.nodes.values()
-        if n.props.get("native_kind") == "CompromisedHost"
-    )
+    snapshot = _host_snapshot(tmp_path, monkeypatch, "host-chain-test")
+    host = _host_node(snapshot).node_id
     secret = next(
         n.node_id
         for n in snapshot.nodes.values()
@@ -213,14 +222,10 @@ def test_host_compromise_lambda_pivot_four_hop_chain():
     ).lower()
 
 
-def test_host_compromise_sso_cache_three_hop_chain():
+def test_host_compromise_sso_cache_three_hop_chain(tmp_path, monkeypatch):
     """Shorter path: ~/.aws/sso/cache → dev user → assume admin role → prod secret."""
-    snapshot = build_sample_host_graph("host-chain-test")
-    host = next(
-        n.node_id
-        for n in snapshot.nodes.values()
-        if n.props.get("native_kind") == "CompromisedHost"
-    )
+    snapshot = _host_snapshot(tmp_path, monkeypatch, "host-chain-test")
+    host = _host_node(snapshot).node_id
 
     paths = find_attack_paths(snapshot, start_node_id=host, target_concept="SecretStore", max_depth=10)
     sso_paths = [

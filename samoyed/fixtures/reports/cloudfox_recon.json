@@ -1,0 +1,18 @@
+{
+  "account_id": "333333333333",
+  "findings": [
+    {
+      "principal": "arn:aws:iam::333333333333:user/carol",
+      "resource": "S3Bucket:sensitive-data",
+      "capability": "reads",
+      "action": "s3:ListBucket"
+    },
+    {
+      "principal": "arn:aws:iam::333333333333:user/carol",
+      "resource": "Secret:arn:aws:secretsmanager:us-east-1:333333333333:secret:api-key",
+      "capability": "reads",
+      "action": "secretsmanager:GetSecretValue"
+    }
+  ],
+  "source": "cloudfox-export"
+}

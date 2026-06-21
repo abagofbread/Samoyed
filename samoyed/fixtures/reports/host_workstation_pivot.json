@@ -1,0 +1,117 @@
+{
+  "account_id": "111111111111",
+  "provider": "aws",
+  "source": "samoyed-client",
+  "collected_via": "fixture-export",
+  "identities": [
+    {
+      "arn": "arn:aws:iam::111111111111:user/dev-bob",
+      "id": "arn:aws:iam::111111111111:user/dev-bob",
+      "name": "arn:aws:iam::111111111111:user/dev-bob",
+      "kind": "User",
+      "display_name": "arn:aws:iam::111111111111:user/dev-bob",
+      "provider": "aws"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/admin",
+      "id": "arn:aws:iam::111111111111:role/admin",
+      "kind": "Role"
+    },
+    {
+      "id": "azure:user:bob@corp.com",
+      "name": "azure:user:bob@corp.com",
+      "kind": "User",
+      "display_name": "azure:user:bob@corp.com",
+      "provider": "azure"
+    }
+  ],
+  "resources": [
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:prod-db",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "prod-db"
+    },
+    {
+      "id": "StorageAccount:corpdata",
+      "concept": "DataStore",
+      "type": "StorageAccount"
+    },
+    {
+      "id": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:internal-tool",
+      "concept": "RuntimeBinding",
+      "type": "LambdaFunction",
+      "function_name": "internal-tool"
+    },
+    {
+      "id": "host:workstation:bob-laptop",
+      "concept": "Workload",
+      "type": "CompromisedHost",
+      "name": "Bob's developer laptop",
+      "is_scenario_start": true,
+      "display_name": "Bob's developer laptop"
+    }
+  ],
+  "grants": [
+    {
+      "from": "host:workstation:bob-laptop",
+      "to": "azure:user:bob@corp.com",
+      "rel": "LOGGED_IN_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:bob-laptop",
+      "to": "azure:user:bob@corp.com",
+      "rel": "CAN_STEAL_CREDS_FROM",
+      "action": "host:interactive-session",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:bob-laptop",
+      "to": "arn:aws:iam::111111111111:user/dev-bob",
+      "rel": "STORES_CREDS_FOR",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:bob-laptop",
+      "to": "arn:aws:iam::111111111111:user/dev-bob",
+      "rel": "CAN_STEAL_CREDS_FROM",
+      "action": "host:credential-store",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/dev-bob",
+      "to": "arn:aws:iam::111111111111:role/admin",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/admin",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:prod-db",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "azure:user:bob@corp.com",
+      "to": "StorageAccount:corpdata",
+      "rel": "READS",
+      "confidence": "explicit",
+      "role": "Storage Blob Data Contributor"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/dev-bob",
+      "to": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:internal-tool",
+      "rel": "CONTROLS",
+      "action": "lambda:UpdateFunctionCode",
+      "confidence": "explicit"
+    },
+    {
+      "from": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:internal-tool",
+      "to": "arn:aws:iam::111111111111:role/admin",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit",
+      "execution_role_arn": "arn:aws:iam::111111111111:role/admin"
+    }
+  ],
+  "caller_arn": "host:workstation:bob-laptop"
+}

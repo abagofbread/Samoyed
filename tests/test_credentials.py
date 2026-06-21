@@ -6,9 +6,34 @@ from unittest.mock import MagicMock, patch
 from samoyed.credentials.aws import AwsCredential, is_access_denied
 from samoyed.credentials.loader import load_aws_credential
 from samoyed.graph.neighbors import get_neighbors
-from samoyed.graph.sample import build_sample_graph
 from samoyed.path_engine.explain import explain_path
 from samoyed.path_engine.search import find_attack_paths
+from samoyed.sessions import SESSION_STORE
+
+
+def test_get_neighbors_on_lab_fixture(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="neighbor-test")
+    caller = next(n for n in record.snapshot.nodes.values() if n.props.get("is_caller"))
+    neighbors = get_neighbors(record.snapshot, caller.node_id)
+    assert len(neighbors) >= 1
+    assert neighbors[0]["rel_type"] == "CAN_ASSUME_ROLE"
+
+
+def test_explain_path_on_lab_fixture(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="explain-test")
+    snapshot = record.snapshot
+    caller = next(n for n in snapshot.nodes.values() if n.props.get("is_caller"))
+    secret_paths = find_attack_paths(
+        snapshot, start_node_id=caller.node_id, target_concept="SecretStore", max_depth=4
+    )
+    explanation = explain_path(snapshot, secret_paths[0])
+    assert "summary" in explanation
+    assert len(explanation["steps"]) >= 1
+    assert "CAN_ASSUME_ROLE" in explanation["summary"] or any(
+        s["relationship"] == "CAN_ASSUME_ROLE" for s in explanation["steps"]
+    )
 
 
 def test_from_key_file(tmp_path: Path):
@@ -51,24 +76,3 @@ def test_is_access_denied():
     exc = ClientError({"Error": {"Code": "AccessDenied", "Message": "nope"}}, "GetObject")
     assert is_access_denied(exc) is True
 
-
-def test_get_neighbors_on_sample_graph():
-    snapshot = build_sample_graph("neighbor-test")
-    caller = next(n for n in snapshot.nodes.values() if n.props.get("is_caller"))
-    neighbors = get_neighbors(snapshot, caller.node_id)
-    assert len(neighbors) >= 1
-    assert neighbors[0]["rel_type"] == "CAN_ASSUME_ROLE"
-
-
-def test_explain_path_on_sample_scenario():
-    snapshot = build_sample_graph("explain-test")
-    caller = next(n for n in snapshot.nodes.values() if n.props.get("is_caller"))
-    secret_paths = find_attack_paths(
-        snapshot, start_node_id=caller.node_id, target_concept="SecretStore", max_depth=4
-    )
-    explanation = explain_path(snapshot, secret_paths[0])
-    assert "summary" in explanation
-    assert len(explanation["steps"]) >= 1
-    assert "CAN_ASSUME_ROLE" in explanation["summary"] or any(
-        s["relationship"] == "CAN_ASSUME_ROLE" for s in explanation["steps"]
-    )

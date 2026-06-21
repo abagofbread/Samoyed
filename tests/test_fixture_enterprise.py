@@ -3,32 +3,34 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from samoyed.api.main import app
-from samoyed.graph.sample_enterprise import build_sample_enterprise_graph
 from samoyed.path_engine.search import find_attack_paths
 from samoyed.sessions import SESSION_STORE
 
 client = TestClient(app)
 
 
-def _enterprise_start(snapshot):
-    return next(
+def _load_enterprise(tmp_path, monkeypatch, session_id: str = "enterprise-fixture"):
+    monkeypatch.chdir(tmp_path)
+    record = SESSION_STORE.load_fixture("enterprise-aws", session_id=session_id)
+    snapshot = record.snapshot
+    start = next(
         node_id
         for node_id, node in snapshot.nodes.items()
         if node.props.get("is_scenario_start")
     )
+    return record, snapshot, start
 
 
-def test_enterprise_graph_has_three_storyline_targets():
-    snapshot = build_sample_enterprise_graph("enterprise-structure")
+def test_enterprise_fixture_has_storyline_targets(tmp_path, monkeypatch):
+    _, snapshot, _ = _load_enterprise(tmp_path, monkeypatch, "enterprise-structure")
     native_ids = {n.props.get("native_id") for n in snapshot.nodes.values()}
     assert "S3Bucket:corp-secret-vault" in native_ids
     assert "S3Bucket:sales-leads-export" in native_ids
     assert any("prod/platform-master" in str(nid) for nid in native_ids)
 
 
-def test_metadata_sts_chain_reaches_prod_secret():
-    snapshot = build_sample_enterprise_graph("enterprise-sts")
-    start = _enterprise_start(snapshot)
+def test_enterprise_fixture_sts_chain_reaches_prod_secret(tmp_path, monkeypatch):
+    _, snapshot, start = _load_enterprise(tmp_path, monkeypatch, "enterprise-sts")
     secret = next(
         nid
         for nid, n in snapshot.nodes.items()
@@ -51,9 +53,8 @@ def test_metadata_sts_chain_reaches_prod_secret():
     assert len(best.steps) >= 7
 
 
-def test_engineering_path_reaches_vault_bucket():
-    snapshot = build_sample_enterprise_graph("enterprise-eks")
-    start = _enterprise_start(snapshot)
+def test_enterprise_fixture_engineering_path_reaches_vault_bucket(tmp_path, monkeypatch):
+    _, snapshot, start = _load_enterprise(tmp_path, monkeypatch, "enterprise-eks")
     vault = next(
         nid for nid, n in snapshot.nodes.items() if n.props.get("bucket_name") == "corp-secret-vault"
     )
@@ -67,8 +68,8 @@ def test_engineering_path_reaches_vault_bucket():
     assert len(longest.steps) >= 8
 
 
-def test_marketing_analyst_lambda_path_to_sales_secret():
-    snapshot = build_sample_enterprise_graph("enterprise-marketing")
+def test_enterprise_fixture_marketing_analyst_lambda_path_to_sales_secret(tmp_path, monkeypatch):
+    _, snapshot, _ = _load_enterprise(tmp_path, monkeypatch, "enterprise-marketing")
     analyst = next(
         nid
         for nid, n in snapshot.nodes.items()
@@ -84,13 +85,14 @@ def test_marketing_analyst_lambda_path_to_sales_secret():
     assert any(sales_secret in p.node_ids for p in paths)
 
 
-def test_create_sample_enterprise_session_api():
-    res = client.post("/api/sessions/sample-enterprise")
+def test_import_enterprise_fixture_session_api(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    res = client.post("/api/sessions/fixtures/enterprise-aws")
     assert res.status_code == 200
     data = res.json()
     assert data["session_id"]
     assert "i-marketing-web" in data["caller_arn"]
-    assert data["metadata"]["scenario"] == "enterprise-mock"
+    assert data["metadata"].get("fixture_id") == "enterprise-aws"
 
     resolved = SESSION_STORE.resolve_start_node(data["session_id"], "caller")
     assert resolved

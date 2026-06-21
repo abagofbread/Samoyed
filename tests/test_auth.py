@@ -23,13 +23,14 @@ def authed_client(monkeypatch):
     return TestClient(app)
 
 
-def test_auth_disabled_allows_api_access():
+def test_auth_disabled_allows_api_access(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     client = TestClient(app)
     res = client.get("/api/auth/status")
     assert res.status_code == 200
     assert res.json()["auth_required"] is False
 
-    record = SESSION_STORE.load_sample_session("auth-open-test")
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="auth-open-test")
     res = client.get(f"/api/sessions/{record.session_id}/graph")
     assert res.status_code == 200
 

@@ -21,23 +21,16 @@
         <h3>Sessions</h3>
         <div class="row">
           <button id="refreshSessions" class="ghost">Refresh</button>
-          <button id="loadAwsSample" class="ghost">AWS sample</button>
         </div>
-        <div class="row">
-          <button id="loadGcpSample" class="ghost">GCP sample</button>
-          <button id="loadAzureSample" class="ghost">Azure sample</button>
-        </div>
-        <div class="row">
-          <button id="loadK8sSample" class="ghost">K8s sample</button>
-          <button id="loadHostSample" class="ghost">Host sample</button>
-        </div>
-        <button id="loadEnterpriseSample" class="ghost" style="margin-top:8px;width:100%">Enterprise mock</button>
+        <label>Demo reports (field fixtures)</label>
+        <select id="fixtureSelect"></select>
+        <button id="loadFixture" class="ghost" style="margin-top:8px;width:100%">Import fixture</button>
+        <p class="empty" id="sessionsHint">Loads your latest session by default — import a demo report above to explore</p>
         <label style="margin-top:12px">Session list</label>
         <select id="sessionScope">
           <option value="recent" selected>Most recent</option>
           <option value="all">All sessions</option>
         </select>
-        <p class="empty" id="sessionsHint">Loads your latest session by default — demos appear only when you click a sample above</p>
         <ul id="sessions" class="list"></ul>
       </div>
 
@@ -167,6 +160,13 @@
         <div id="nodeDetail" style="display:none">
           <div id="nodeTitle" style="font-weight:600;font-size:13px;margin-bottom:8px"></div>
           <pre id="nodeProps"></pre>
+
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button id="markCompromised" class="primary">Mark compromised</button>
+            <button id="markHighValue">Mark high-value</button>
+            <button id="clearMarkings">Clear markings</button>
+          </div>
+          <p id="markStatus" class="hint" style="margin-top:8px"></p>
 
           <h3 style="margin-top:16px">Append property</h3>
           <label>Key</label>

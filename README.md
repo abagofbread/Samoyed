@@ -24,25 +24,25 @@ docker compose up -d   # optional Neo4j persistence
 ## Usage
 
 ```bash
-# Offline sample graph (no cloud account needed)
-samoyed load-sample
-samoyed scenario leaked-credential --session-id sample-lab
+# Offline demo reports (field-realistic iam-report / cloudfox / authz JSON — no cloud account)
+samoyed import-fixture lab-aws
+samoyed scenario leaked-credential --session-id fixture-lab-aws
+
+samoyed import-fixture k8s-lab
+samoyed scenario compromised-sa --session-id fixture-k8s-lab
+
+samoyed import-fixture enterprise-aws   # multi-hop corp environment
+samoyed import-fixture host-pivot        # compromised laptop → cloud creds
+samoyed import-fixture cicd-supply-chain # supply-chain dependency marking demo
+
+# List bundled fixtures
+samoyed import-fixture --list
 
 # Emulated vulnerable AWS lab (LocalStack — no lab data in repo)
 samoyed firing-range up
 samoyed firing-range seed
 samoyed firing-range enum
 # See firing-range/README.md
-
-# Offline Kubernetes sample (no cluster needed)
-samoyed load-sample-k8s
-samoyed scenario compromised-sa --session-id sample-k8s
-
-# Offline GCP / Azure samples
-samoyed load-sample-gcp
-samoyed scenario leaked-credential --session-id sample-gcp
-samoyed load-sample-azure
-samoyed scenario leaked-credential --session-id sample-azure
 
 # Live GCP (service account JSON or ADC + pip install 'samoyed[gcp]')
 samoyed enum --provider gcp --key-file sa.json

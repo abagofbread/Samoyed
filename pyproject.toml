@@ -4,6 +4,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["samoyed"]
+force-include = { "samoyed/fixtures/reports" = "samoyed/fixtures/reports" }
 
 [project]
 name = "samoyed"

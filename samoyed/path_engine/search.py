@@ -4,6 +4,7 @@ import hashlib
 from collections import deque
 
 from samoyed.cloud.concepts import TRAVERSABLE_REL_TYPES
+from samoyed.graph.markings import DEFAULT_BLAST_CONCEPTS, find_high_value_nodes, is_high_value
 from samoyed.graph.model import GraphSnapshot
 from samoyed.path_engine.models import PathResult, PathStep
 from samoyed.path_engine.scoring import score_path
@@ -35,6 +36,8 @@ def _matches_custom_target(
         ) + " " + node_id
         if end_id_contains.lower() in haystack.lower():
             return True
+    if target_concept in {"high_value", "HighValue", "crown_jewel", "crown-jewel"}:
+        return is_high_value(node_props)
     if not target_concept and not target_resource_type and not end_node_id and not end_id_contains:
         return False
     return _matches_target(node_props, target_concept, target_resource_type)
@@ -129,7 +132,7 @@ def get_blast_radius(
     target_concepts: list[str] | None = None,
     max_depth: int = 6,
 ) -> list[PathResult]:
-    target_concepts = target_concepts or ["AttackOutcome", "SecretStore", "DataStore", "Identity"]
+    target_concepts = target_concepts or list(DEFAULT_BLAST_CONCEPTS)
     all_paths: list[PathResult] = []
     seen: set[str] = set()
     for concept in target_concepts:
@@ -139,6 +142,17 @@ def get_blast_radius(
             target_concept=concept,
             max_depth=max_depth,
             max_paths=5,
+        ):
+            if path.path_id not in seen:
+                seen.add(path.path_id)
+                all_paths.append(path)
+    for node_id in find_high_value_nodes(graph):
+        for path in find_attack_paths(
+            graph,
+            start_node_id=start_node_id,
+            end_node_id=node_id,
+            max_depth=max_depth,
+            max_paths=3,
         ):
             if path.path_id not in seen:
                 seen.add(path.path_id)
