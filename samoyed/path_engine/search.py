@@ -17,18 +17,45 @@ def _matches_target(node_props: dict, target_concept: str | None, target_resourc
     return False
 
 
+def _matches_custom_target(
+    node_id: str,
+    node_props: dict,
+    *,
+    target_concept: str | None,
+    target_resource_type: str | None,
+    end_node_id: str | None,
+    end_id_contains: str | None,
+) -> bool:
+    if end_node_id and node_id == end_node_id:
+        return True
+    if end_id_contains:
+        haystack = " ".join(
+            str(node_props.get(key) or "")
+            for key in ("native_id", "arn", "display_name", "name", "bucket_name")
+        ) + " " + node_id
+        if end_id_contains.lower() in haystack.lower():
+            return True
+    if not target_concept and not target_resource_type and not end_node_id and not end_id_contains:
+        return False
+    return _matches_target(node_props, target_concept, target_resource_type)
+
+
 def find_attack_paths(
     graph: GraphSnapshot,
     *,
     start_node_id: str,
     target_concept: str | None = None,
     target_resource_type: str | None = None,
+    end_node_id: str | None = None,
+    end_id_contains: str | None = None,
+    rel_types: set[str] | None = None,
     max_depth: int = 6,
     max_paths: int = 10,
 ) -> list[PathResult]:
     if start_node_id not in graph.nodes:
         return []
 
+    allowed_rels = rel_types or TRAVERSABLE_REL_TYPES
     results: list[PathResult] = []
     queue: deque[tuple[str, int, list[str], list[tuple[str, str, dict]]]] = deque()
     queue.append((start_node_id, 0, [start_node_id], []))
@@ -39,7 +66,7 @@ def find_attack_paths(
             continue
 
         for dst_id, rel_type, props in graph.adjacency.get(current, []):
-            if rel_type not in TRAVERSABLE_REL_TYPES:
+            if rel_type not in allowed_rels:
                 continue
             if dst_id in node_seq:
                 continue
@@ -51,10 +78,17 @@ def find_attack_paths(
             dst_node = graph.nodes.get(dst_id)
             dst_props_dict = dst_node.props if dst_node else {}
 
-            if _matches_target(dst_props_dict, target_concept, target_resource_type):
-                rel_types = [e[1] for e in next_edges]
+            if _matches_custom_target(
+                dst_id,
+                dst_props_dict,
+                target_concept=target_concept,
+                target_resource_type=target_resource_type,
+                end_node_id=end_node_id,
+                end_id_contains=end_id_contains,
+            ):
+                path_rel_types = [e[1] for e in next_edges]
                 edge_props = [e[3] for e in next_edges]
-                score = score_path(rel_types, edge_props)
+                score = score_path(path_rel_types, edge_props)
                 steps = [
                     PathStep(
                         step_index=i,

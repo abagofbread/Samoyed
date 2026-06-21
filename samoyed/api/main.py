@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -24,6 +25,13 @@ app = FastAPI(title="Samoyed", version="0.1.0")
 app.add_middleware(AuthMiddleware)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _resolve_session_ref(session_ref: str | None):
+    record = SESSION_STORE.resolve_session_ref(session_ref)
+    if not record:
+        raise HTTPException(404, "Session not found")
+    return record
 
 
 class CartographyImportRequest(BaseModel):
@@ -240,37 +248,82 @@ def probe_catalog(provider: str = "aws", high_value_only: bool = False):
     ]
 
 
+@app.get("/api/connectors")
+def list_connectors():
+    from samoyed.connectors.registry import list_connectors as registry_list
+
+    return registry_list()
+
+
+@app.post("/api/sessions/import")
+async def import_session_report(
+    connector: str = Form(...),
+    file: UploadFile = File(...),
+    caller_arn: str | None = Form(None),
+):
+    from samoyed.connectors.registry import CONNECTORS
+
+    if connector not in CONNECTORS:
+        raise HTTPException(400, f"Unknown connector: {connector}")
+    if not CONNECTORS[connector].get("file_import"):
+        raise HTTPException(400, f"Connector {connector} does not accept file upload")
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(400, "Empty file")
+
+    try:
+        record = SESSION_STORE.create_import_session(
+            connector,
+            payload,
+            caller_arn=caller_arn or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid JSON: {exc}")
+
+    return {
+        "session_id": record.session_id,
+        "caller_arn": record.caller_arn,
+        "metadata": record.metadata,
+    }
+
+
 @app.get("/api/sessions")
-def list_sessions():
-    return [
-        {
-            "session_id": s.session_id,
-            "caller_arn": s.caller_arn,
-            "created_at": s.created_at,
-            "metadata": s.metadata,
-        }
-        for s in SESSION_STORE.list_sessions()
-    ]
+def list_sessions(
+    scope: str = Query("recent", pattern="^(recent|all|ids)$"),
+    limit: int | None = Query(None, ge=1, le=500),
+    include_demos: bool = Query(False),
+    ids: str | None = Query(None, description="Comma-separated session IDs when scope=ids"),
+):
+    session_ids = [part.strip() for part in ids.split(",") if part.strip()] if ids else None
+    if scope == "ids" and not session_ids:
+        raise HTTPException(400, "scope=ids requires ids parameter")
+    effective_limit = limit if limit is not None else (500 if scope == "all" else 1)
+    return SESSION_STORE.list_session_summaries(
+        scope=scope,
+        limit=effective_limit,
+        include_demos=include_demos,
+        session_ids=session_ids,
+    )
 
 
-@app.get("/api/sessions/{session_id}")
-def get_session(session_id: str):
-    s = SESSION_STORE.get(session_id)
-    if not s:
-        raise HTTPException(404, "Session not found")
+@app.get("/api/sessions/{session_ref}")
+def get_session(session_ref: str):
+    s = _resolve_session_ref(session_ref)
     return {
         "session_id": s.session_id,
+        "short_name": s.metadata.get("short_name"),
         "caller_arn": s.caller_arn,
         "metadata": s.metadata,
         "denials": [d.__dict__ for d in s.denial_log.records],
     }
 
 
-@app.get("/api/sessions/{session_id}/graph")
-def get_graph(session_id: str):
-    s = SESSION_STORE.get(session_id)
-    if not s:
-        raise HTTPException(404, "Session not found")
+@app.get("/api/sessions/{session_ref}/graph")
+def get_graph(session_ref: str):
+    s = _resolve_session_ref(session_ref)
     return {
         "nodes": [
             {"id": n.node_id, "label": n.label, **n.props} for n in s.snapshot.nodes.values()
@@ -286,8 +339,24 @@ class PathQueryRequest(BaseModel):
     start: str | None = "caller"
     target_concept: str | None = None
     target_resource_type: str | None = None
+    end_node_id: str | None = None
+    end_id_contains: str | None = None
+    rel_types: list[str] | None = None
     max_depth: int = 6
+    max_paths: int = 20
     mode: str = "paths"  # paths | blast | neighbors
+
+
+class GraphQueryRequest(BaseModel):
+    start: str | None = "caller"
+    mode: str = "paths"
+    target_concept: str | None = None
+    target_resource_type: str | None = None
+    end_node_id: str | None = None
+    end_id_contains: str | None = None
+    rel_types: list[str] | None = None
+    max_depth: int = 6
+    max_paths: int = 20
 
 
 class NodePropertiesRequest(BaseModel):
@@ -295,49 +364,79 @@ class NodePropertiesRequest(BaseModel):
     properties: dict[str, Any]
 
 
-@app.get("/api/sessions/{session_id}/nodes")
-def search_nodes(session_id: str, q: str = "", concept_type: str | None = None, limit: int = 50):
+@app.get("/api/sessions/{session_ref}/nodes")
+def search_nodes(session_ref: str, q: str = "", concept_type: str | None = None, limit: int = 50):
+    session = _resolve_session_ref(session_ref)
     try:
-        return SESSION_STORE.search_nodes(session_id, q=q, concept_type=concept_type, limit=limit)
+        return SESSION_STORE.search_nodes(session.session_id, q=q, concept_type=concept_type, limit=limit)
     except KeyError:
         raise HTTPException(404, "Session not found")
 
 
-@app.patch("/api/sessions/{session_id}/nodes")
-def patch_node_properties(session_id: str, req: NodePropertiesRequest):
+@app.patch("/api/sessions/{session_ref}/nodes")
+def patch_node_properties(session_ref: str, req: NodePropertiesRequest):
+    session = _resolve_session_ref(session_ref)
     try:
-        return SESSION_STORE.update_node_properties(session_id, req.node_id, req.properties)
+        return SESSION_STORE.update_node_properties(session.session_id, req.node_id, req.properties)
     except KeyError:
         raise HTTPException(404, "Session not found")
     except ValueError as exc:
         raise HTTPException(404, str(exc))
 
 
-@app.get("/api/sessions/{session_id}/search-suggestions")
-def get_search_suggestions(session_id: str, limit: int = 10):
-    if not SESSION_STORE.get(session_id):
-        raise HTTPException(404, "Session not found")
-    return suggest_searches(SESSION_STORE, session_id, limit=limit)
+@app.get("/api/sessions/{session_ref}/search-suggestions")
+def get_search_suggestions(session_ref: str, limit: int = 10):
+    session = _resolve_session_ref(session_ref)
+    return suggest_searches(SESSION_STORE, session.session_id, limit=limit)
 
 
-@app.post("/api/sessions/{session_id}/paths/query")
-def query_paths_post(session_id: str, req: PathQueryRequest):
+@app.post("/api/sessions/{session_ref}/paths/query")
+def query_paths_post(session_ref: str, req: PathQueryRequest):
+    return _run_session_graph_query(session_ref, req)
+
+
+@app.post("/api/sessions/{session_ref}/graph/query")
+def graph_query_post(session_ref: str, req: GraphQueryRequest):
+    return _run_session_graph_query(session_ref, req)
+
+
+def _run_session_graph_query(
+    session_ref: str,
+    req: PathQueryRequest | GraphQueryRequest,
+    *,
+    graph_query: bool = False,
+):
+    from samoyed.path_engine.format import format_path_query_response
+
     try:
+        session = _resolve_session_ref(session_ref)
+        session_id = session.session_id
         start = SESSION_STORE.resolve_start_node(session_id, req.start)
         if not start:
             raise HTTPException(400, "Start node not found")
-        if req.mode == "blast":
-            paths = SESSION_STORE.blast_radius(
-                session_id, start_node_id=start, max_depth=req.max_depth
-            )
-        elif req.mode == "neighbors":
-            neighbors = SESSION_STORE.get_neighbors(session_id, start)
+        result = SESSION_STORE.run_graph_query(
+            session_id,
+            start_node_id=start,
+            mode=req.mode,
+            target_concept=req.target_concept,
+            target_resource_type=req.target_resource_type,
+            end_node_id=req.end_node_id,
+            end_id_contains=req.end_id_contains,
+            rel_types=req.rel_types,
+            max_depth=req.max_depth,
+            max_paths=req.max_paths,
+        )
+        if req.mode == "neighbors" and result.get("nodes"):
             paths = [
                 {
                     "path_id": f"neighbor-{i}",
                     "score": 0.5,
                     "node_ids": [start, n["node_id"]],
-                    "target_match": {"node_id": n["node_id"], "concept_type": n["props"].get("concept_type")},
+                    "target_match": {
+                        "node_id": n["node_id"],
+                        "concept_type": n["props"].get("concept_type"),
+                        "resource_type": n["props"].get("resource_type"),
+                    },
                     "steps": [
                         {
                             "step": 0,
@@ -347,33 +446,61 @@ def query_paths_post(session_id: str, req: PathQueryRequest):
                         }
                     ],
                 }
-                for i, n in enumerate(neighbors)
+                for i, n in enumerate(result["nodes"])
             ]
-            return {"start": start, "mode": req.mode, "paths": paths}
-        else:
-            paths = SESSION_STORE.query_paths(
-                session_id,
-                start_node_id=start,
-                target_concept=req.target_concept,
-                target_resource_type=req.target_resource_type,
-                max_depth=req.max_depth,
-            )
-        return {"start": start, "mode": req.mode, "paths": [_serialize_path(p) for p in paths]}
+            result = {**result, "paths": paths}
+
+        query_payload = req.model_dump(exclude_none=True)
+        return format_path_query_response(
+            session_id=session_id,
+            graph=session.snapshot,
+            start_node_id=start,
+            mode=req.mode,
+            raw=result,
+            query=query_payload,
+        )
     except KeyError:
         raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/sessions/{session_ref}/paths/blast")
+def blast_paths_get(
+    session_ref: str,
+    start: str = Query("caller"),
+    max_depth: int = Query(6, ge=1, le=12),
+    max_paths: int = Query(20, ge=1, le=50),
+):
+    """GET-friendly blast radius for curl | jq (defender IR scripts)."""
+    req = PathQueryRequest(start=start, mode="blast", max_depth=max_depth, max_paths=max_paths)
+    return _run_session_graph_query(session_ref, req)
+
+
+@app.get("/api/paths/blast")
+def blast_paths_default(
+    session: str | None = Query(None, description="Session id or short name; defaults to most recent"),
+    start: str = Query("caller"),
+    max_depth: int = Query(6, ge=1, le=12),
+    max_paths: int = Query(20, ge=1, le=50),
+):
+    """Blast radius without session id in the path — session ref is optional."""
+    req = PathQueryRequest(start=start, mode="blast", max_depth=max_depth, max_paths=max_paths)
+    return _run_session_graph_query(session, req)
 
 
 @app.get("/api/paths")
 def query_paths(
-    session_id: str,
+    session: str | None = Query(None, alias="session_id"),
     start: str | None = None,
     target_concept: str | None = None,
     target_resource_type: str | None = None,
     max_depth: int = 6,
 ):
+    session_record = _resolve_session_ref(session)
     try:
         paths = SESSION_STORE.query_paths(
-            session_id,
+            session_record.session_id,
             start_node_id=start,
             target_concept=target_concept,
             target_resource_type=target_resource_type,
@@ -385,14 +512,35 @@ def query_paths(
 
 
 @app.post("/api/scenarios/{name}/run")
-def run_scenario(name: str, session_id: str):
+def run_scenario(
+    name: str,
+    session_id: str | None = Query(None, description="Session id or short name; defaults to most recent"),
+    start: str | None = Query(None),
+):
+    from samoyed.path_engine.format import format_path_query_response
+
     try:
-        paths = SESSION_STORE.run_scenario(session_id, name)
+        session = _resolve_session_ref(session_id)
+        session_id = session.session_id
+        start_node = SESSION_STORE.resolve_start_node(session_id, start) if start else None
+        if start_node:
+            paths = SESSION_STORE.run_scenario(session_id, name, start_node_id=start_node)
+        else:
+            paths = SESSION_STORE.run_scenario(session_id, name)
+            start_node = SESSION_STORE.find_caller_node(session) or ""
+        serialized = [_serialize_path(p) for p in paths]
+        return format_path_query_response(
+            session_id=session_id,
+            graph=session.snapshot,
+            start_node_id=start_node,
+            mode="blast" if name == "leaked-credential" else name,
+            raw={"paths": serialized},
+            query={"scenario": name, "start": start},
+        )
     except KeyError:
         raise HTTPException(404, "Session not found")
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"scenario": name, "paths": [_serialize_path(p) for p in paths]}
 
 
 @app.get("/api/ontology")
@@ -443,6 +591,16 @@ def create_sample_azure_session():
 @app.post("/api/sessions/sample-host")
 def create_sample_host_session():
     record = SESSION_STORE.load_sample_host_session()
+    return {
+        "session_id": record.session_id,
+        "caller_arn": record.caller_arn,
+        "metadata": record.metadata,
+    }
+
+
+@app.post("/api/sessions/sample-enterprise")
+def create_sample_enterprise_session():
+    record = SESSION_STORE.load_sample_enterprise_session()
     return {
         "session_id": record.session_id,
         "caller_arn": record.caller_arn,

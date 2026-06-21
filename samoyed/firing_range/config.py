@@ -16,3 +16,13 @@ LAB_USER = "leaked-user"
 LAB_ADMIN_ROLE = "admin"
 LAB_BUCKET = "prod-data"
 LAB_SECRET = "prod-db"
+LAB_LAMBDA = "vulnerable-handler"
+LAB_LAMBDA_ROLE = "lambda-exec"
+LAB_WEB_BUCKET = "web-app-assets"
+
+# Runtime output (gitignored via .samoyed/)
+ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / ".samoyed" / "firing-range"
+CREDENTIALS_FILE = ARTIFACTS_DIR / "leaked-user-credentials.json"
+SCOUTSUITE_DIR = ARTIFACTS_DIR / "scoutsuite"
+CLIENT_IAM_REPORT_FILE = ARTIFACTS_DIR / "client-iam-report.json"
+AWS_AUTHZ_FILE = ARTIFACTS_DIR / "aws-authz-details.json"

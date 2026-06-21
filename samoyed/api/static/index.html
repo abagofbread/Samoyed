@@ -31,7 +31,26 @@
           <button id="loadK8sSample" class="ghost">K8s sample</button>
           <button id="loadHostSample" class="ghost">Host sample</button>
         </div>
+        <button id="loadEnterpriseSample" class="ghost" style="margin-top:8px;width:100%">Enterprise mock</button>
+        <label style="margin-top:12px">Session list</label>
+        <select id="sessionScope">
+          <option value="recent" selected>Most recent</option>
+          <option value="all">All sessions</option>
+        </select>
+        <p class="empty" id="sessionsHint">Loads your latest session by default — demos appear only when you click a sample above</p>
         <ul id="sessions" class="list"></ul>
+      </div>
+
+      <div class="section">
+        <h3>Import report</h3>
+        <label>Connector</label>
+        <select id="importConnector"></select>
+        <label>Report file</label>
+        <input id="importFile" type="file" accept=".json,.js" />
+        <label>Caller ARN (optional)</label>
+        <input id="importCallerArn" placeholder="arn:aws:iam::123456789012:user/alice" />
+        <button id="importReport" class="primary" style="margin-top:10px;width:100%">Import</button>
+        <p class="empty" id="importStatus"></p>
       </div>
 
       <div class="section">
@@ -54,12 +73,13 @@
     <div class="panel">
       <div class="tabs">
         <button class="tab active" data-tab="search">Path search</button>
+        <button class="tab" data-tab="query">Custom query</button>
         <button class="tab" data-tab="node">Node</button>
       </div>
 
       <div id="tab-search" class="tab-panel active">
         <label>Start node</label>
-        <input id="startSearch" list="nodeOptions" placeholder="caller or search nodes…" value="caller" />
+        <input id="startSearch" list="nodeOptions" placeholder="caller or principal ARN…" value="caller" />
         <datalist id="nodeOptions"></datalist>
 
         <label>Mode</label>
@@ -93,6 +113,53 @@
 
         <h3 style="margin-top:20px">Results <span id="pathCount" class="badge">0</span></h3>
         <ul id="paths" class="list"></ul>
+      </div>
+
+      <div id="tab-query" class="tab-panel">
+        <label>Start node</label>
+        <input id="queryStart" list="nodeOptions" placeholder="caller or node id…" value="caller" />
+
+        <label>Mode</label>
+        <select id="queryMode">
+          <option value="paths">Find paths</option>
+          <option value="blast">Blast radius</option>
+          <option value="neighbors">1-hop neighbors</option>
+        </select>
+
+        <label>Relationship types (comma-separated, optional)</label>
+        <input id="queryRelTypes" placeholder="CAN_ASSUME_ROLE, READS, EXECUTES_AS" />
+
+        <label>End node id (exact, optional)</label>
+        <input id="queryEndNodeId" placeholder="Secret:arn:aws:secretsmanager:…" />
+
+        <label>End id contains (optional)</label>
+        <input id="queryEndContains" placeholder="e.g. prod-secrets, S3Bucket:finance" />
+
+        <label>Target concept (optional)</label>
+        <select id="queryTargetConcept">
+          <option value="">Any matching target</option>
+          <option value="SecretStore">SecretStore</option>
+          <option value="DataStore">DataStore</option>
+          <option value="Identity">Identity</option>
+          <option value="ManagementEndpoint">ManagementEndpoint</option>
+          <option value="EscapeSurface">EscapeSurface</option>
+          <option value="RuntimeBinding">RuntimeBinding</option>
+          <option value="Workload">Workload</option>
+        </select>
+
+        <label>Target resource type (optional)</label>
+        <input id="queryTargetResourceType" placeholder="e.g. S3Bucket" />
+
+        <label>Max depth</label>
+        <input id="queryMaxDepth" type="number" min="1" max="12" value="6" />
+
+        <label>Max paths</label>
+        <input id="queryMaxPaths" type="number" min="1" max="50" value="20" />
+
+        <button id="runGraphQuery" class="primary" style="margin-top:12px">Run query</button>
+
+        <h3 style="margin-top:20px">Query results <span id="queryPathCount" class="badge">0</span></h3>
+        <ul id="queryPaths" class="list"></ul>
       </div>
 
       <div id="tab-node" class="tab-panel">

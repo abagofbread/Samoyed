@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 import uvicorn
@@ -15,11 +16,20 @@ from samoyed.credentials.loader import (
 from samoyed.probes.runner import get_probe_catalog, run_api_probes
 from samoyed.extensions.discovery import init_extension
 from samoyed.firing_range import (
+    ARTIFACTS_DIR,
+    CLIENT_IAM_REPORT_FILE,
+    CREDENTIALS_FILE,
     DEFAULT_ENDPOINT,
     DEFAULT_REGION,
+    SCOUTSUITE_DIR,
+    ScoutSuiteNotInstalledError,
+    ScoutSuiteScanError,
     compose_down,
     compose_up,
+    load_leaked_credentials,
     ping_emulator,
+    run_scoutsuite_scan,
+    scoutsuite_available,
     seed_aws_lab,
 )
 from samoyed.sessions import SESSION_STORE
@@ -90,6 +100,245 @@ def firing_range_seed_cmd(
         raise typer.Exit(1)
     typer.echo(json.dumps(meta, indent=2))
     typer.echo("Run: samoyed firing-range enum")
+
+
+@firing_range_app.command("client-report")
+def firing_range_client_report_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+    credentials_file: Path = typer.Option(CREDENTIALS_FILE, help="Leaked user key JSON"),
+    output: Path = typer.Option(CLIENT_IAM_REPORT_FILE, help="Where to write iam-report JSON"),
+) -> None:
+    """Collect iam-report JSON from live APIs using leaked-user credentials (client agent simulation)."""
+    from samoyed.client.iam_report import collect_iam_report
+    from samoyed.credentials.aws import AwsCredential
+
+    if not ping_emulator(endpoint_url=endpoint_url, region=region):
+        typer.echo(f"Emulator not reachable at {endpoint_url}. Run: samoyed firing-range up", err=True)
+        raise typer.Exit(1)
+    if not credentials_file.is_file():
+        typer.echo(f"Credentials missing: {credentials_file}. Run: samoyed firing-range seed", err=True)
+        raise typer.Exit(1)
+
+    data = json.loads(credentials_file.read_text(encoding="utf-8"))
+    cred = AwsCredential(
+        access_key=data["AccessKeyId"],
+        secret_key=data["SecretAccessKey"],
+        region=region,
+        endpoint_url=data.get("endpoint_url") or endpoint_url,
+    )
+    report = collect_iam_report(cred)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    typer.echo(json.dumps({"output": str(output), "identities": len(report["identities"]), "grants": len(report["grants"])}, indent=2))
+
+
+@firing_range_app.command("probe-leaked")
+def firing_range_probe_leaked_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+    credentials_file: Path = typer.Option(CREDENTIALS_FILE, help="Leaked user key JSON"),
+    high_value_only: bool = typer.Option(False, "--high-value-only"),
+    report_only: bool = typer.Option(False, "--report-only", help="Print probe JSON only"),
+) -> None:
+    """Run API probe catalog against leaked-user credentials on LocalStack."""
+    from samoyed.credentials.aws import AwsCredential
+
+    if not ping_emulator(endpoint_url=endpoint_url, region=region):
+        typer.echo(f"Emulator not reachable at {endpoint_url}. Run: samoyed firing-range up", err=True)
+        raise typer.Exit(1)
+    if not credentials_file.is_file():
+        typer.echo(f"Credentials missing: {credentials_file}. Run: samoyed firing-range seed", err=True)
+        raise typer.Exit(1)
+
+    data = json.loads(credentials_file.read_text(encoding="utf-8"))
+    cred = AwsCredential(
+        access_key=data["AccessKeyId"],
+        secret_key=data["SecretAccessKey"],
+        region=region,
+        endpoint_url=data.get("endpoint_url") or endpoint_url,
+    )
+    probe_report = run_api_probes(cred, high_value_only=high_value_only)
+    if report_only:
+        typer.echo(json.dumps(probe_report.to_dict(), indent=2))
+        return
+
+    record = SESSION_STORE.create_probe_session(cred, high_value_only=high_value_only, with_enum=False)
+    typer.echo(f"Session {record.session_id}")
+    typer.echo(f"Allowed: {len(probe_report.allowed)}  Denied: {len(probe_report.denied)}")
+    typer.echo(json.dumps([r.operation for r in probe_report.allowed], indent=2))
+
+
+@firing_range_app.command("export-aws-authz")
+def firing_range_export_aws_authz_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+    output: Path = typer.Option(
+        None,
+        help="Output path (default: .samoyed/firing-range/aws-authz-details.json)",
+    ),
+    import_session: bool = typer.Option(False, "--import", help="Import into Samoyed session"),
+) -> None:
+    """Export iam:GetAccountAuthorizationDetails JSON (real AWS API used by IAM analysis tools)."""
+    from samoyed.firing_range.aws_authz_export import export_account_authorization_details
+    from samoyed.firing_range.config import AWS_AUTHZ_FILE, DEFAULT_ACCESS_KEY, DEFAULT_SECRET_KEY
+
+    if not ping_emulator(endpoint_url=endpoint_url, region=region):
+        typer.echo(f"Emulator not reachable at {endpoint_url}. Run: samoyed firing-range up", err=True)
+        raise typer.Exit(1)
+
+    out = output or AWS_AUTHZ_FILE
+    payload = export_account_authorization_details(
+        endpoint_url=endpoint_url,
+        region=region,
+        access_key=DEFAULT_ACCESS_KEY,
+        secret_key=DEFAULT_SECRET_KEY,
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    typer.echo(
+        json.dumps(
+            {
+                "output": str(out),
+                "users": len(payload.get("UserDetailList", [])),
+                "roles": len(payload.get("RoleDetailList", [])),
+            },
+            indent=2,
+        )
+    )
+    if import_session:
+        record = SESSION_STORE.create_import_session("aws-authz-details", out.read_bytes())
+        typer.echo(f"Imported session {record.session_id}")
+
+
+@firing_range_app.command("scoutsuite")
+def firing_range_scoutsuite_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+    report_dir: Path = typer.Option(SCOUTSUITE_DIR, help="ScoutSuite output directory"),
+    import_session: bool = typer.Option(True, "--import/--no-import", help="Import scan into Samoyed session"),
+    docker: bool = typer.Option(False, "--docker", help="Run ScoutSuite via Docker image"),
+) -> None:
+    """Run real ScoutSuite CLI (best on real AWS; LocalStack: prefer export-aws-authz)."""
+    from samoyed.firing_range.config import DEFAULT_ACCESS_KEY, DEFAULT_SECRET_KEY
+
+    if not ping_emulator(endpoint_url=endpoint_url, region=region):
+        typer.echo(f"Emulator not reachable at {endpoint_url}. Run: samoyed firing-range up", err=True)
+        raise typer.Exit(1)
+    if not scoutsuite_available() and not docker:
+        typer.echo("ScoutSuite not installed. Use --docker or: pip install scoutsuite", err=True)
+        raise typer.Exit(1)
+
+    try:
+        meta = run_scoutsuite_scan(
+            endpoint_url=endpoint_url,
+            region=region,
+            access_key=DEFAULT_ACCESS_KEY,
+            secret_key=DEFAULT_SECRET_KEY,
+            report_dir=report_dir,
+            use_docker=docker,
+        )
+    except (ScoutSuiteNotInstalledError, ScoutSuiteScanError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+    typer.echo(json.dumps(meta, indent=2))
+    if import_session:
+        payload = Path(meta["result_file"]).read_bytes()
+        record = SESSION_STORE.create_import_session("scoutsuite", payload)
+        typer.echo(f"Imported session {record.session_id} ({record.metadata.get('node_count')} nodes)")
+
+
+@firing_range_app.command("verify")
+def firing_range_verify_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+    scoutsuite_docker: bool = typer.Option(False, "--scoutsuite-docker", help="Attempt ScoutSuite via Docker"),
+) -> None:
+    """Run LocalStack lab workflows: client iam-report, leaked-key probes, aws-authz import."""
+    from samoyed.client.iam_report import collect_iam_report
+    from samoyed.credentials.aws import AwsCredential
+
+    if not ping_emulator(endpoint_url=endpoint_url, region=region):
+        typer.echo(f"Emulator not reachable at {endpoint_url}. Run: samoyed firing-range up && seed", err=True)
+        raise typer.Exit(1)
+    if not CREDENTIALS_FILE.is_file():
+        typer.echo("Run: samoyed firing-range seed first", err=True)
+        raise typer.Exit(1)
+
+    results: dict[str, Any] = {}
+
+    cred_data = json.loads(CREDENTIALS_FILE.read_text(encoding="utf-8"))
+    cred = AwsCredential(
+        access_key=cred_data["AccessKeyId"],
+        secret_key=cred_data["SecretAccessKey"],
+        region=region,
+        endpoint_url=endpoint_url,
+    )
+    report = collect_iam_report(cred)
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    CLIENT_IAM_REPORT_FILE.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    iam_session = SESSION_STORE.create_import_session(
+        "iam-report",
+        CLIENT_IAM_REPORT_FILE.read_bytes(),
+        caller_arn=report["caller_arn"],
+    )
+    results["client_iam_report"] = {
+        "file": str(CLIENT_IAM_REPORT_FILE),
+        "session_id": iam_session.session_id,
+        "grants": len(report["grants"]),
+    }
+
+    probe_report = run_api_probes(cred)
+    probe_session = SESSION_STORE.create_probe_session(cred, with_enum=False)
+    results["leaked_key_probes"] = {
+        "session_id": probe_session.session_id,
+        "allowed": len(probe_report.allowed),
+        "allowed_ops": [r.operation for r in probe_report.allowed],
+    }
+
+    from samoyed.firing_range.aws_authz_export import export_account_authorization_details
+    from samoyed.firing_range.config import AWS_AUTHZ_FILE, DEFAULT_ACCESS_KEY, DEFAULT_SECRET_KEY
+
+    authz = export_account_authorization_details(
+        endpoint_url=endpoint_url,
+        region=region,
+        access_key=DEFAULT_ACCESS_KEY,
+        secret_key=DEFAULT_SECRET_KEY,
+    )
+    AWS_AUTHZ_FILE.write_text(json.dumps(authz, indent=2), encoding="utf-8")
+    authz_session = SESSION_STORE.create_import_session("aws-authz-details", AWS_AUTHZ_FILE.read_bytes())
+    results["aws_authz_details"] = {
+        "file": str(AWS_AUTHZ_FILE),
+        "session_id": authz_session.session_id,
+        "users": len(authz.get("UserDetailList", [])),
+        "roles": len(authz.get("RoleDetailList", [])),
+    }
+
+    if scoutsuite_available() or scoutsuite_docker:
+        try:
+            scan = run_scoutsuite_scan(
+                endpoint_url=endpoint_url,
+                region=region,
+                access_key=DEFAULT_ACCESS_KEY,
+                secret_key=DEFAULT_SECRET_KEY,
+                report_dir=SCOUTSUITE_DIR,
+                use_docker=scoutsuite_docker,
+            )
+            ss_session = SESSION_STORE.create_import_session(
+                "scoutsuite",
+                Path(scan["result_file"]).read_bytes(),
+            )
+            results["scoutsuite"] = {
+                "result_file": scan["result_file"],
+                "session_id": ss_session.session_id,
+            }
+        except (ScoutSuiteNotInstalledError, ScoutSuiteScanError) as exc:
+            results["scoutsuite"] = {"skipped": str(exc)}
+    else:
+        results["scoutsuite"] = {"skipped": "use --scoutsuite-docker or pip install scoutsuite"}
+
+    typer.echo(json.dumps(results, indent=2))
 
 
 @firing_range_app.command("enum")
@@ -169,6 +418,19 @@ def load_sample_host_cmd(session_id: str = typer.Option("sample-host", help="Ses
     typer.echo(f"Caller: {record.caller_arn}")
     typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
     typer.echo("Run: samoyed scenario host-compromise --session-id " + record.session_id)
+
+
+@app.command("load-sample-enterprise")
+def load_sample_enterprise_cmd(
+    session_id: str = typer.Option("sample-enterprise", help="Session ID for enterprise mock environment"),
+) -> None:
+    """Load dense corp mock graph (marketing, EKS, EC2 metadata STS chains)."""
+    record = SESSION_STORE.load_sample_enterprise_session(session_id)
+    typer.echo(f"Session {record.session_id}")
+    typer.echo(f"Caller: {record.caller_arn}")
+    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
+    typer.echo(f"Storylines: {', '.join(record.metadata.get('storylines', []))}")
+    typer.echo("Try path search: caller → SecretStore (max depth 12)")
 
 
 @app.command("import-cartography")
@@ -360,34 +622,60 @@ def probe_cmd(
 @app.command("scenario")
 def scenario_cmd(
     name: str = typer.Argument("leaked-credential"),
-    session_id: str | None = typer.Option(None, help="Existing session ID"),
+    session_id: str | None = typer.Option(None, help="Session id, short name, or omit for most recent"),
+    start: str | None = typer.Option(None, "--as", help="Compromised principal ARN or node id"),
     provider: str = typer.Option("aws"),
     profile: str | None = typer.Option(None),
     key_file: Path | None = typer.Option(None),
 ) -> None:
     """Run a blast-radius scenario."""
-    if not session_id:
-        if provider != "aws":
-            raise typer.Exit(1)
-        cred = load_aws_credential(profile=profile, key_file=key_file)
-        record = SESSION_STORE.create_session(cred)
-        session_id = record.session_id
-        typer.echo(f"Created session {session_id}")
+    from samoyed.path_engine.format import format_path_query_response
 
-    paths = SESSION_STORE.run_scenario(session_id, name)
-    typer.echo(json.dumps([_path_to_dict(p) for p in paths], indent=2, default=str))
+    if not session_id:
+        session = SESSION_STORE.resolve_session_ref()
+        if not session and provider == "aws":
+            cred = load_aws_credential(profile=profile, key_file=key_file)
+            session = SESSION_STORE.create_session(cred)
+            typer.echo(f"Created session {session.session_id} ({session.metadata.get('short_name')})")
+        elif not session:
+            typer.echo("No session found; run enum/import first or pass --session-id", err=True)
+            raise typer.Exit(1)
+    else:
+        session = SESSION_STORE.resolve_session_ref(session_id)
+        if not session:
+            typer.echo(f"Session not found: {session_id}", err=True)
+            raise typer.Exit(1)
+
+    session_id = session.session_id
+    start_node = SESSION_STORE.resolve_start_node(session_id, start) if start else None
+    paths = SESSION_STORE.run_scenario(session_id, name, start_node_id=start_node)
+    if not start_node:
+        start_node = SESSION_STORE.find_caller_node(session) or ""
+    payload = format_path_query_response(
+        session_id=session_id,
+        graph=session.snapshot,
+        start_node_id=start_node,
+        mode="blast" if name == "leaked-credential" else name,
+        raw={"paths": [_path_to_dict(p) for p in paths]},
+        query={"scenario": name, "start": start},
+    )
+    typer.echo(json.dumps(payload, indent=2, default=str))
 
 
 @app.command("paths")
 def paths_cmd(
-    session_id: str = typer.Argument(...),
+    session_id: str | None = typer.Argument(None, help="Session id, short name, or omit for most recent"),
     target_concept: str | None = typer.Option(None),
     target_resource_type: str | None = typer.Option(None),
     max_depth: int = typer.Option(6),
 ) -> None:
     """Query attack paths for a session."""
+    session = SESSION_STORE.resolve_session_ref(session_id)
+    if not session:
+        typer.echo("Session not found", err=True)
+        raise typer.Exit(1)
     results = SESSION_STORE.query_paths(
-        session_id,
+        session.session_id,
         target_concept=target_concept,
         target_resource_type=target_resource_type,
         max_depth=max_depth,

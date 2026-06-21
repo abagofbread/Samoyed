@@ -1,0 +1,49 @@
+{
+  "account_id": "111111111111",
+  "caller_arn": "arn:aws:iam::111111111111:user/alice",
+  "identities": [
+    {
+      "arn": "arn:aws:iam::111111111111:user/alice",
+      "name": "alice",
+      "kind": "User"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/admin",
+      "name": "admin",
+      "kind": "Role"
+    }
+  ],
+  "resources": [
+    {
+      "id": "S3Bucket:finance-reports",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "finance-reports"
+    },
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:prod-db",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "prod-db"
+    }
+  ],
+  "grants": [
+    {
+      "from": "arn:aws:iam::111111111111:user/alice",
+      "to": "arn:aws:iam::111111111111:role/admin",
+      "rel": "CAN_ASSUME_ROLE"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/admin",
+      "to": "S3Bucket:finance-reports",
+      "rel": "READS",
+      "action": "s3:GetObject"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/admin",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:prod-db",
+      "rel": "READS",
+      "action": "secretsmanager:GetSecretValue"
+    }
+  ]
+}

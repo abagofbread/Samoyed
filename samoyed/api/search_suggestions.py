@@ -178,6 +178,33 @@ def suggest_searches(store: SessionStore, session_id: str, *, limit: int = 10) -
                 "session_id": session_id,
             },
         )
+        if session.metadata.get("scenario") == "enterprise-mock":
+            ranked.insert(
+                0,
+                {
+                    "id": "enterprise-vault-path",
+                    "title": "Corp vault (depth 12)",
+                    "description": "EC2 metadata → CI/CD → STS chain → EKS/IRSA → vault bucket",
+                    "mode": "paths",
+                    "start": "caller",
+                    "target_concept": "DataStore",
+                    "max_depth": 12,
+                    "session_id": session_id,
+                },
+            )
+            ranked.insert(
+                1,
+                {
+                    "id": "enterprise-admin-secret",
+                    "title": "Platform master secret",
+                    "description": "Full metadata STS assume-role ladder to prod secret",
+                    "mode": "paths",
+                    "start": "caller",
+                    "target_concept": "SecretStore",
+                    "max_depth": 12,
+                    "session_id": session_id,
+                },
+            )
 
     if _has_gcp(session):
         ranked.insert(

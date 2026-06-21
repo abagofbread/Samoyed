@@ -58,6 +58,9 @@ samoyed = "samoyed.cli.main:app"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: tests that require a running LocalStack firing range",
+]
 
 [tool.ruff]
 line-length = 100

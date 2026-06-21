@@ -1,0 +1,45 @@
+{
+  "account_id": "222222222222",
+  "services": {
+    "iam": {
+      "users": {
+        "bob": {
+          "arn": "arn:aws:iam::222222222222:user/bob",
+          "policies": {
+            "inline1": {
+              "actions": ["s3:GetObject"],
+              "resource": "audit-logs"
+            }
+          }
+        }
+      },
+      "roles": {
+        "deploy": {
+          "arn": "arn:aws:iam::222222222222:role/deploy",
+          "trust_policy": {
+            "Statement": [
+              {
+                "Principal": {
+                  "AWS": "arn:aws:iam::222222222222:user/bob"
+                }
+              }
+            ]
+          },
+          "policies": {
+            "s3read": {
+              "actions": ["s3:*"],
+              "resource": "audit-logs"
+            }
+          }
+        }
+      }
+    },
+    "s3": {
+      "buckets": {
+        "audit-logs": {
+          "name": "audit-logs"
+        }
+      }
+    }
+  }
+}

@@ -12,6 +12,8 @@ const state = {
   callerNodeId: null,
   nodePositions: {},
   layoutRootId: null,
+  sessionListScope: "recent",
+  sessionSelectionIds: null,
 };
 
 const NODE_COLORS = {
@@ -531,9 +533,10 @@ function switchTab(name) {
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
 }
 
-function renderPaths(paths, mode = "paths") {
-  const ul = document.getElementById("paths");
-  document.getElementById("pathCount").textContent = String(paths.length);
+function renderPaths(paths, mode = "paths", opts = {}) {
+  const ul = document.getElementById(opts.listId || "paths");
+  const countEl = document.getElementById(opts.countId || "pathCount");
+  countEl.textContent = String(paths.length);
   ul.innerHTML = "";
 
   if (!paths.length) {
@@ -667,43 +670,224 @@ async function loadSession(sessionId) {
       fetchJSON(`/api/sessions/${sessionId}/graph`),
     ]);
     state.sessionMeta = meta;
-    document.getElementById("sessionBadge").textContent = `${sessionId} · ${shortId(meta.caller_arn)}`;
+    document.getElementById("sessionBadge").textContent = `${sessionDisplayName(meta)} · ${shortId(meta.caller_arn)}`;
     renderGraph(graph);
     clearHighlight();
     renderPaths([]);
     await loadSuggestions();
 
+    document.getElementById("searchMode").value = "blast";
     document.querySelectorAll("#sessions li").forEach((li) => {
       li.classList.toggle("active", li.dataset.id === sessionId);
     });
+
+    await runPathQuery({ mode: "blast" });
   } catch (err) {
     console.error("Failed to load session", sessionId, err);
     alert(`Could not load session: ${err.message || err}`);
   }
 }
 
-async function refreshSessions() {
-  const sessions = await fetchJSON("/api/sessions");
+async function runGraphQuery() {
+  if (!state.sessionId) return alert("Select a session first");
+  const relRaw = document.getElementById("queryRelTypes").value.trim();
+  const relTypes = relRaw ? relRaw.split(",").map((s) => s.trim()).filter(Boolean) : null;
+  const maxDepth = Number(document.getElementById("queryMaxDepth").value) || 6;
+  const maxPaths = Number(document.getElementById("queryMaxPaths").value) || 20;
+
+  try {
+    const body = {
+      start: resolveStartNodeId(document.getElementById("queryStart").value || "caller"),
+      mode: document.getElementById("queryMode").value,
+      target_concept: document.getElementById("queryTargetConcept").value || null,
+      target_resource_type: document.getElementById("queryTargetResourceType").value.trim() || null,
+      end_node_id: document.getElementById("queryEndNodeId").value.trim() || null,
+      end_id_contains: document.getElementById("queryEndContains").value.trim() || null,
+      rel_types: relTypes,
+      max_depth: maxDepth,
+      max_paths: maxPaths,
+    };
+    if (!body.target_concept) delete body.target_concept;
+    if (!body.target_resource_type) delete body.target_resource_type;
+    if (!body.end_node_id) delete body.end_node_id;
+    if (!body.end_id_contains) delete body.end_id_contains;
+    if (!body.rel_types?.length) delete body.rel_types;
+
+    const data = await fetchJSON(`/api/sessions/${state.sessionId}/graph/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (data.start) document.getElementById("queryStart").value = data.start;
+    const paths = data.paths || [];
+    renderPaths(paths, body.mode, { listId: "queryPaths", countId: "queryPathCount" });
+    if (paths.length) highlightPath(paths[0]);
+    switchTab("query");
+    return data;
+  } catch (err) {
+    console.error("Graph query failed", err);
+    alert(`Graph query failed: ${err.message || err}`);
+  }
+}
+
+function sessionDisplayName(summary) {
+  const short = summary.short_name || summary.metadata?.short_name;
+  if (short && short !== summary.session_id) {
+    return `${short} · ${summary.session_id}`;
+  }
+  return summary.session_id;
+}
+
+function sessionSourceLabel(metadata) {
+  const source = metadata?.source || metadata?.scenario || "";
+  const nodes = metadata?.node_count;
+  const parts = [];
+  if (source) parts.push(source);
+  if (nodes != null) parts.push(`${nodes} nodes`);
+  return parts.join(" · ") || "session";
+}
+
+async function loadConnectors() {
+  const select = document.getElementById("importConnector");
+  if (!select) return;
+  const connectors = await fetchJSON("/api/connectors");
+  select.innerHTML = "";
+  connectors
+    .filter((c) => c.file_import)
+    .forEach((c) => {
+      const opt = document.createElement("option");
+      opt.value = c.id;
+      opt.textContent = c.label;
+      opt.title = c.description || "";
+      select.appendChild(opt);
+    });
+}
+
+async function importReport() {
+  const connector = document.getElementById("importConnector").value;
+  const fileInput = document.getElementById("importFile");
+  const status = document.getElementById("importStatus");
+  if (!connector) return alert("Select a connector");
+  if (!fileInput.files?.length) return alert("Choose a report file");
+
+  status.textContent = "Importing…";
+  const form = new FormData();
+  form.append("connector", connector);
+  form.append("file", fileInput.files[0]);
+  const callerArn = document.getElementById("importCallerArn").value.trim();
+  if (callerArn) form.append("caller_arn", callerArn);
+
+  try {
+    const res = await fetch("/api/sessions/import", {
+      method: "POST",
+      credentials: "same-origin",
+      body: form,
+    });
+    if (res.status === 401) {
+      window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+      return;
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    const data = await res.json();
+    status.textContent = `Imported ${data.session_id} (${data.metadata?.node_count ?? "?"} nodes)`;
+    fileInput.value = "";
+    await refreshSessions({ scope: "ids", ids: [data.session_id], autoLoad: true, loadId: data.session_id });
+  } catch (err) {
+    status.textContent = "";
+    alert(`Import failed: ${err.message || err}`);
+  }
+}
+
+function sessionsQueryParams(opts = {}) {
+  const scope = opts.scope ?? state.sessionListScope;
+  const params = new URLSearchParams();
+  params.set("scope", scope);
+  if (scope === "recent") {
+    params.set("limit", String(opts.limit ?? 1));
+  } else if (scope === "all") {
+    params.set("limit", String(opts.limit ?? 500));
+  } else if (scope === "ids") {
+    const ids = opts.ids ?? state.sessionSelectionIds;
+    if (ids?.length) params.set("ids", ids.join(","));
+  }
+  if (opts.includeDemos) params.set("include_demos", "true");
+  return params.toString();
+}
+
+async function refreshSessions(opts = {}) {
+  const scope = opts.scope ?? state.sessionListScope;
+  if (scope === "ids" && opts.ids) {
+    state.sessionListScope = "ids";
+    state.sessionSelectionIds = opts.ids;
+    const select = document.getElementById("sessionScope");
+    if (select) select.value = "recent";
+  } else if (scope === "recent" || scope === "all") {
+    state.sessionListScope = scope;
+    state.sessionSelectionIds = null;
+    const select = document.getElementById("sessionScope");
+    if (select) select.value = scope;
+  }
+
+  const sessions = await fetchJSON(`/api/sessions?${sessionsQueryParams(opts)}`);
   const ul = document.getElementById("sessions");
+  const hint = document.getElementById("sessionsHint");
   ul.innerHTML = "";
+
+  if (!sessions.length) {
+    if (hint) {
+      hint.textContent =
+        scope === "ids"
+          ? "No matching session"
+          : "No sessions yet — run enum/probe/import, or load a demo sample above";
+      hint.style.display = "block";
+    }
+    return;
+  }
+
   sessions.forEach((s) => {
     const li = document.createElement("li");
     li.dataset.id = s.session_id;
     li.setAttribute("role", "button");
     li.tabIndex = 0;
+    const meta = s.metadata || {};
+    const demoTag = s.is_demo ? " · demo" : "";
     li.innerHTML = `
-      <div class="title">${s.session_id}</div>
-      <div class="desc">${shortId(s.caller_arn || "")}</div>
+      <div class="title">${sessionDisplayName(s)}${state.sessionId === s.session_id ? " ✓" : ""}</div>
+      <div class="desc">${shortId(s.caller_arn || "")} · ${sessionSourceLabel(meta)}${demoTag}</div>
     `;
+    if (state.sessionId === s.session_id) li.classList.add("active");
     ul.appendChild(li);
   });
-  if (sessions.length && !state.sessionId) {
-    await loadSession(sessions[0].session_id);
+
+  if (hint) {
+    if (scope === "recent" && sessions.length === 1) {
+      hint.textContent = "Showing most recent session — switch to All for full list";
+    } else if (scope === "ids") {
+      hint.textContent = "Showing selected session(s)";
+    } else {
+      hint.textContent = `${sessions.length} session(s) — click to load`;
+    }
+    hint.style.display = "block";
+  }
+
+  if (opts.autoLoad && sessions.length) {
+    const target = opts.loadId ?? sessions[0].session_id;
+    if (target !== state.sessionId) await loadSession(target);
   } else if (state.sessionId) {
     document.querySelectorAll("#sessions li").forEach((li) => {
       li.classList.toggle("active", li.dataset.id === state.sessionId);
     });
   }
+}
+
+async function loadDemoSample(endpoint) {
+  const s = await fetchJSON(endpoint, { method: "POST" });
+  await refreshSessions({ scope: "ids", ids: [s.session_id], autoLoad: true, loadId: s.session_id });
+  return s;
 }
 
 async function appendProperty() {
@@ -738,33 +922,39 @@ function updateTargetFieldsVisibility() {
 }
 
 // Event wiring
-document.getElementById("refreshSessions").onclick = refreshSessions;
-document.getElementById("loadAwsSample").onclick = async () => {
-  const s = await fetchJSON("/api/sessions/sample", { method: "POST" });
-  await refreshSessions();
-  await loadSession(s.session_id);
+document.getElementById("refreshSessions").onclick = () => {
+  if (state.sessionListScope === "all") {
+    refreshSessions({ scope: "all", autoLoad: false });
+  } else if (state.sessionSelectionIds?.length) {
+    refreshSessions({ scope: "ids", ids: state.sessionSelectionIds, autoLoad: false });
+  } else {
+    refreshSessions({ scope: "recent", limit: 1, autoLoad: false });
+  }
 };
-document.getElementById("loadK8sSample").onclick = async () => {
-  const s = await fetchJSON("/api/sessions/sample-k8s", { method: "POST" });
-  await refreshSessions();
-  await loadSession(s.session_id);
+document.getElementById("sessionScope").onchange = (event) => {
+  const scope = event.target.value;
+  if (scope === "all") {
+    refreshSessions({ scope: "all", autoLoad: false });
+  } else {
+    refreshSessions({ scope: "recent", limit: 1, autoLoad: true });
+  }
 };
-document.getElementById("loadGcpSample").onclick = async () => {
-  const s = await fetchJSON("/api/sessions/sample-gcp", { method: "POST" });
-  await refreshSessions();
-  await loadSession(s.session_id);
-};
-document.getElementById("loadAzureSample").onclick = async () => {
-  const s = await fetchJSON("/api/sessions/sample-azure", { method: "POST" });
-  await refreshSessions();
-  await loadSession(s.session_id);
-};
-document.getElementById("loadHostSample").onclick = async () => {
-  const s = await fetchJSON("/api/sessions/sample-host", { method: "POST" });
-  await refreshSessions();
-  await loadSession(s.session_id);
-};
+document.getElementById("loadAwsSample").onclick = () => loadDemoSample("/api/sessions/sample");
+document.getElementById("loadK8sSample").onclick = () => loadDemoSample("/api/sessions/sample-k8s");
+document.getElementById("loadGcpSample").onclick = () => loadDemoSample("/api/sessions/sample-gcp");
+document.getElementById("loadAzureSample").onclick = () => loadDemoSample("/api/sessions/sample-azure");
+document.getElementById("loadHostSample").onclick = () => loadDemoSample("/api/sessions/sample-host");
+document.getElementById("loadEnterpriseSample").onclick = () => loadDemoSample("/api/sessions/sample-enterprise");
 document.getElementById("runSearch").onclick = () => runPathQuery({});
+document.getElementById("startSearch").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    document.getElementById("searchMode").value = "blast";
+    runPathQuery({ mode: "blast" });
+  }
+});
+document.getElementById("runGraphQuery").onclick = runGraphQuery;
+document.getElementById("importReport").onclick = importReport;
 document.getElementById("fitGraph").onclick = fitGraphView;
 document.getElementById("relayoutGraph").onclick = () => {
   const visibleNodes = state.graph.nodes.filter((n) => n.label !== "CollectionSession");
@@ -801,4 +991,6 @@ document.getElementById("sessions").addEventListener("keydown", (event) => {
 
 initNetwork();
 updateTargetFieldsVisibility();
-initAuth().then(refreshSessions).catch(() => refreshSessions());
+initAuth()
+  .then(() => Promise.all([loadConnectors(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
+  .catch(() => Promise.all([loadConnectors(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));
