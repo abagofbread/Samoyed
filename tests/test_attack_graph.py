@@ -34,7 +34,39 @@ def test_iam_attach_policy_privesc_edge():
     edges = apply_attack_analysis(builder, provider=CloudProvider.AWS)
     assert len(edges) == 1
     assert edges[0].pattern.id == "aws-iam-attach-user-policy"
-    assert any(e.rel_type == "CAN_PRIVESC_TO" for e in builder.snapshot.edges)
+    privesc = [e for e in builder.snapshot.edges if e.rel_type == "CAN_PRIVESC_TO"]
+    assert len(privesc) == 1
+    assert privesc[0].src_id == user
+    assert privesc[0].dst_id == user
+    assert privesc[0].props.get("attack_outcome") == "administrator-access"
+    assert not any(n.props.get("concept_type") == "AttackOutcome" for n in builder.snapshot.nodes.values())
+
+
+def test_find_attack_paths_to_admin_outcome_via_edge():
+    builder = GraphBuilder("attack-test")
+    user = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::123:user/leaked",
+        props={"is_caller": True, "native_kind": "User"},
+    )
+    builder.add_edge(
+        src_id=user,
+        rel_type="CONTROLS",
+        dst_id=user,
+        props={"action": "iam:PutUserPolicy"},
+    )
+    apply_attack_analysis(builder, provider=CloudProvider.AWS)
+
+    paths = find_attack_paths(
+        builder.snapshot,
+        start_node_id=user,
+        target_concept="AttackOutcome",
+        max_depth=2,
+    )
+    assert len(paths) == 1
+    assert paths[0].target_match.get("virtual") is True
+    assert paths[0].steps[0].rel_type == "CAN_PRIVESC_TO"
+    assert paths[0].steps[0].evidence.get("attack_outcome") == "administrator-access"
 
 
 def test_lambda_passrole_privesc_to_role():

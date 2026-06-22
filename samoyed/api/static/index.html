@@ -61,15 +61,22 @@
 
     <main>
       <div id="graphToolbar">
+        <span id="mainGraphLabel" class="graph-toolbar-label">Full graph</span>
         <button id="fitGraph" class="ghost">Fit view</button>
         <button id="relayoutGraph" class="ghost">Re-layout</button>
         <button id="clearHighlight" class="ghost">Clear highlight</button>
         <button id="focusCaller" class="ghost">Focus caller</button>
+        <button id="exportMainGraph" class="ghost">Export PNG</button>
+        <button id="swapGraphViews" class="ghost">Swap views</button>
       </div>
-      <div id="graph"></div>
+      <div id="mainGraphHost" class="graph-host">
+        <div id="graph" class="graph-canvas graph-canvas--large"></div>
+      </div>
     </main>
 
-    <div class="panel">
+    <div class="panel-wrap" id="panelWrap">
+      <div id="panelResizer" class="panel-resizer" title="Drag to resize panel" aria-label="Resize panel"></div>
+      <div class="panel">
       <div class="tabs">
         <button class="tab active" data-tab="search">Path search</button>
         <button class="tab" data-tab="query">Custom query</button>
@@ -77,8 +84,15 @@
       </div>
 
       <div id="pathGraphSection" class="path-graph-section" style="display:none">
-        <h3>Generated graph <span id="pathGraphBadge" class="badge">0</span></h3>
-        <div id="pathGraph" class="path-graph" title="Isolated path view — main graph unchanged"></div>
+        <div class="path-graph-header">
+          <h3><span id="miniGraphLabel">Generated graph</span> <span id="pathGraphBadge" class="badge">0</span></h3>
+          <div class="path-graph-actions">
+            <button id="exportPathGraph" class="ghost compact" type="button">Export PNG</button>
+          </div>
+        </div>
+        <div id="miniGraphHost" class="graph-host graph-host--mini">
+          <div id="pathGraph" class="graph-canvas graph-canvas--mini" title="Isolated path view"></div>
+        </div>
         <p class="hint path-graph-hint">Paths from your query. Click a result below to focus one path.</p>
       </div>
 
@@ -199,6 +213,7 @@
           <input id="propValue" placeholder="string or JSON value" />
           <button id="appendProp" class="primary" style="margin-top:10px">Add property</button>
         </div>
+      </div>
       </div>
     </div>
   </div>

@@ -38,6 +38,12 @@ def explain_path(graph: GraphSnapshot, path: PathResult) -> dict[str, Any]:
 
 
 def _narrative(step, src_name: str, dst_name: str, evidence: dict[str, Any]) -> str:
+    if step.rel_type == "CAN_PRIVESC_TO" and evidence.get("attack_outcome"):
+        outcome = evidence.get("outcome_display") or evidence.get("attack_outcome") or "administrator access"
+        pattern = evidence.get("pattern_name")
+        if pattern:
+            return f"{src_name} can escalate via {pattern} to {outcome}"
+        return f"{src_name} can escalate to {outcome}"
     if step.rel_type == "CAN_PRIVESC_TO" and evidence.get("pattern_name"):
         return (
             f"{src_name} can escalate privileges ({evidence['pattern_name']}) "

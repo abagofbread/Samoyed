@@ -43,8 +43,9 @@ header strong { font-size: 15px; letter-spacing: 0.02em; }
 }
 
 .layout {
+  --panel-width: 380px;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 380px;
+  grid-template-columns: 280px minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -56,10 +57,44 @@ aside, .panel {
   min-width: 0;
 }
 aside { border-right: 1px solid var(--border); width: 280px; }
-.panel {
+
+.panel-wrap {
+  position: relative;
+  width: var(--panel-width);
+  min-width: 260px;
+  max-width: min(720px, 55vw);
   border-left: 1px solid var(--border);
-  width: 380px;
-  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel {
+  flex: 1;
+  width: 100%;
+  max-width: none;
+  border-left: none;
+}
+
+.panel-resizer {
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 20;
+  touch-action: none;
+}
+
+.panel-resizer:hover,
+.panel-resizer.dragging {
+  background: linear-gradient(90deg, transparent, rgba(88, 166, 255, 0.35), transparent);
+}
+
+body.panel-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 main {
@@ -119,18 +154,50 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 #graphToolbar {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
 #graphToolbar button { width: auto; padding: 6px 12px; font-size: 12px; }
 
-#graph {
+.graph-toolbar-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.graph-host {
   flex: 1;
   min-height: 0;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.graph-host--mini {
+  flex: none;
+}
+
+.graph-canvas {
   width: 100%;
+  border: 1px solid var(--border);
   background: radial-gradient(ellipse at center, #161b22 0%, #0d1117 70%);
+}
+
+.graph-canvas--large {
+  flex: 1;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+}
+
+.graph-canvas--mini {
+  height: var(--mini-graph-height, 200px);
+  border-radius: 8px;
 }
 
 .graph-tooltip {
@@ -307,12 +374,29 @@ label {
   border-bottom: 1px solid var(--border);
 }
 
-.path-graph {
-  height: 200px;
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: radial-gradient(ellipse at center, #161b22 0%, #0d1117 70%);
+.path-graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.path-graph-header h3 {
+  margin: 0;
+  flex: 1;
+}
+
+.path-graph-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+button.compact {
+  width: auto;
+  padding: 4px 8px;
+  font-size: 11px;
 }
 
 .path-graph-hint {

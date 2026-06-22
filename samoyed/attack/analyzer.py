@@ -4,17 +4,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from samoyed.attack.mitre import enrich_graph_edges, mitre_props_for_edge
+from samoyed.attack.outcomes import admin_outcome_metadata
 from samoyed.attack.patterns import AttackPattern, patterns_for_provider
 from samoyed.cloud.capabilities import azure_role_to_actions, gcp_role_to_actions
 from samoyed.cloud.concepts import CloudProvider
 from samoyed.enumerators.k8s.helpers import DANGEROUS_CLUSTER_ROLES
-from samoyed.graph.builder import GraphBuilder, stable_id
-from samoyed.graph.model import GraphNode, GraphSnapshot
-
-ADMIN_OUTCOME_NATIVE_ID = "aws:attack-outcome:administrator-access"
-GCP_ADMIN_OUTCOME_NATIVE_ID = "gcp:attack-outcome:owner-access"
-AZURE_ADMIN_OUTCOME_NATIVE_ID = "azure:attack-outcome:owner-access"
-K8S_ADMIN_OUTCOME_NATIVE_ID = "k8s:attack-outcome:cluster-admin"
+from samoyed.graph.builder import GraphBuilder
+from samoyed.graph.model import GraphSnapshot
 
 RUNTIME_RESOURCE_TYPES = frozenset(
     {
@@ -183,25 +179,28 @@ def analyze_attack_surface(
                 if key in seen:
                     continue
                 seen.add(key)
+                edge_props = {
+                    "pattern_id": pattern.id,
+                    "pattern_name": pattern.name,
+                    "pattern_description": pattern.description,
+                    "severity": pattern.severity,
+                    "source": pattern.source,
+                    "required_actions": sorted(pattern.required_actions),
+                    "inferred": True,
+                    "confidence": "explicit",
+                    **mitre_props_for_edge(
+                        "CAN_PRIVESC_TO",
+                        {"pattern_id": pattern.id, "action": next(iter(pattern.required_actions), "")},
+                    ),
+                }
+                if pattern.target == "admin_outcome":
+                    edge_props.update(admin_outcome_metadata(provider))
                 results.append(
                     AttackEdge(
                         src_id=start_id,
                         dst_id=dst_id,
                         pattern=pattern,
-                        props={
-                            "pattern_id": pattern.id,
-                            "pattern_name": pattern.name,
-                            "pattern_description": pattern.description,
-                            "severity": pattern.severity,
-                            "source": pattern.source,
-                            "required_actions": sorted(pattern.required_actions),
-                            "inferred": True,
-                            "confidence": "explicit",
-                            **mitre_props_for_edge(
-                                "CAN_PRIVESC_TO",
-                                {"pattern_id": pattern.id, "action": next(iter(pattern.required_actions), "")},
-                            ),
-                        },
+                        props=edge_props,
                     )
                 )
     return results
@@ -243,7 +242,7 @@ def _resolve_targets(
     provider: CloudProvider,
 ) -> list[str]:
     if pattern.target == "admin_outcome":
-        return [_ensure_admin_outcome(graph, provider)]
+        return [start_id]
 
     if pattern.target == "execution_roles":
         roles = execution_role_nodes(graph)
@@ -305,35 +304,3 @@ def _identity_nodes(graph: GraphSnapshot, *, kind: str, exclude: str) -> list[st
         elif kind == "ServiceAccount" and native_kind == "ServiceAccount":
             out.append(node_id)
     return out
-
-
-def _ensure_admin_outcome(graph: GraphSnapshot, provider: CloudProvider) -> str:
-    if provider == CloudProvider.KUBERNETES:
-        native_id = K8S_ADMIN_OUTCOME_NATIVE_ID
-        display = "Cluster-admin access"
-    elif provider == CloudProvider.GCP:
-        native_id = GCP_ADMIN_OUTCOME_NATIVE_ID
-        display = "GCP Owner / project admin access"
-    elif provider == CloudProvider.AZURE:
-        native_id = AZURE_ADMIN_OUTCOME_NATIVE_ID
-        display = "Azure Owner / subscription admin access"
-    else:
-        native_id = ADMIN_OUTCOME_NATIVE_ID
-        display = "Administrator access"
-
-    label = "AttackOutcome"
-    node_id = stable_id(label, native_id)
-    if node_id not in graph.nodes:
-        graph.add_node(
-            GraphNode(
-                node_id=node_id,
-                label=label,
-                props={
-                    "concept_type": "AttackOutcome",
-                    "native_id": native_id,
-                    "display_name": display,
-                    "outcome_type": "administrator-access",
-                },
-            )
-        )
-    return node_id

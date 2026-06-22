@@ -5,6 +5,11 @@ from collections import deque
 from typing import Literal
 
 from samoyed.cloud.concepts import TRAVERSABLE_REL_TYPES
+from samoyed.attack.outcomes import (
+    is_attack_outcome_edge,
+    matches_attack_outcome_target,
+    virtual_outcome_target,
+)
 from samoyed.graph.markings import find_compromised_nodes, find_high_value_nodes, is_high_value
 from samoyed.graph.model import GraphSnapshot
 from samoyed.path_engine.models import PathResult, PathStep
@@ -44,6 +49,44 @@ def _matches_custom_target(
     if not target_concept and not target_resource_type and not end_node_id and not end_id_contains:
         return False
     return _matches_target(node_props, target_concept, target_resource_type)
+
+
+def _resolve_path_endpoint(
+    node_id: str,
+    node_props: dict,
+    *,
+    rel_type: str,
+    edge_props: dict,
+    target_concept: str | None,
+    target_resource_type: str | None,
+    end_node_id: str | None,
+    end_id_contains: str | None,
+) -> dict | None:
+    if _matches_custom_target(
+        node_id,
+        node_props,
+        target_concept=target_concept,
+        target_resource_type=target_resource_type,
+        end_node_id=end_node_id,
+        end_id_contains=end_id_contains,
+    ):
+        return {
+            "node_id": node_id,
+            "concept_type": node_props.get("concept_type"),
+            "resource_type": node_props.get("resource_type"),
+        }
+    if matches_attack_outcome_target(
+        rel_type,
+        edge_props,
+        target_concept=target_concept,
+        target_resource_type=target_resource_type,
+    ) and not end_node_id and not end_id_contains:
+        return virtual_outcome_target(edge_props, node_id)
+    return None
+
+
+def _outcome_path_key(node_id: str, edge_props: dict) -> str:
+    return f"outcome:{node_id}:{edge_props.get('pattern_id') or edge_props.get('attack_outcome')}"
 
 
 def _iter_traversal_steps(
@@ -98,6 +141,11 @@ def _path_result_from_edges(
             "node_id": endpoint_id,
             "concept_type": endpoint_props.get("concept_type"),
             "resource_type": endpoint_props.get("resource_type"),
+            **{
+                key: endpoint_props[key]
+                for key in ("outcome_type", "outcome_display", "virtual")
+                if key in endpoint_props
+            },
         },
     )
 
@@ -134,32 +182,39 @@ def find_attack_paths(
             direction=direction,
             allowed_rels=allowed_rels,
         ):
-            if next_id in node_seq:
+            privesc_outcome = is_attack_outcome_edge(rel_type, props) and next_id == current
+            if next_id in node_seq and not privesc_outcome:
                 continue
 
-            next_nodes = node_seq + [next_id]
+            next_nodes = node_seq if privesc_outcome else node_seq + [next_id]
             next_edges = edge_seq + [(step_src, rel_type, step_dst, props)]
             next_depth = depth + 1
 
             dst_node = graph.nodes.get(next_id)
             dst_props_dict = dst_node.props if dst_node else {}
 
-            if _matches_custom_target(
+            endpoint = _resolve_path_endpoint(
                 next_id,
                 dst_props_dict,
+                rel_type=rel_type,
+                edge_props=props,
                 target_concept=target_concept,
                 target_resource_type=target_resource_type,
                 end_node_id=end_node_id,
                 end_id_contains=end_id_contains,
-            ):
+            )
+            if endpoint:
                 results.append(
                     _path_result_from_edges(
                         next_nodes,
                         next_edges,
                         endpoint_id=next_id,
-                        endpoint_props=dst_props_dict,
+                        endpoint_props=endpoint,
                     )
                 )
+
+            if privesc_outcome:
+                continue
 
             if next_depth < max_depth:
                 queue.append((next_id, next_depth, next_nodes, next_edges))
@@ -185,6 +240,7 @@ def find_forward_reachability(
     queue: deque[tuple[str, int, list[str], list[tuple[str, str, str, dict]]]] = deque()
     queue.append((start_node_id, 0, [start_node_id], []))
     visited: set[str] = {start_node_id}
+    visited_outcomes: set[str] = set()
 
     while queue and len(results) < max_paths:
         current, depth, node_seq, edge_seq = queue.popleft()
@@ -197,6 +253,22 @@ def find_forward_reachability(
             direction="out",
             allowed_rels=allowed_rels,
         ):
+            if is_attack_outcome_edge(rel_type, props) and next_id == current:
+                outcome_key = _outcome_path_key(current, props)
+                if outcome_key in visited_outcomes:
+                    continue
+                visited_outcomes.add(outcome_key)
+                next_edges = edge_seq + [(step_src, rel_type, step_dst, props)]
+                results.append(
+                    _path_result_from_edges(
+                        node_seq,
+                        next_edges,
+                        endpoint_id=current,
+                        endpoint_props=virtual_outcome_target(props, current),
+                    )
+                )
+                continue
+
             if next_id in visited:
                 continue
             visited.add(next_id)

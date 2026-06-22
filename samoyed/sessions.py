@@ -841,7 +841,13 @@ class SessionStore:
         if not session:
             raise KeyError(session_id)
         if not start or start == "caller":
-            return self.find_caller_node(session)
+            caller = self.find_caller_node(session)
+            if caller:
+                return caller
+            host = self.find_host_node(session)
+            if host:
+                return host
+            return self._fallback_start_node(session)
         if start == "host":
             return self.find_host_node(session) or self.find_caller_node(session)
         if start in {"compromised", "compromised_start"}:
@@ -902,6 +908,18 @@ class SessionStore:
         if caller and caller in marked:
             return caller
         return marked[0]
+
+    def _fallback_start_node(self, session: SessionRecord) -> str | None:
+        """Pick a reasonable default when no caller/host is tagged."""
+        for node_id, node in session.snapshot.nodes.items():
+            if node.label == "CollectionSession":
+                continue
+            if node.props.get("is_scenario_start"):
+                return node_id
+        for node_id, node in session.snapshot.nodes.items():
+            if node.label != "CollectionSession":
+                return node_id
+        return None
 
     def resolve_node_refs(self, session_id: str, refs: list[str]) -> tuple[list[str], list[str]]:
         resolved: list[str] = []
