@@ -18,24 +18,8 @@
   <div class="layout">
     <aside>
       <div class="section">
-        <h3>Sessions</h3>
-        <div class="row">
-          <button id="refreshSessions" class="ghost">Refresh</button>
-        </div>
-        <label>Demo reports (field fixtures)</label>
-        <select id="fixtureSelect"></select>
-        <button id="loadFixture" class="ghost" style="margin-top:8px;width:100%">Import fixture</button>
-        <p class="empty" id="sessionsHint">Loads your latest session by default — import a demo report above to explore</p>
-        <label style="margin-top:12px">Session list</label>
-        <select id="sessionScope">
-          <option value="recent" selected>Most recent</option>
-          <option value="all">All sessions</option>
-        </select>
-        <ul id="sessions" class="list"></ul>
-      </div>
-
-      <div class="section">
         <h3>Import report</h3>
+        <p class="empty" style="padding:0 0 10px;text-align:left">Load ScoutSuite, IAM reports, aws-authz exports, or client recon JSON</p>
         <label>Connector</label>
         <select id="importConnector"></select>
         <label>Report file</label>
@@ -44,6 +28,28 @@
         <input id="importCallerArn" placeholder="arn:aws:iam::123456789012:user/alice" />
         <button id="importReport" class="primary" style="margin-top:10px;width:100%">Import</button>
         <p class="empty" id="importStatus"></p>
+      </div>
+
+      <div class="section">
+        <h3>Sessions</h3>
+        <div class="row">
+          <button id="refreshSessions" class="ghost">Refresh</button>
+        </div>
+        <p class="empty" id="sessionsHint">Loads your latest imported session by default</p>
+        <label style="margin-top:12px">Session list</label>
+        <select id="sessionScope">
+          <option value="recent" selected>Most recent</option>
+          <option value="all">All sessions</option>
+        </select>
+        <ul id="sessions" class="list"></ul>
+      </div>
+
+      <div class="section section-muted">
+        <h3>Demos</h3>
+        <p class="empty" style="padding:0 0 8px;text-align:left;font-size:11px">Bundled field fixtures — no real cloud required</p>
+        <label>Fixture</label>
+        <select id="fixtureSelect"></select>
+        <button id="loadFixture" class="ghost" style="margin-top:8px;width:100%">Load demo</button>
       </div>
 
       <div class="section">
@@ -68,6 +74,12 @@
         <button class="tab active" data-tab="search">Path search</button>
         <button class="tab" data-tab="query">Custom query</button>
         <button class="tab" data-tab="node">Node</button>
+      </div>
+
+      <div id="pathGraphSection" class="path-graph-section" style="display:none">
+        <h3>Generated graph <span id="pathGraphBadge" class="badge">0</span></h3>
+        <div id="pathGraph" class="path-graph" title="Isolated path view — main graph unchanged"></div>
+        <p class="hint path-graph-hint">Paths from your query. Click a result below to focus one path.</p>
       </div>
 
       <div id="tab-search" class="tab-panel active">
@@ -102,7 +114,19 @@
           <input id="maxDepth" type="number" min="1" max="12" value="6" />
         </div>
 
-        <button id="runSearch" class="primary" style="margin-top:12px">Search paths</button>
+        <button id="runSearch" class="primary" style="margin-top:12px">Generate paths</button>
+
+        <h3 style="margin-top:20px">Incident markings</h3>
+        <p class="empty" id="markingsSummary">Right-click nodes to mark compromised or high-value</p>
+        <div class="row" style="margin-top:8px">
+          <button id="queryCompromisedToHighValue" class="ghost" style="flex:1">Compromised → high value</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="queryBlastCompromised" class="ghost" style="flex:1">Blast from compromised</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="queryPathsToHighValue" class="ghost" style="flex:1">Paths to high value</button>
+        </div>
 
         <h3 style="margin-top:20px">Results <span id="pathCount" class="badge">0</span></h3>
         <ul id="paths" class="list"></ul>
@@ -149,14 +173,14 @@
         <label>Max paths</label>
         <input id="queryMaxPaths" type="number" min="1" max="50" value="20" />
 
-        <button id="runGraphQuery" class="primary" style="margin-top:12px">Run query</button>
+        <button id="runGraphQuery" class="primary" style="margin-top:12px">Generate paths</button>
 
         <h3 style="margin-top:20px">Query results <span id="queryPathCount" class="badge">0</span></h3>
         <ul id="queryPaths" class="list"></ul>
       </div>
 
       <div id="tab-node" class="tab-panel">
-        <p class="empty" id="nodeHint">Click a node in the graph</p>
+        <p class="empty" id="nodeHint">Double-click a node for details and markings</p>
         <div id="nodeDetail" style="display:none">
           <div id="nodeTitle" style="font-weight:600;font-size:13px;margin-bottom:8px"></div>
           <pre id="nodeProps"></pre>

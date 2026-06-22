@@ -47,6 +47,12 @@ def collect_iam_report(credentials: AwsCredential) -> dict[str, Any]:
         _collect_user_trust_from_policies(iam, username, caller_arn, identities, grants)
 
     _collect_listed_principals(iam, identities, grants)
+    assumable_roles = {
+        g["to"]
+        for g in grants
+        if g.get("from") == caller_arn and g.get("rel") == "CAN_ASSUME_ROLE" and ":role/" in str(g.get("to", ""))
+    }
+    _collect_assumable_role_policies(iam, assumable_roles, identities, resources, grants)
     _collect_buckets(credentials, resources, grants, caller_arn)
     _collect_secrets(credentials, resources, grants, caller_arn)
     _collect_lambda(credentials, identities, resources, grants)
@@ -175,6 +181,51 @@ def _collect_listed_principals(
                                     "source": "trust-policy",
                                 }
                             )
+
+
+def _collect_assumable_role_policies(
+    iam: Any,
+    starter_roles: set[str],
+    identities: dict[str, dict[str, Any]],
+    resources: dict[str, dict[str, Any]],
+    grants: list[dict[str, Any]],
+    *,
+    max_depth: int = 3,
+) -> None:
+    """Expand grants for roles the caller can assume (and chained assumes), for multi-hop paths."""
+    queue = list(starter_roles)
+    seen: set[str] = set()
+    depth = 0
+    while queue and depth < max_depth:
+        next_queue: list[str] = []
+        for role_arn in queue:
+            if role_arn in seen:
+                continue
+            seen.add(role_arn)
+            role_name = role_arn.split("/")[-1]
+            _identity(identities, arn=role_arn, name=role_name, kind="Role")
+            try:
+                inline = iam.list_role_policies(RoleName=role_name)
+            except ClientError as exc:
+                if is_access_denied(exc):
+                    continue
+                raise
+            for policy_name in inline.get("PolicyNames", []):
+                try:
+                    doc = iam.get_role_policy(RoleName=role_name, PolicyName=policy_name)["PolicyDocument"]
+                except ClientError as exc:
+                    if is_access_denied(exc):
+                        continue
+                    raise
+                if isinstance(doc, str):
+                    doc = json.loads(doc)
+                before = len(grants)
+                _policy_grants(doc, role_arn, policy_name, identities, resources, grants)
+                for grant in grants[before:]:
+                    if grant.get("rel") == "CAN_ASSUME_ROLE" and ":role/" in str(grant.get("to", "")):
+                        next_queue.append(str(grant["to"]))
+        queue = next_queue
+        depth += 1
 
 
 def _collect_buckets(

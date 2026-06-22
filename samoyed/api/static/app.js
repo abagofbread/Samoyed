@@ -8,12 +8,17 @@ const state = {
   nodesDS: null,
   edgesDS: null,
   selectedNodeId: null,
-  highlightedPath: null,
+  generatedPaths: null,
+  pathNetwork: null,
+  pathNodesDS: null,
+  pathEdgesDS: null,
   callerNodeId: null,
   nodePositions: {},
   layoutRootId: null,
   sessionListScope: "recent",
   sessionSelectionIds: null,
+  markings: null,
+  contextMenuNodeId: null,
 };
 
 const NODE_COLORS = {
@@ -29,6 +34,21 @@ const NODE_COLORS = {
 const PATH_NODE_COLOR = { background: "#9e6a03", border: "#ffa657" };
 const PATH_EDGE_COLOR = { color: "#ffa657", highlight: "#ffc078" };
 const SELECTED_NODE_COLOR = { background: "#388bfd", border: "#79c0ff" };
+const COMPROMISED_NODE_COLOR = {
+  background: "#3d1518",
+  border: "#f85149",
+  highlight: { background: "#5a1f24", border: "#ff7b72" },
+};
+const HIGH_VALUE_NODE_COLOR = {
+  background: "#3d2a00",
+  border: "#ffa657",
+  highlight: { background: "#5a3c00", border: "#ffc078" },
+};
+const BOTH_MARKING_COLOR = {
+  background: "#4a2030",
+  border: "#ff7b72",
+  highlight: { background: "#6a2840", border: "#ffa657" },
+};
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -74,15 +94,27 @@ function nodeColor(label) {
   return NODE_COLORS[label] || NODE_COLORS.Unknown;
 }
 
+function nodeMarkingColor(node) {
+  const compromised = !!node.is_compromised;
+  const highValue = !!node.is_high_value;
+  if (compromised && highValue) return BOTH_MARKING_COLOR;
+  if (compromised) return COMPROMISED_NODE_COLOR;
+  if (highValue) return HIGH_VALUE_NODE_COLOR;
+  return nodeColor(node.label || "Unknown");
+}
+
 function toVisNode(node, position) {
   const label = node.label || "Unknown";
-  const colors = nodeColor(label);
-  const title = [
+  const colors = nodeMarkingColor(node);
+  const titleParts = [
     `Label: ${label}`,
     `Concept: ${node.concept_type || "—"}`,
     `ID: ${node.id}`,
     node.native_id ? `Native: ${node.native_id}` : null,
-  ].filter(Boolean).join("\n");
+  ];
+  if (node.is_compromised) titleParts.push("⚠ Marked compromised");
+  if (node.is_high_value) titleParts.push("★ Marked high-value");
+  const title = titleParts.filter(Boolean).join("\n");
 
   const visNode = {
     id: node.id,
@@ -120,6 +152,9 @@ function formatEdgeHint(edge, nodeById) {
   if (edge.source) meta.push(`source: ${edge.source}`);
   if (edge.discovered_via) meta.push(`via: ${edge.discovered_via}`);
   if (edge.cartography_rel) meta.push(`cartography: ${edge.cartography_rel}`);
+  if (edge.mitre_technique_ids?.length) {
+    meta.push(`MITRE: ${edge.mitre_technique_ids.join(", ")}`);
+  }
   if (meta.length) lines.push(meta.join(" · "));
 
   return lines.join("\n");
@@ -199,7 +234,10 @@ function visEdgeId(edge, idCounts) {
 }
 
 function edgeMatchesStep(visEdge, step) {
-  return visEdge.from === step.src && visEdge.to === step.dst && visEdge.label === step.rel;
+  const src = step.src || step.src_id;
+  const dst = step.dst || step.dst_id;
+  const rel = step.rel || step.rel_type;
+  return visEdge.from === src && visEdge.to === dst && (visEdge._relLabel === rel || visEdge.label === rel);
 }
 
 function buildVisEdges(edges, nodeById) {
@@ -372,14 +410,23 @@ function initNetwork() {
   state.network = new vis.Network(container, { nodes: state.nodesDS, edges: state.edgesDS }, options);
 
   state.network.on("click", (params) => {
+    hideContextMenu();
     if (params.nodes.length) {
-      selectNode(params.nodes[0]);
+      setPathSearchStart(params.nodes[0]);
+    }
+  });
+
+  state.network.on("oncontext", (params) => {
+    params.event.preventDefault();
+    hideContextMenu();
+    if (params.nodes.length) {
+      showContextMenu(params.event, params.nodes[0]);
     }
   });
 
   state.network.on("doubleClick", (params) => {
     if (params.nodes.length) {
-      state.network.focus(params.nodes[0], { scale: 1.2, animation: true });
+      openNodeDetail(params.nodes[0]);
     }
   });
 
@@ -396,11 +443,7 @@ function initNetwork() {
     hideEdgeTooltip();
     if (!params.edge) return;
     const visEdge = state.edgesDS.get(params.edge);
-    if (!visEdge?._hideLabel) return;
-    const onPath =
-      state.highlightedPath &&
-      (state.highlightedPath.steps || []).some((step) => edgeMatchesStep(visEdge, step));
-    if (!onPath) {
+    if (visEdge?._hideLabel) {
       state.edgesDS.update({ id: params.edge, label: "" });
     }
   });
@@ -409,6 +452,31 @@ function initNetwork() {
 
   window.addEventListener("resize", () => {
     if (state.network) state.network.redraw();
+  });
+
+  initContextMenu();
+  initPathGraph();
+}
+
+function initPathGraph() {
+  const container = document.getElementById("pathGraph");
+  if (!container) return;
+
+  state.pathNodesDS = new vis.DataSet([]);
+  state.pathEdgesDS = new vis.DataSet([]);
+  state.pathNetwork = new vis.Network(
+    container,
+    { nodes: state.pathNodesDS, edges: state.pathEdgesDS },
+    {
+      physics: { enabled: false },
+      interaction: { hover: true, hoverConnectedEdges: true, tooltipDelay: 80 },
+      edges: { width: 2, selectionWidth: 2.5, hoverWidth: 3 },
+      nodes: { borderWidth: 2, margin: 6 },
+    },
+  );
+
+  state.pathNetwork.on("doubleClick", (params) => {
+    if (params.nodes.length) openNodeDetail(params.nodes[0]);
   });
 }
 
@@ -446,6 +514,38 @@ function renderGraph(graph) {
   requestAnimationFrame(fitGraphView);
 }
 
+/** Merge server graph into UI without resetting layout (after markings / propagation). */
+function syncGraphFromServer(graph) {
+  state.graph = graph;
+  const visibleNodes = graph.nodes.filter((n) => n.label !== "CollectionSession");
+  const nodeIds = new Set(visibleNodes.map((n) => n.id));
+  const nodeById = graphNodeMap(visibleNodes);
+  const edges = annotateEdgeSourceIndex(
+    graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED"),
+  );
+
+  const existingIds = new Set(state.nodesDS.getIds());
+  visibleNodes.forEach((node) => {
+    const vis = toVisNode(node, state.nodePositions[node.id]);
+    if (existingIds.has(node.id)) {
+      state.nodesDS.update(vis);
+    } else {
+      state.nodesDS.add(vis);
+    }
+  });
+  existingIds.forEach((id) => {
+    if (!nodeIds.has(id)) state.nodesDS.remove(id);
+  });
+
+  state.edgesDS.clear();
+  state.edgesDS.add(buildVisEdges(edges, nodeById));
+  populateNodeDatalist(visibleNodes);
+
+  if (state.selectedNodeId && nodeIds.has(state.selectedNodeId)) {
+    refreshMainGraphSelection();
+  }
+}
+
 function populateNodeDatalist(nodes) {
   const dl = document.getElementById("nodeOptions");
   dl.innerHTML = '<option value="caller">caller (compromised identity)</option>';
@@ -460,8 +560,130 @@ function populateNodeDatalist(nodes) {
     });
 }
 
+function collectPathSubgraph(paths) {
+  const nodeIds = new Set();
+  const steps = [];
+  const stepKeys = new Set();
+  for (const p of paths || []) {
+    for (const id of p.node_ids || []) nodeIds.add(id);
+    for (const s of p.steps || []) {
+      const key = `${s.src}|${s.rel}|${s.dst}`;
+      if (stepKeys.has(key)) continue;
+      stepKeys.add(key);
+      steps.push(s);
+    }
+  }
+  return { nodeIds, steps };
+}
+
+function stepsToGraphEdges(steps) {
+  return steps.map((step, index) => ({
+    src: step.src,
+    dst: step.dst,
+    rel: step.rel,
+    _sourceIndex: index,
+  }));
+}
+
+function buildHighlightedPathEdges(steps, nodeById) {
+  return buildVisEdges(annotateEdgeSourceIndex(stepsToGraphEdges(steps)), nodeById).map((edge) => ({
+    ...edge,
+    label: edge._relLabel || edge.label,
+    _hideLabel: false,
+    color: PATH_EDGE_COLOR,
+    width: 2.5,
+    font: { size: 10, color: "#ffa657", strokeWidth: 0, align: "horizontal" },
+  }));
+}
+
+function clearGeneratedPathGraph() {
+  state.generatedPaths = null;
+  const section = document.getElementById("pathGraphSection");
+  if (section) section.style.display = "none";
+  if (state.pathNodesDS) state.pathNodesDS.clear();
+  if (state.pathEdgesDS) state.pathEdgesDS.clear();
+}
+
+function renderGeneratedPathGraph(paths, { fit = true } = {}) {
+  if (!state.pathNodesDS || !state.pathEdgesDS || !paths?.length) {
+    clearGeneratedPathGraph();
+    return;
+  }
+
+  const { nodeIds, steps } = collectPathSubgraph(paths);
+  const visibleNodes = state.graph.nodes.filter((n) => nodeIds.has(n.id));
+  if (!visibleNodes.length) {
+    clearGeneratedPathGraph();
+    return;
+  }
+
+  const rootId = paths[0]?.node_ids?.[0] || visibleNodes[0].id;
+  const nodeById = graphNodeMap(visibleNodes);
+  const layoutEdges = stepsToGraphEdges(steps);
+  const positions = computeLayeredLayout(visibleNodes, layoutEdges, rootId);
+
+  state.pathNodesDS.clear();
+  state.pathEdgesDS.clear();
+  state.pathNodesDS.add(
+    visibleNodes.map((node) => {
+      const vis = toVisNode(node, positions[node.id]);
+      if (node.id === rootId) {
+        vis.color = SELECTED_NODE_COLOR;
+        vis.borderWidth = 3;
+      } else {
+        vis.color = PATH_NODE_COLOR;
+        vis.borderWidth = 3;
+      }
+      return vis;
+    }),
+  );
+  state.pathEdgesDS.add(buildHighlightedPathEdges(steps, nodeById));
+
+  const badge = document.getElementById("pathGraphBadge");
+  if (badge) badge.textContent = `${visibleNodes.length} nodes · ${paths.length} path${paths.length === 1 ? "" : "s"}`;
+
+  if (fit && state.pathNetwork) {
+    requestAnimationFrame(() => {
+      state.pathNetwork.fit({ animation: { duration: 400, easingFunction: "easeInOutQuad" } });
+    });
+  }
+}
+
+function showGeneratedPaths(paths) {
+  state.generatedPaths = paths || [];
+  const section = document.getElementById("pathGraphSection");
+  if (!paths?.length) {
+    if (section) section.style.display = "none";
+    clearGeneratedPathGraph();
+    return;
+  }
+  if (section) section.style.display = "block";
+  renderGeneratedPathGraph(paths, { fit: true });
+}
+
+function refreshMainGraphSelection() {
+  if (!state.selectedNodeId) return;
+  state.nodesDS.get().forEach((n) => {
+    const raw = n._raw;
+    if (n.id === state.selectedNodeId) {
+      state.nodesDS.update({ id: n.id, color: SELECTED_NODE_COLOR, borderWidth: 3 });
+    } else {
+      const colors = raw ? nodeMarkingColor(raw) : nodeColor(n.group);
+      state.nodesDS.update({ id: n.id, color: { ...colors }, borderWidth: 2 });
+    }
+  });
+}
+
+function setPathSearchStart(nodeId) {
+  state.selectedNodeId = nodeId;
+  document.getElementById("startSearch").value = nodeId;
+  const queryStart = document.getElementById("queryStart");
+  if (queryStart) queryStart.value = nodeId;
+  refreshMainGraphSelection();
+}
+
 function clearHighlight() {
-  state.highlightedPath = null;
+  state.selectedNodeId = null;
   const visibleNodes = state.graph.nodes.filter((n) => n.label !== "CollectionSession");
   state.nodesDS.update(visibleNodes.map((node) => toVisNode(node, state.nodePositions[node.id])));
   const nodeIds = new Set(visibleNodes.map((n) => n.id));
@@ -470,49 +692,10 @@ function clearHighlight() {
     state.graph.edges.filter((e) => nodeIds.has(e.src) && nodeIds.has(e.dst) && e.rel !== "DISCOVERED"),
   );
   state.edgesDS.update(buildVisEdges(edges, nodeById));
+  clearGeneratedPathGraph();
 }
 
-function highlightPath(path) {
-  if (!path) return;
-  state.highlightedPath = path;
-  const nodeSet = new Set(path.node_ids || []);
-  const steps = path.steps || [];
-
-  state.nodesDS.get().forEach((n) => {
-    if (nodeSet.has(n.id)) {
-      state.nodesDS.update({ id: n.id, color: PATH_NODE_COLOR, borderWidth: 3 });
-    } else {
-      state.nodesDS.update({ id: n.id, color: { ...nodeColor(n.group), opacity: 0.35 } });
-    }
-  });
-
-  state.edgesDS.get().forEach((e) => {
-    if (steps.some((step) => edgeMatchesStep(e, step))) {
-      state.edgesDS.update({
-        id: e.id,
-        label: e._relLabel || e.label,
-        color: PATH_EDGE_COLOR,
-        width: 3,
-        font: { size: 11, color: "#ffa657", strokeWidth: 0, align: "horizontal" },
-      });
-    } else {
-      state.edgesDS.update({
-        id: e.id,
-        label: e._hideLabel ? "" : e._relLabel || e.label,
-        color: { color: "#30363d", highlight: "#484f58" },
-        width: 1,
-        font: { size: 9, color: "#8b949e", strokeWidth: 0, align: "horizontal" },
-      });
-    }
-  });
-
-  state.network.fit({
-    nodes: [...nodeSet],
-    animation: { duration: 500, easingFunction: "easeInOutQuad" },
-  });
-}
-
-function selectNode(nodeId) {
+function openNodeDetail(nodeId) {
   state.selectedNodeId = nodeId;
   const visNode = state.nodesDS.get(nodeId);
   const raw = visNode?._raw || state.graph.nodes.find((n) => n.id === nodeId);
@@ -524,8 +707,12 @@ function selectNode(nodeId) {
   const { id, label, ...props } = raw;
   document.getElementById("nodeProps").textContent = JSON.stringify(props, null, 2);
 
-  state.nodesDS.update({ id: nodeId, color: SELECTED_NODE_COLOR, borderWidth: 3 });
+  refreshMainGraphSelection();
   switchTab("node");
+}
+
+function selectNode(nodeId) {
+  openNodeDetail(nodeId);
 }
 
 function switchTab(name) {
@@ -558,7 +745,12 @@ function renderPaths(paths, mode = "paths", opts = {}) {
       <div class="title"><span class="score">${p.score ?? "—"}</span> → ${target}</div>
       <div class="path-step">${steps || "direct"}</div>
     `;
-    li.onclick = () => highlightPath(p);
+    li.onclick = () => {
+      const list = document.getElementById(opts.listId || "paths");
+      list.querySelectorAll("li").forEach((item) => item.classList.remove("active"));
+      li.classList.add("active");
+      renderGeneratedPathGraph([p], { fit: true });
+    };
     ul.appendChild(li);
   });
 }
@@ -611,7 +803,7 @@ async function runPathQuery(query) {
     }
 
     renderPaths(data.paths || [], mode);
-    if (data.paths?.length) highlightPath(data.paths[0]);
+    showGeneratedPaths(data.paths || []);
     return data;
   } catch (err) {
     console.error("Path search failed", err);
@@ -630,7 +822,7 @@ async function runSuggestion(suggestion) {
       method: "POST",
     });
     renderPaths(data.paths || [], suggestion.mode === "scenario" ? "paths" : suggestion.mode);
-    if (data.paths?.length) highlightPath(data.paths[0]);
+    showGeneratedPaths(data.paths || []);
     switchTab("search");
     return;
   }
@@ -674,7 +866,7 @@ async function loadSession(sessionId) {
     renderGraph(graph);
     clearHighlight();
     renderPaths([]);
-    await loadSuggestions();
+    await Promise.all([loadSuggestions(), refreshMarkingsUI()]);
 
     document.getElementById("searchMode").value = "blast";
     document.querySelectorAll("#sessions li").forEach((li) => {
@@ -722,7 +914,7 @@ async function runGraphQuery() {
     if (data.start) document.getElementById("queryStart").value = data.start;
     const paths = data.paths || [];
     renderPaths(paths, body.mode, { listId: "queryPaths", countId: "queryPathCount" });
-    if (paths.length) highlightPath(paths[0]);
+    showGeneratedPaths(paths);
     switchTab("query");
     return data;
   } catch (err) {
@@ -842,7 +1034,7 @@ async function refreshSessions(opts = {}) {
       hint.textContent =
         scope === "ids"
           ? "No matching session"
-          : "No sessions yet — run enum/probe/import, or import a demo report above";
+          : "No sessions yet — import a report above, or load a demo fixture";
       hint.style.display = "block";
     }
     return;
@@ -907,11 +1099,16 @@ async function loadFixtureSession() {
 
 async function markSelectedNode({ compromised, high_value, clear = false }) {
   if (!state.sessionId || !state.selectedNodeId) return alert("Select a node first");
+  return markNode(state.selectedNodeId, { compromised, high_value, clear });
+}
+
+async function markNode(nodeId, { compromised, high_value, clear = false, refreshPaths = true }) {
+  if (!state.sessionId || !nodeId) return;
   const status = document.getElementById("markStatus");
-  status.textContent = "Updating…";
+  if (status) status.textContent = "Updating…";
   try {
     const body = {
-      refs: [state.selectedNodeId],
+      refs: [nodeId],
       source: "ui",
       clear,
     };
@@ -922,16 +1119,178 @@ async function markSelectedNode({ compromised, high_value, clear = false }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
-    renderGraph(graph);
-    selectNode(state.selectedNodeId);
+    const [graph] = await Promise.all([
+      fetchJSON(`/api/sessions/${state.sessionId}/graph`),
+      refreshMarkingsUI(),
+    ]);
+    syncGraphFromServer(graph);
+    if (state.selectedNodeId === nodeId) {
+      refreshMainGraphSelection();
+      const raw = state.graph.nodes.find((n) => n.id === nodeId);
+      if (raw && document.getElementById("nodeDetail").style.display !== "none") {
+        const { id, label, ...props } = raw;
+        document.getElementById("nodeProps").textContent = JSON.stringify(props, null, 2);
+      }
+    }
     const marked = result.marked?.[0];
-    status.textContent = marked
-      ? `Marked — compromised: ${!!marked.is_compromised}, high-value: ${!!marked.is_high_value}`
-      : "No changes";
+    if (status) {
+      status.textContent = marked
+        ? `Marked — compromised: ${!!marked.is_compromised}, high-value: ${!!marked.is_high_value}`
+        : "No changes";
+    }
+    if (result.propagated?.length) {
+      if (status) status.textContent += ` · ${result.propagated.length} propagated`;
+    }
+    if (refreshPaths && state.markings?.compromised_count && state.markings?.high_value_count) {
+      await runMarkingPathsQuery("compromised_to_high_value", { silent: true });
+    }
+    return result;
   } catch (err) {
-    status.textContent = "";
+    if (status) status.textContent = "";
     alert(`Mark failed: ${err.message || err}`);
+  }
+}
+
+async function refreshMarkingsUI() {
+  const el = document.getElementById("markingsSummary");
+  if (!state.sessionId || !el) return null;
+  try {
+    const summary = await fetchJSON(`/api/sessions/${state.sessionId}/markings`);
+    state.markings = summary;
+    const parts = [];
+    if (summary.compromised_count) {
+      parts.push(`<span class="marking-chip compromised">${summary.compromised_count} compromised</span>`);
+    }
+    if (summary.high_value_count) {
+      parts.push(`<span class="marking-chip high-value">${summary.high_value_count} high-value</span>`);
+    }
+    if (parts.length) {
+      el.innerHTML = parts.join("") + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Right-click nodes to add or change markings</div>';
+    } else {
+      el.textContent = "Right-click nodes to mark compromised or high-value";
+    }
+    return summary;
+  } catch (err) {
+    console.warn("Could not refresh markings", err);
+    return null;
+  }
+}
+
+async function runMarkingPathsQuery(kind, { silent = false } = {}) {
+  if (!state.sessionId) return alert("Select a session first");
+  const maxDepth = Number(document.getElementById("maxDepth")?.value) || 6;
+  try {
+    const data = await fetchJSON(`/api/sessions/${state.sessionId}/paths/markings-query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, max_depth: maxDepth, max_paths: 30 }),
+    });
+    state.markings = data.markings || state.markings;
+    refreshMarkingsSummaryFromData(data.markings);
+    renderPaths(data.paths || [], kind === "blast_compromised" ? "blast" : "paths");
+    showGeneratedPaths(data.paths || []);
+    switchTab("search");
+    return data;
+  } catch (err) {
+    if (!silent) alert(`Marking query failed: ${err.message || err}`);
+    console.error("Marking query failed", err);
+  }
+}
+
+function refreshMarkingsSummaryFromData(summary) {
+  const el = document.getElementById("markingsSummary");
+  if (!el || !summary) return;
+  const parts = [];
+  if (summary.compromised_count) {
+    parts.push(`<span class="marking-chip compromised">${summary.compromised_count} compromised</span>`);
+  }
+  if (summary.high_value_count) {
+    parts.push(`<span class="marking-chip high-value">${summary.high_value_count} high-value</span>`);
+  }
+  if (parts.length) {
+    el.innerHTML = parts.join("") + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Right-click nodes to add or change markings</div>';
+  }
+}
+
+let contextMenuEl = null;
+
+function initContextMenu() {
+  contextMenuEl = document.createElement("div");
+  contextMenuEl.id = "graphContextMenu";
+  contextMenuEl.className = "context-menu";
+  document.body.appendChild(contextMenuEl);
+  document.addEventListener("click", hideContextMenu);
+  document.addEventListener("scroll", hideContextMenu, true);
+}
+
+function hideContextMenu() {
+  if (contextMenuEl) contextMenuEl.style.display = "none";
+  state.contextMenuNodeId = null;
+}
+
+function showContextMenu(event, nodeId) {
+  if (!contextMenuEl) return;
+  state.contextMenuNodeId = nodeId;
+  const raw = state.graph.nodes.find((n) => n.id === nodeId);
+  const name = raw ? displayName(raw) : shortId(nodeId);
+  const isCompromised = !!raw?.is_compromised;
+  const isHighValue = !!raw?.is_high_value;
+
+  contextMenuEl.innerHTML = `
+    <div class="context-menu-header">${shortId(name)}</div>
+    <button type="button" data-action="mark-compromised">Mark compromised</button>
+    <button type="button" data-action="mark-high-value" class="warn">Mark high-value</button>
+    <button type="button" data-action="clear-markings">Clear markings</button>
+    <hr />
+    <button type="button" data-action="blast-from-here">Blast radius from here</button>
+    <button type="button" data-action="paths-from-here">Paths from here → secrets</button>
+    <hr />
+    <button type="button" data-action="query-compromised-hv">Query: all compromised → high value</button>
+  `;
+
+  contextMenuEl.querySelector('[data-action="mark-compromised"]').onclick = () => {
+    hideContextMenu();
+    setPathSearchStart(nodeId);
+    markNode(nodeId, { compromised: true });
+  };
+  contextMenuEl.querySelector('[data-action="mark-high-value"]').onclick = () => {
+    hideContextMenu();
+    setPathSearchStart(nodeId);
+    markNode(nodeId, { high_value: true });
+  };
+  contextMenuEl.querySelector('[data-action="clear-markings"]').onclick = () => {
+    hideContextMenu();
+    setPathSearchStart(nodeId);
+    markNode(nodeId, { compromised: false, high_value: false, clear: true });
+  };
+  contextMenuEl.querySelector('[data-action="blast-from-here"]').onclick = () => {
+    hideContextMenu();
+    document.getElementById("startSearch").value = nodeId;
+    runPathQuery({ start: nodeId, mode: "blast" });
+    switchTab("search");
+  };
+  contextMenuEl.querySelector('[data-action="paths-from-here"]').onclick = () => {
+    hideContextMenu();
+    document.getElementById("startSearch").value = nodeId;
+    document.getElementById("searchMode").value = "paths";
+    document.getElementById("targetConcept").value = "SecretStore";
+    runPathQuery({ start: nodeId, mode: "paths", target_concept: "SecretStore" });
+    switchTab("search");
+  };
+  contextMenuEl.querySelector('[data-action="query-compromised-hv"]').onclick = () => {
+    hideContextMenu();
+    runMarkingPathsQuery("compromised_to_high_value");
+  };
+
+  contextMenuEl.style.display = "block";
+  contextMenuEl.style.left = `${event.clientX}px`;
+  contextMenuEl.style.top = `${event.clientY}px`;
+  const rect = contextMenuEl.getBoundingClientRect();
+  if (rect.right > window.innerWidth - 8) {
+    contextMenuEl.style.left = `${event.clientX - rect.width}px`;
+  }
+  if (rect.bottom > window.innerHeight - 8) {
+    contextMenuEl.style.top = `${event.clientY - rect.height}px`;
   }
 }
 
@@ -955,7 +1314,7 @@ async function appendProperty() {
   });
 
   const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
-  renderGraph(graph);
+  syncGraphFromServer(graph);
   selectNode(state.selectedNodeId);
   document.getElementById("propKey").value = "";
   document.getElementById("propValue").value = "";
@@ -989,8 +1348,7 @@ document.getElementById("runSearch").onclick = () => runPathQuery({});
 document.getElementById("startSearch").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
-    document.getElementById("searchMode").value = "blast";
-    runPathQuery({ mode: "blast" });
+    runPathQuery({});
   }
 });
 document.getElementById("runGraphQuery").onclick = runGraphQuery;
@@ -1013,6 +1371,10 @@ document.getElementById("markCompromised").onclick = () => markSelectedNode({ co
 document.getElementById("markHighValue").onclick = () => markSelectedNode({ high_value: true });
 document.getElementById("clearMarkings").onclick = () =>
   markSelectedNode({ compromised: false, high_value: false, clear: true });
+document.getElementById("queryCompromisedToHighValue").onclick = () =>
+  runMarkingPathsQuery("compromised_to_high_value");
+document.getElementById("queryBlastCompromised").onclick = () => runMarkingPathsQuery("blast_compromised");
+document.getElementById("queryPathsToHighValue").onclick = () => runMarkingPathsQuery("to_high_value");
 document.getElementById("searchMode").onchange = updateTargetFieldsVisibility;
 
 document.querySelectorAll(".tab").forEach((tab) => {

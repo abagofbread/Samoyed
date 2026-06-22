@@ -170,4 +170,6 @@ def export_ontology() -> dict[str, Any]:
             for m in CONCEPT_MAPPINGS
         ],
         "cross_layer_edges": list(CROSS_LAYER_EDGES),
+        "mitre_framework": "ATT&CK Enterprise",
+        "mitre_matrix_url": "https://attack.mitre.org/matrices/enterprise/cloud/",
     }

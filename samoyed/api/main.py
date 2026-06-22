@@ -378,6 +378,12 @@ class MarkAlertRequest(BaseModel):
     source: str = "alert"
 
 
+class MarkingPathsRequest(BaseModel):
+    kind: str  # compromised_to_high_value | blast_compromised | to_high_value
+    max_depth: int = 6
+    max_paths: int = 30
+
+
 class DeclareRelationshipRequest(BaseModel):
     relationship: str = "depends_on"
     from_ref: str | None = None
@@ -449,6 +455,42 @@ def post_markings_from_alert(session_ref: str, req: MarkAlertRequest):
             high_value_refs=req.high_value or None,
             source=req.source,
         )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/sessions/{session_ref}/paths/markings-query")
+def query_marking_paths(session_ref: str, req: MarkingPathsRequest):
+    from samoyed.path_engine.format import format_path_query_response
+
+    try:
+        session = _resolve_session_ref(session_ref)
+        session_id = session.session_id
+        result = SESSION_STORE.run_marking_paths_query(
+            session_id,
+            kind=req.kind,
+            max_depth=req.max_depth,
+            max_paths=req.max_paths,
+        )
+        start = result["compromised_starts"][0] if result["compromised_starts"] else None
+        if not start:
+            start = SESSION_STORE.find_caller_node(session) or ""
+        mode = "blast" if req.kind == "blast_compromised" else "paths"
+        formatted = format_path_query_response(
+            session_id=session_id,
+            graph=session.snapshot,
+            start_node_id=start,
+            mode=mode,
+            raw={"paths": result["paths"]},
+            query=req.model_dump(exclude_none=True),
+        )
+        formatted["kind"] = req.kind
+        formatted["markings"] = result["markings"]
+        formatted["compromised_starts"] = result["compromised_starts"]
+        formatted["high_value_targets"] = result["high_value_targets"]
+        return formatted
     except KeyError:
         raise HTTPException(404, "Session not found")
     except ValueError as exc:

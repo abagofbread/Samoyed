@@ -31,6 +31,28 @@ samoyed firing-range verify
 | Secret `prod-db` | Secret-store target |
 | Lambda `vulnerable-handler` | Runtime binding via `lambda-exec` role with secret read |
 
+### Bronze medal (enumeration noise + 2–3 hop paths)
+
+Orphan resources plus chains reachable from `leaked-user` without touching prod:
+
+| Path | Hops | Target |
+|------|------|--------|
+| `leaked-user` → `legacy-monitoring-role` | 2 | secret `old-slack-webhook` |
+| `leaked-user` → `stray-config-auditor` | 2 | bucket `marketing-exports-dead` |
+| `leaked-user` → `legacy-monitoring-role` → `bronze-lambda-exec` | 3 | secret `rotated-api-key-archive` |
+
+### Silver medal (platform-shaped decoys + 3 hop dev paths)
+
+Dev staging chain stops at dev — prod payment secret stays unreachable:
+
+| Path | Hops | Target |
+|------|------|--------|
+| `leaked-user` → `dev-staging-operator` → `dev-cicd-deploy` | 3 | `dev/hubspot-sandbox-token`, `dev-cicd-artifacts`, `dev-k8s-config-snapshots` |
+
+Gold path remains: `leaked-user` → `admin` → `prod-db` / `prod-data`.
+
+Clutter seeding is best-effort: unsupported LocalStack APIs are skipped and recorded in `seed` metadata under `clutter.skipped`.
+
 Account ID comes from LocalStack (typically `000000000000`).
 
 ## Three test workflows (real tool output)
@@ -101,4 +123,33 @@ pytest tests/test_firing_range.py tests/test_client_iam_report.py -m "not integr
 
 ```bash
 samoyed firing-range down
+```
+
+## Local artifact snapshots
+
+Collect realistic assessment outputs into gitignored `.samoyed/firing-range/` (never committed):
+
+```bash
+samoyed firing-range up && samoyed firing-range seed
+samoyed firing-range collect-artifacts
+# → .samoyed/firing-range/snapshots/<timestamp>/
+# → .samoyed/firing-range/snapshots/latest/   (copy of most recent run)
+```
+
+Each snapshot includes:
+
+| File | What it is |
+|------|------------|
+| `manifest.json` | Index + counts (buckets, roles, probes, clutter) |
+| `seed-metadata.json` | Lab topology + bronze/silver clutter report |
+| `leaked-user-credentials.json` | Compromised key (simulated breach artifact) |
+| `client-iam-report.json` | Samoyed client agent recon (`iam-report` connector) |
+| `aws-authz-details.json` | `GetAccountAuthorizationDetails` export |
+| `probe-report.json` | Leaked-key API probe catalog results |
+| `account-inventory.json` | Admin-style S3/secrets/Lambda/EKS/EC2 listing |
+
+Import into Samoyed after collecting:
+
+```bash
+samoyed firing-range collect-artifacts --import
 ```

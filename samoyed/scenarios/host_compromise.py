@@ -13,7 +13,6 @@ class HostCompromiseScenario:
         paths = get_blast_radius(
             graph,
             start_node_id=start_node_id,
-            target_concepts=self.target_concepts,
             max_depth=8,
         )
         # Include paths through stolen cloud identities (LOGGED_IN_AS / STORES_CREDS_FOR)
@@ -24,7 +23,6 @@ class HostCompromiseScenario:
                 get_blast_radius(
                     graph,
                     start_node_id=dst_id,
-                    target_concepts=self.target_concepts,
                     max_depth=6,
                 )
             )

@@ -576,6 +576,57 @@ class SessionStore:
             max_paths=max_paths,
         )
 
+    def run_marking_paths_query(
+        self,
+        session_id: str,
+        *,
+        kind: str,
+        max_depth: int = 6,
+        max_paths: int = 30,
+    ) -> dict[str, Any]:
+        from samoyed.path_engine.custom_query import serialize_paths
+        from samoyed.path_engine.search import (
+            find_compromised_to_high_value_paths,
+            find_paths_to_high_value_nodes,
+            get_blast_radius_multi,
+        )
+        from samoyed.graph.markings import find_compromised_nodes, find_high_value_nodes, summarize_markings
+
+        session = self.get(session_id)
+        if not session:
+            raise KeyError(session_id)
+
+        graph = session.snapshot
+        markings = summarize_markings(graph)
+        compromised_ids = find_compromised_nodes(graph)
+        high_value_ids = find_high_value_nodes(graph)
+
+        if kind == "compromised_to_high_value":
+            paths = find_compromised_to_high_value_paths(
+                graph, max_depth=max_depth, max_paths=max_paths
+            )
+        elif kind == "blast_compromised":
+            paths = get_blast_radius_multi(
+                graph, start_node_ids=compromised_ids, max_depth=max_depth, max_paths=max_paths
+            )
+        elif kind == "to_high_value":
+            paths = find_paths_to_high_value_nodes(
+                graph, start_node_ids=compromised_ids, max_depth=max_depth, max_paths=max_paths
+            )
+        else:
+            raise ValueError(
+                f"Unknown marking query kind '{kind}'. "
+                "Use compromised_to_high_value, blast_compromised, or to_high_value."
+            )
+
+        return {
+            "kind": kind,
+            "markings": markings,
+            "compromised_starts": compromised_ids,
+            "high_value_targets": high_value_ids,
+            "paths": serialize_paths(paths),
+        }
+
     @staticmethod
     def _session_summary(record: SessionRecord) -> dict[str, Any]:
         return SessionStore._enrich_summary(

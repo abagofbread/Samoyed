@@ -6,35 +6,36 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-import boto3
 from botocore.exceptions import ClientError
 
+from samoyed.firing_range import aws_helpers
+from samoyed.firing_range.clutter import seed_lab_clutter
 from samoyed.firing_range.config import (
     ARTIFACTS_DIR,
     CLIENT_IAM_REPORT_FILE,
     CREDENTIALS_FILE,
-    DEFAULT_ACCESS_KEY,
     DEFAULT_ENDPOINT,
     DEFAULT_REGION,
-    DEFAULT_SECRET_KEY,
+    DEFAULT_ACCESS_KEY,
     LAB_ADMIN_ROLE,
     LAB_BUCKET,
     LAB_LAMBDA,
     LAB_LAMBDA_ROLE,
     LAB_SECRET,
+    SEED_METADATA_FILE,
     LAB_USER,
     LAB_WEB_BUCKET,
 )
 
 
 def _client(service: str, *, endpoint_url: str, region: str) -> Any:
-    return boto3.client(
-        service,
-        endpoint_url=endpoint_url,
-        region_name=region,
-        aws_access_key_id=DEFAULT_ACCESS_KEY,
-        aws_secret_access_key=DEFAULT_SECRET_KEY,
-    )
+    return aws_helpers.aws_client(service, endpoint_url=endpoint_url, region=region)
+
+
+_ensure_user = aws_helpers.ensure_user
+_ensure_role = aws_helpers.ensure_role
+_ensure_bucket = aws_helpers.ensure_bucket
+_ensure_secret = aws_helpers.ensure_secret
 
 
 def _account_id(sts: Any) -> str:
@@ -116,10 +117,19 @@ def seed_aws_lab(
                     "iam:ListUserPolicies",
                     "iam:GetUserPolicy",
                     "iam:ListAttachedUserPolicies",
+                    "iam:ListRoles",
+                    "iam:ListRolePolicies",
+                    "iam:GetRolePolicy",
                     "s3:ListAllMyBuckets",
                     "s3:ListBuckets",
                     "secretsmanager:ListSecrets",
                     "lambda:ListFunctions",
+                    "ec2:DescribeInstances",
+                    "elasticloadbalancing:DescribeLoadBalancers",
+                    "elasticloadbalancingv2:DescribeLoadBalancers",
+                    "eks:ListClusters",
+                    "codepipeline:ListPipelines",
+                    "codebuild:ListProjects",
                 ],
                 "Resource": "*",
             }
@@ -145,6 +155,13 @@ def seed_aws_lab(
         region=region,
     )
 
+    clutter = seed_lab_clutter(
+        endpoint_url=endpoint_url,
+        region=region,
+        account_id=account,
+        leaked_user_arn=user_arn,
+    )
+
     leaked_creds = _ensure_leaked_access_key(iam, endpoint_url=endpoint_url, region=region)
     credentials_path = None
     if write_credentials:
@@ -152,7 +169,7 @@ def seed_aws_lab(
         credentials_path = str(CREDENTIALS_FILE)
         CREDENTIALS_FILE.write_text(json.dumps(leaked_creds, indent=2), encoding="utf-8")
 
-    return {
+    meta = {
         "provider": "aws",
         "emulator": endpoint_url,
         "account_id": account,
@@ -163,6 +180,7 @@ def seed_aws_lab(
         "secret_arn": secret_arn,
         "lambda_arn": lambda_arn,
         "lambda_role_arn": lambda_role_arn,
+        "clutter": clutter,
         "leaked_credentials_file": credentials_path,
         "seed_access_key_id": DEFAULT_ACCESS_KEY,
         "hint": (
@@ -171,6 +189,9 @@ def seed_aws_lab(
             f"Client report: samoyed firing-range client-report"
         ),
     }
+    if write_credentials:
+        SEED_METADATA_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return meta
 
 
 def ping_emulator(*, endpoint_url: str = DEFAULT_ENDPOINT, region: str = DEFAULT_REGION) -> bool:
@@ -267,27 +288,6 @@ def _ensure_lambda(lambda_client: Any, *, role_arn: str, region: str) -> str:
         return lambda_client.get_function(FunctionName=LAB_LAMBDA)["Configuration"]["FunctionArn"]
 
 
-def _ensure_user(iam: Any, name: str) -> None:
-    try:
-        iam.create_user(UserName=name)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "EntityAlreadyExists":
-            raise
-
-
-def _ensure_role(iam: Any, name: str, trust: dict[str, Any]) -> str:
-    try:
-        resp = iam.create_role(
-            RoleName=name,
-            AssumeRolePolicyDocument=json.dumps(trust),
-        )
-        return resp["Role"]["Arn"]
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "EntityAlreadyExists":
-            raise
-        return iam.get_role(RoleName=name)["Role"]["Arn"]
-
-
 def _attach_admin_access(iam: Any, role_name: str) -> None:
     try:
         iam.attach_role_policy(
@@ -297,28 +297,3 @@ def _attach_admin_access(iam: Any, role_name: str) -> None:
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") != "EntityAlreadyExists":
             raise
-
-
-def _ensure_bucket(s3: Any, name: str, *, region: str) -> None:
-    try:
-        if region == "us-east-1":
-            s3.create_bucket(Bucket=name)
-        else:
-            s3.create_bucket(
-                Bucket=name,
-                CreateBucketConfiguration={"LocationConstraint": region},
-            )
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code not in {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}:
-            raise
-
-
-def _ensure_secret(secrets: Any, name: str) -> str:
-    try:
-        resp = secrets.create_secret(Name=name, SecretString="emulated-db-password")
-        return resp["ARN"]
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "ResourceExistsException":
-            raise
-        return secrets.describe_secret(SecretId=name)["ARN"]

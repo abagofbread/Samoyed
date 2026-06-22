@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import typer
 import uvicorn
@@ -247,6 +247,71 @@ def firing_range_scoutsuite_cmd(
         payload = Path(meta["result_file"]).read_bytes()
         record = SESSION_STORE.create_import_session("scoutsuite", payload)
         typer.echo(f"Imported session {record.session_id} ({record.metadata.get('node_count')} nodes)")
+
+
+@firing_range_app.command("collect-artifacts")
+def firing_range_collect_artifacts_cmd(
+    endpoint_url: str = typer.Option(DEFAULT_ENDPOINT, help="Emulated AWS endpoint"),
+    region: str = typer.Option(DEFAULT_REGION, help="AWS region"),
+    output: Optional[Path] = typer.Option(
+        None,
+        help="Snapshot directory (default: .samoyed/firing-range/snapshots/<timestamp>)",
+    ),
+    reseed: bool = typer.Option(False, "--reseed", help="Re-seed lab before collecting"),
+    import_sessions: bool = typer.Option(False, "--import", help="Import reports into Samoyed sessions"),
+    no_latest: bool = typer.Option(False, "--no-latest", help="Skip updating snapshots/latest"),
+) -> None:
+    """Collect client report, authz export, probes, and inventory into a gitignored snapshot."""
+    from samoyed.firing_range.collect import collect_firing_range_artifacts
+    from samoyed.firing_range.config import LATEST_SNAPSHOT_DIR
+
+    if not ping_emulator(endpoint_url=endpoint_url, region=region):
+        typer.echo(f"Emulator not reachable at {endpoint_url}. Run: samoyed firing-range up", err=True)
+        raise typer.Exit(1)
+    if not reseed and not CREDENTIALS_FILE.is_file():
+        typer.echo(f"Credentials missing: {CREDENTIALS_FILE}. Run: samoyed firing-range seed", err=True)
+        raise typer.Exit(1)
+
+    try:
+        manifest = collect_firing_range_artifacts(
+            endpoint_url=endpoint_url,
+            region=region,
+            output_dir=output,
+            reseed=reseed,
+            update_latest=not no_latest,
+        )
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    except Exception as exc:
+        typer.echo(f"Collect failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(json.dumps(manifest, indent=2))
+    if not no_latest:
+        typer.echo(f"Latest copy: {LATEST_SNAPSHOT_DIR}")
+
+    if import_sessions:
+        iam_bytes = Path(manifest["files"]["client_iam_report"]).read_bytes()
+        iam_payload = json.loads(iam_bytes)
+        iam_session = SESSION_STORE.create_import_session(
+            "iam-report",
+            iam_bytes,
+            caller_arn=iam_payload.get("caller_arn"),
+        )
+        authz_session = SESSION_STORE.create_import_session(
+            "aws-authz-details",
+            Path(manifest["files"]["aws_authz_details"]).read_bytes(),
+        )
+        typer.echo(
+            json.dumps(
+                {
+                    "iam_report_session": iam_session.session_id,
+                    "aws_authz_session": authz_session.session_id,
+                },
+                indent=2,
+            )
+        )
 
 
 @firing_range_app.command("verify")

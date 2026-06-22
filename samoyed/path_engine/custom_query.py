@@ -5,7 +5,75 @@ from typing import Any
 from samoyed.graph.model import GraphSnapshot
 from samoyed.graph.neighbors import get_neighbors
 from samoyed.path_engine.models import PathResult
-from samoyed.path_engine.search import find_attack_paths, get_blast_radius
+from samoyed.graph.markings import DEFAULT_BLAST_CONCEPTS, find_high_value_nodes
+from samoyed.path_engine.search import find_attack_paths, find_attack_paths_from_sources, get_blast_radius
+
+
+def _normalize_path_targets(
+    mode: str,
+    *,
+    target_concept: str | None,
+    target_resource_type: str | None,
+    end_node_id: str | None,
+    end_id_contains: str | None,
+) -> str | None:
+    if mode != "paths":
+        return target_concept
+    if target_concept or target_resource_type or end_node_id or end_id_contains:
+        return target_concept
+    return None
+
+
+def _has_explicit_path_target(
+    *,
+    target_concept: str | None,
+    target_resource_type: str | None,
+    end_node_id: str | None,
+    end_id_contains: str | None,
+) -> bool:
+    return bool(target_concept or target_resource_type or end_node_id or end_id_contains)
+
+
+def _default_attack_paths(
+    graph: GraphSnapshot,
+    *,
+    start_node_id: str,
+    rel_filter: set[str] | None,
+    max_depth: int,
+    max_paths: int,
+) -> list[PathResult]:
+    """Paths to analyst-marked high-value nodes, or crown-jewel concept types."""
+    marked = find_high_value_nodes(graph)
+    if marked:
+        return find_attack_paths_from_sources(
+            graph,
+            start_node_ids=[start_node_id],
+            end_node_ids=marked,
+            rel_types=rel_filter,
+            direction="both",
+            max_depth=max_depth,
+            max_paths=max_paths,
+        )
+
+    seen: set[str] = set()
+    combined: list[PathResult] = []
+    per_concept = max(1, max_paths // len(DEFAULT_BLAST_CONCEPTS))
+    for concept in DEFAULT_BLAST_CONCEPTS:
+        for path in find_attack_paths(
+            graph,
+            start_node_id=start_node_id,
+            target_concept=concept,
+            rel_types=rel_filter,
+            direction="both",
+            max_depth=max_depth,
+            max_paths=per_concept,
+        ):
+            if path.path_id in seen:
+                continue
+            seen.add(path.path_id)
+            combined.append(path)
+    combined.sort(key=lambda p: p.score, reverse=True)
+    return combined[:max_paths]
 
 
 def run_graph_query(
@@ -22,6 +90,19 @@ def run_graph_query(
     max_paths: int = 20,
 ) -> dict[str, Any]:
     rel_filter = set(rel_types) if rel_types else None
+    target_concept = _normalize_path_targets(
+        mode,
+        target_concept=target_concept,
+        target_resource_type=target_resource_type,
+        end_node_id=end_node_id,
+        end_id_contains=end_id_contains,
+    )
+    explicit_target = _has_explicit_path_target(
+        target_concept=target_concept,
+        target_resource_type=target_resource_type,
+        end_node_id=end_node_id,
+        end_id_contains=end_id_contains,
+    )
 
     if mode == "neighbors":
         nodes = get_neighbors(graph, start_node_id, direction="both")
@@ -30,11 +111,24 @@ def run_graph_query(
         return {"mode": mode, "start": start_node_id, "nodes": nodes, "paths": []}
 
     if mode == "blast":
-        paths = get_blast_radius(graph, start_node_id=start_node_id, max_depth=max_depth)
-        if rel_filter:
-            paths = [_filter_path_rels(p, rel_filter) for p in paths]
-            paths = [p for p in paths if p is not None]
-        return {"mode": mode, "start": start_node_id, "paths": [_serialize(p) for p in paths[:max_paths]]}
+        paths = get_blast_radius(
+            graph,
+            start_node_id=start_node_id,
+            max_depth=max_depth,
+            max_paths=max_paths,
+            rel_types=rel_filter,
+        )
+        return {"mode": mode, "start": start_node_id, "paths": [_serialize(p) for p in paths]}
+
+    if mode == "paths" and not explicit_target:
+        paths = _default_attack_paths(
+            graph,
+            start_node_id=start_node_id,
+            rel_filter=rel_filter,
+            max_depth=max_depth,
+            max_paths=max_paths,
+        )
+        return {"mode": mode, "start": start_node_id, "paths": [_serialize(p) for p in paths]}
 
     paths = find_attack_paths(
         graph,
@@ -44,16 +138,11 @@ def run_graph_query(
         end_node_id=end_node_id,
         end_id_contains=end_id_contains,
         rel_types=rel_filter,
+        direction="both",
         max_depth=max_depth,
         max_paths=max_paths,
     )
     return {"mode": mode, "start": start_node_id, "paths": [_serialize(p) for p in paths]}
-
-
-def _filter_path_rels(path: PathResult, rel_filter: set[str]) -> PathResult | None:
-    if all(step.rel_type in rel_filter for step in path.steps):
-        return path
-    return None
 
 
 def _serialize(path: PathResult) -> dict[str, Any]:
@@ -73,3 +162,7 @@ def _serialize(path: PathResult) -> dict[str, Any]:
             for s in path.steps
         ],
     }
+
+
+def serialize_paths(paths: list[PathResult]) -> list[dict[str, Any]]:
+    return [_serialize(p) for p in paths]

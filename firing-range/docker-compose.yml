@@ -4,7 +4,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      SERVICES: iam,sts,s3,secretsmanager,lambda
+      SERVICES: iam,sts,s3,secretsmanager,lambda,ec2,elbv2,eks,codepipeline,codebuild
       DEBUG: "0"
     volumes:
       - localstack_data:/var/lib/localstack

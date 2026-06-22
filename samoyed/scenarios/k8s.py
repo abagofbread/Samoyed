@@ -13,7 +13,6 @@ class CompromisedSaScenario:
         return get_blast_radius(
             graph,
             start_node_id=start_node_id,
-            target_concepts=self.target_concepts,
             max_depth=6,
         )
 

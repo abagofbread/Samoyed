@@ -38,6 +38,74 @@ def lab(tmp_path_factory):
 
 
 @INTEGRATION
+def test_bronze_multi_hop_attack_path(lab):
+    from samoyed.firing_range.config import BRONZE_CHAIN_SECRET, BRONZE_PATH_BUCKET, BRONZE_PATH_SECRET
+
+    cred = AwsCredential(
+        access_key=lab["credentials"]["AccessKeyId"],
+        secret_key=lab["credentials"]["SecretAccessKey"],
+        region="us-east-1",
+        endpoint_url=lab["credentials"]["endpoint_url"],
+    )
+    report = collect_iam_report(cred)
+    record = SESSION_STORE.create_import_session(
+        "iam-report",
+        json.dumps(report).encode(),
+        caller_arn=report["caller_arn"],
+    )
+    start = SESSION_STORE.find_caller_node(record)
+
+    two_hop = find_attack_paths(record.snapshot, start_node_id=start, end_id_contains=BRONZE_PATH_SECRET, max_depth=4)
+    assert two_hop and len(two_hop[0].steps) >= 2, "bronze 2-hop path to stale webhook secret"
+
+    three_hop = find_attack_paths(
+        record.snapshot, start_node_id=start, end_id_contains=BRONZE_CHAIN_SECRET, max_depth=5
+    )
+    assert three_hop and len(three_hop[0].steps) >= 3, "bronze 3-hop path via monitoring → lambda-exec"
+
+    bucket_path = find_attack_paths(
+        record.snapshot, start_node_id=start, end_id_contains=BRONZE_PATH_BUCKET, max_depth=4
+    )
+    assert bucket_path and len(bucket_path[0].steps) >= 2, "bronze 2-hop path to dead marketing bucket"
+
+
+@INTEGRATION
+def test_silver_multi_hop_attack_path(lab):
+    from samoyed.firing_range.config import SILVER_DEV_BUCKET, SILVER_DEV_SECRET, SILVER_PROD_SECRET
+
+    cred = AwsCredential(
+        access_key=lab["credentials"]["AccessKeyId"],
+        secret_key=lab["credentials"]["SecretAccessKey"],
+        region="us-east-1",
+        endpoint_url=lab["credentials"]["endpoint_url"],
+    )
+    report = collect_iam_report(cred)
+    record = SESSION_STORE.create_import_session(
+        "iam-report",
+        json.dumps(report).encode(),
+        caller_arn=report["caller_arn"],
+    )
+    start = SESSION_STORE.find_caller_node(record)
+
+    dev_secret = find_attack_paths(
+        record.snapshot, start_node_id=start, end_id_contains="hubspot-sandbox", max_depth=6
+    )
+    assert dev_secret and len(dev_secret[0].steps) >= 3, "silver 3-hop path to dev sandbox secret"
+
+    dev_bucket = find_attack_paths(
+        record.snapshot, start_node_id=start, end_id_contains=SILVER_DEV_BUCKET, max_depth=6
+    )
+    assert dev_bucket and len(dev_bucket[0].steps) >= 3, "silver 3-hop path to dev CI/CD artifacts"
+
+    prod_paths = find_attack_paths(
+        record.snapshot, start_node_id=start, end_id_contains=SILVER_PROD_SECRET, max_depth=6
+    )
+    assert not any(
+        len(p.steps) >= 3 for p in prod_paths
+    ), "prod payment secret should have no 3+ hop assume chain from leaked-user"
+
+
+@INTEGRATION
 def test_client_iam_report_from_live_apis(lab):
     cred = AwsCredential(
         access_key=lab["credentials"]["AccessKeyId"],
@@ -124,13 +192,14 @@ def test_compose_file_exists():
     assert COMPOSE_FILE.is_file()
 
 
-@patch("samoyed.firing_range.seed._client")
+@patch("samoyed.firing_range.aws_helpers.aws_client")
 def test_seed_aws_lab_creates_topology(mock_client_factory):
     iam = MagicMock()
     sts = MagicMock()
     s3 = MagicMock()
     secrets = MagicMock()
     lam = MagicMock()
+    fallback = MagicMock()
 
     def factory(service: str, **kwargs):
         return {
@@ -139,7 +208,7 @@ def test_seed_aws_lab_creates_topology(mock_client_factory):
             "s3": s3,
             "secretsmanager": secrets,
             "lambda": lam,
-        }[service]
+        }.get(service, fallback)
 
     mock_client_factory.side_effect = factory
 
@@ -162,9 +231,12 @@ def test_seed_aws_lab_creates_topology(mock_client_factory):
     assert meta["account_id"] == "000000000000"
     assert meta["caller_arn"].endswith(f"user/{LAB_USER}")
     assert meta["bucket"] == LAB_BUCKET
-    iam.create_user.assert_called_once_with(UserName=LAB_USER)
+    assert "clutter" in meta
+    assert "bronze" in meta["clutter"]
+    assert "silver" in meta["clutter"]
+    iam.create_user.assert_called()
     iam.create_access_key.assert_called_once()
-    lam.create_function.assert_called_once()
+    lam.create_function.assert_called()
 
 
 @patch("samoyed.firing_range.seed._client")

@@ -169,3 +169,54 @@ def test_paths_to_high_value_concept(tmp_path, monkeypatch):
 
     paths = SESSION_STORE.query_paths(sid, start_node_id=start, target_concept="high_value", max_depth=4)
     assert paths
+
+
+def test_marking_paths_compromised_to_high_value(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="mark-paths-lab")
+    sid = record.session_id
+    SESSION_STORE.mark_nodes(sid, ["leaked-user"], compromised=True, source="test")
+    SESSION_STORE.mark_nodes(sid, ["prod-db"], high_value=True, source="test")
+
+    result = SESSION_STORE.run_marking_paths_query(
+        sid, kind="compromised_to_high_value", max_depth=6, max_paths=20
+    )
+    assert result["markings"]["compromised_count"] >= 1
+    assert result["markings"]["high_value_count"] >= 1
+    assert result["paths"]
+
+
+def test_api_marking_paths_query(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="mark-paths-api")
+    sid = record.session_id
+    client.post(
+        f"/api/sessions/{sid}/markings",
+        json={"refs": ["leaked-user"], "compromised": True},
+    )
+    client.post(
+        f"/api/sessions/{sid}/markings",
+        json={"refs": ["Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:prod-db"], "high_value": True},
+    )
+
+    res = client.post(
+        f"/api/sessions/{sid}/paths/markings-query",
+        json={"kind": "compromised_to_high_value", "max_depth": 6, "max_paths": 10},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["kind"] == "compromised_to_high_value"
+    assert "markings" in data
+    assert data["paths"]
+    assert data["summary"]["path_count"] >= 1
+
+
+def test_blast_compromised_multi_start(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record = SESSION_STORE.load_fixture("lab-aws", session_id="mark-blast-lab")
+    sid = record.session_id
+    SESSION_STORE.mark_nodes(sid, ["leaked-user"], compromised=True, source="test")
+
+    result = SESSION_STORE.run_marking_paths_query(sid, kind="blast_compromised", max_depth=6)
+    assert result["compromised_starts"]
+    assert result["paths"]

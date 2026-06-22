@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from samoyed.attack.mitre import enrich_graph_edges, mitre_props_for_edge
 from samoyed.attack.patterns import AttackPattern, patterns_for_provider
 from samoyed.cloud.capabilities import azure_role_to_actions, gcp_role_to_actions
 from samoyed.cloud.concepts import CloudProvider
@@ -196,6 +197,10 @@ def analyze_attack_surface(
                             "required_actions": sorted(pattern.required_actions),
                             "inferred": True,
                             "confidence": "explicit",
+                            **mitre_props_for_edge(
+                                "CAN_PRIVESC_TO",
+                                {"pattern_id": pattern.id, "action": next(iter(pattern.required_actions), "")},
+                            ),
                         },
                     )
                 )
@@ -227,6 +232,7 @@ def apply_attack_analysis(
             props=edge.props,
         )
         applied.append(edge)
+    enrich_graph_edges(builder.snapshot)
     return applied
 
 
@@ -242,6 +248,9 @@ def _resolve_targets(
     if pattern.target == "execution_roles":
         roles = execution_role_nodes(graph)
         return roles or _identity_nodes(graph, kind="Role", exclude=start_id)
+
+    if pattern.target == "runtime_bindings":
+        return _runtime_binding_nodes(graph)
 
     if pattern.target == "stored_identities":
         stored = stored_identity_nodes(graph, start_id)
@@ -261,6 +270,16 @@ def _resolve_targets(
         return assumable or _identity_nodes(graph, kind="Role", exclude=start_id)
 
     return []
+
+
+def _runtime_binding_nodes(graph: GraphSnapshot) -> list[str]:
+    out: list[str] = []
+    for node_id, node in graph.nodes.items():
+        concept = node.props.get("concept_type")
+        rtype = node.props.get("resource_type")
+        if concept == "RuntimeBinding" or rtype in RUNTIME_RESOURCE_TYPES:
+            out.append(node_id)
+    return out
 
 
 def _identity_nodes(graph: GraphSnapshot, *, kind: str, exclude: str) -> list[str]:
