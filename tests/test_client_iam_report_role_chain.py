@@ -28,11 +28,13 @@ def test_collect_iam_report_expands_assumable_role_policies(mock_identity, mock_
     s3 = MagicMock()
     sm = MagicMock()
     lam = MagicMock()
+    ec2 = MagicMock()
     mock_client.side_effect = lambda service, region=None: {
         "iam": iam,
         "s3": s3,
         "secretsmanager": sm,
         "lambda": lam,
+        "ec2": ec2,
     }[service]
 
     iam.list_user_policies.return_value = {"PolicyNames": ["tiered-assume"]}
@@ -90,6 +92,7 @@ def test_collect_iam_report_expands_assumable_role_policies(mock_identity, mock_
     s3.list_buckets.return_value = {"Buckets": []}
     sm.list_secrets.return_value = {"SecretList": []}
     lam.list_functions.return_value = {"Functions": []}
+    ec2.describe_instances.return_value = {"Reservations": []}
 
     report = collect_iam_report(_cred())
     rels = {(g["from"], g["to"], g["rel"]) for g in report["grants"]}

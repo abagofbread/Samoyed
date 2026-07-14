@@ -37,13 +37,53 @@ def test_analyze_pod_privileged_and_docker_sock():
 def test_rule_grants_secrets_read():
     rules = [{"verbs": ["get", "list"], "resources": ["secrets"], "apiGroups": [""]}]
     grants = rule_grants(rules)
-    assert ("READS", "SecretStore") in grants
+    assert ("READS", "SecretStore", None) in grants
 
 
 def test_rule_grants_cluster_admin():
     rules = [{"verbs": ["*"], "resources": ["*"], "apiGroups": ["*"]}]
     grants = rule_grants(rules)
-    assert ("CAN_ACCESS", "ManagementEndpoint") in grants
+    assert ("CAN_ACCESS", "ManagementEndpoint", None) in grants
+    assert ("CONTROLS", "Workload", "rbac:pods:create") in grants
+    assert ("CONTROLS", "Workload", "rbac:pods:exec") in grants
+
+
+def test_rule_grants_pods_exec_only():
+    rules = [{"verbs": ["create"], "resources": ["pods/exec"], "apiGroups": [""]}]
+    grants = rule_grants(rules)
+    assert ("CONTROLS", "Workload", "rbac:pods:exec") in grants
+    assert not any(g[2] == "rbac:pods:create" for g in grants)
+
+
+def test_rule_grants_pods_create_only():
+    rules = [{"verbs": ["create"], "resources": ["pods"], "apiGroups": [""]}]
+    grants = rule_grants(rules)
+    assert ("CONTROLS", "Workload", "rbac:pods:create") in grants
+    assert not any(g[2] == "rbac:pods:exec" for g in grants)
+
+
+def test_k8s_fixture_deployer_reaches_irsa_via_pod_create(tmp_path, monkeypatch):
+    snapshot = _k8s_snapshot(tmp_path, monkeypatch, "k8s-deploy-pivot")
+    deployer = next(
+        nid
+        for nid, n in snapshot.nodes.items()
+        if n.props.get("name") == "deployer-sa"
+    )
+    cloud_role = next(
+        nid
+        for nid, n in snapshot.nodes.items()
+        if "eks-workload-admin" in str(n.props.get("native_id", ""))
+    )
+    paths = find_attack_paths(
+        snapshot,
+        start_node_id=deployer,
+        end_node_id=cloud_role,
+        max_depth=8,
+    )
+    assert paths
+    rels = [s.rel_type for s in paths[0].steps]
+    assert "EXECUTES_AS" in rels
+    assert "PROJECTS_TO" in rels
 
 
 def test_k8s_fixture_compromised_sa_scenario(tmp_path, monkeypatch):

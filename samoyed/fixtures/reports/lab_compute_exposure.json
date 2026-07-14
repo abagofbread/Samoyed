@@ -1,0 +1,216 @@
+{
+  "account_id": "111111111111",
+  "provider": "aws",
+  "source": "samoyed-client",
+  "collected_via": "fixture-export",
+  "identities": [
+    {
+      "arn": "arn:aws:iam::111111111111:user/leaked-user",
+      "id": "arn:aws:iam::111111111111:user/leaked-user",
+      "kind": "User",
+      "is_caller": true
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/ssrf-lambda-exec",
+      "id": "arn:aws:iam::111111111111:role/ssrf-lambda-exec",
+      "kind": "Role",
+      "name": "ssrf-lambda-exec"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/internal-data-writer",
+      "id": "arn:aws:iam::111111111111:role/internal-data-writer",
+      "kind": "Role",
+      "name": "internal-data-writer"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/crypto-launcher",
+      "id": "arn:aws:iam::111111111111:role/crypto-launcher",
+      "kind": "Role",
+      "name": "crypto-launcher"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "id": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "kind": "Role",
+      "name": "marketing-web-instance"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/ml-gpu-runner",
+      "id": "arn:aws:iam::111111111111:role/ml-gpu-runner",
+      "kind": "Role",
+      "name": "ml-gpu-runner"
+    }
+  ],
+  "resources": [
+    {
+      "id": "aws:scope:pci-cardholder-env",
+      "concept": "ScopeBoundary",
+      "type": "ScopeBoundary",
+      "name": "pci-cardholder-env",
+      "display_name": "PCI cardholder environment",
+      "environment": "pci",
+      "sensitivity": "pci"
+    },
+    {
+      "id": "aws:scope:dmz",
+      "concept": "ScopeBoundary",
+      "type": "ScopeBoundary",
+      "name": "dmz",
+      "display_name": "DMZ / edge workloads",
+      "environment": "dmz",
+      "sensitivity": "dmz"
+    },
+    {
+      "id": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:ssrf-fetcher",
+      "concept": "RuntimeBinding",
+      "type": "LambdaFunction",
+      "function_name": "ssrf-fetcher",
+      "display_name": "ssrf-fetcher (public URL)",
+      "ssrf_vulnerable": true,
+      "has_public_url": true,
+      "execution_role_arn": "arn:aws:iam::111111111111:role/ssrf-lambda-exec",
+      "environment": "dmz",
+      "scope_boundary": "dmz"
+    },
+    {
+      "id": "S3Bucket:pci-internal-ledger",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "pci-internal-ledger",
+      "bucket_name": "pci-internal-ledger",
+      "environment": "pci",
+      "sensitivity": "pci",
+      "scope_boundary": "pci-cardholder-env",
+      "internal_only": true
+    },
+    {
+      "id": "S3Bucket:public-uploads-staging",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "public-uploads-staging",
+      "bucket_name": "public-uploads-staging",
+      "environment": "dmz",
+      "scope_boundary": "dmz"
+    },
+    {
+      "id": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-marketing-web",
+      "concept": "RuntimeBinding",
+      "type": "EC2Instance",
+      "name": "marketing-web",
+      "display_name": "marketing-web (IMDS)",
+      "instance_id": "i-marketing-web",
+      "instance_type": "t3.small",
+      "ssrf_vulnerable": true,
+      "has_public_reach": true,
+      "exposure_level": "internet",
+      "execution_role_arn": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "environment": "dmz",
+      "scope_boundary": "dmz"
+    },
+    {
+      "id": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-ml-training-gpu",
+      "concept": "RuntimeBinding",
+      "type": "EC2Instance",
+      "name": "ml-training-gpu",
+      "display_name": "ml-training-gpu",
+      "instance_id": "i-ml-training-gpu",
+      "instance_type": "g4dn.xlarge",
+      "compute_class": "gpu",
+      "gpu_accelerated": true,
+      "execution_role_arn": "arn:aws:iam::111111111111:role/ml-gpu-runner"
+    },
+    {
+      "id": "S3Bucket:ml-training-artifacts",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "ml-training-artifacts",
+      "bucket_name": "ml-training-artifacts"
+    }
+  ],
+  "grants": [
+    {
+      "from": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:ssrf-fetcher",
+      "to": "arn:aws:iam::111111111111:role/ssrf-lambda-exec",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit",
+      "execution_role_arn": "arn:aws:iam::111111111111:role/ssrf-lambda-exec"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/ssrf-lambda-exec",
+      "to": "arn:aws:iam::111111111111:role/internal-data-writer",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit",
+      "via": "metadata-sts-chain"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/internal-data-writer",
+      "to": "S3Bucket:pci-internal-ledger",
+      "rel": "WRITES",
+      "action": "s3:PutObject",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/leaked-user",
+      "to": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:ssrf-fetcher",
+      "rel": "EXECUTES",
+      "action": "lambda:InvokeFunction",
+      "confidence": "explicit"
+    },
+    {
+      "from": "S3Bucket:pci-internal-ledger",
+      "to": "aws:scope:pci-cardholder-env",
+      "rel": "HOSTED_IN",
+      "confidence": "explicit"
+    },
+    {
+      "from": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:ssrf-fetcher",
+      "to": "aws:scope:dmz",
+      "rel": "HOSTED_IN",
+      "confidence": "explicit"
+    },
+    {
+      "from": "S3Bucket:public-uploads-staging",
+      "to": "aws:scope:dmz",
+      "rel": "HOSTED_IN",
+      "confidence": "explicit"
+    },
+    {
+      "from": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-marketing-web",
+      "to": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit",
+      "source": "instance-profile"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/marketing-web-instance",
+      "to": "arn:aws:iam::111111111111:role/internal-data-writer",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit",
+      "via": "imds-sts-chain"
+    },
+    {
+      "from": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-ml-training-gpu",
+      "to": "arn:aws:iam::111111111111:role/ml-gpu-runner",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit",
+      "source": "instance-profile"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/ml-gpu-runner",
+      "to": "S3Bucket:ml-training-artifacts",
+      "rel": "WRITES",
+      "action": "s3:PutObject",
+      "confidence": "explicit"
+    },
+    {
+      "from": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-marketing-web",
+      "to": "aws:scope:dmz",
+      "rel": "HOSTED_IN",
+      "confidence": "explicit"
+    }
+  ],
+  "caller_arn": "arn:aws:iam::111111111111:user/leaked-user",
+  "metadata": {
+    "scenario": "compute-exposure-lab"
+  }
+}

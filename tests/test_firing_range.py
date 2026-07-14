@@ -106,6 +106,45 @@ def test_silver_multi_hop_attack_path(lab):
 
 
 @INTEGRATION
+def test_marketing_web_imds_path_in_live_lab(lab):
+    from samoyed.firing_range.config import LAB_PCI_BUCKET
+
+    cred = AwsCredential(
+        access_key=lab["credentials"]["AccessKeyId"],
+        secret_key=lab["credentials"]["SecretAccessKey"],
+        region="us-east-1",
+        endpoint_url=lab["credentials"]["endpoint_url"],
+    )
+    report = collect_iam_report(cred)
+    record = SESSION_STORE.create_import_session(
+        "iam-report",
+        json.dumps(report).encode(),
+        caller_arn=report["caller_arn"],
+    )
+    graph = record.snapshot
+    marketing_id = next(
+        (nid for nid, n in graph.nodes.items() if n.props.get("name") == "marketing-web"),
+        None,
+    )
+    assert marketing_id, "marketing-web EC2 should appear in client iam-report after seed"
+
+    gpu_id = next(
+        (nid for nid, n in graph.nodes.items() if n.props.get("name") == "ml-training-gpu"),
+        None,
+    )
+    assert gpu_id, "ml-training-gpu EC2 should appear in client iam-report after seed"
+    assert graph.nodes[gpu_id].props.get("gpu_accelerated")
+
+    paths = find_attack_paths(
+        graph,
+        start_node_id=marketing_id,
+        end_id_contains=LAB_PCI_BUCKET,
+        max_depth=12,
+    )
+    assert paths, "marketing-web should reach pci-internal-ledger via IMDS chain"
+
+
+@INTEGRATION
 def test_client_iam_report_from_live_apis(lab):
     cred = AwsCredential(
         access_key=lab["credentials"]["AccessKeyId"],

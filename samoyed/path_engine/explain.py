@@ -57,6 +57,10 @@ def _narrative(step, src_name: str, dst_name: str, evidence: dict[str, Any]) -> 
         return f"{src_name} stores cached credentials for {dst_name}"
     if step.rel_type == "CAN_STEAL_CREDS_FROM":
         return f"{src_name} can harvest credentials for {dst_name} from disk or memory"
+    if step.rel_type == "HAS_MATERIAL":
+        return f"{src_name} stores pivot material ({evidence.get('material_kind') or 'credential'}) at {evidence.get('locator') or dst_name}"
+    if step.rel_type == "UNLOCKS":
+        return f"Harvested material on {src_name} unlocks access as {dst_name}"
     if step.rel_type == "CAN_ASSUME_ROLE":
         return f"{src_name} can assume role {dst_name}"
     return f"{src_name} can reach {dst_name} via {step.rel_type}"

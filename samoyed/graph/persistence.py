@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +39,27 @@ def snapshot_from_dict(data: dict[str, Any]) -> GraphSnapshot:
     return snapshot
 
 
+def default_samoyed_home() -> Path:
+    """Stable Samoyed data root (not cwd-relative).
+
+    Override with ``SAMOYED_HOME``. Defaults to ``~/.samoyed``.
+    """
+    env = os.environ.get("SAMOYED_HOME")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".samoyed"
+
+
 def default_session_dir() -> Path:
-    return Path.cwd() / ".samoyed" / "sessions"
+    """Where attack-graph sessions are persisted.
+
+    Override with ``SAMOYED_SESSION_DIR``, else ``$SAMOYED_HOME/sessions``
+    (default ``~/.samoyed/sessions``).
+    """
+    env = os.environ.get("SAMOYED_SESSION_DIR")
+    if env:
+        return Path(env).expanduser()
+    return default_samoyed_home() / "sessions"
 
 
 def write_session_file(record_dict: dict[str, Any], directory: Path | None = None) -> Path:
@@ -56,3 +76,12 @@ def read_session_file(session_id: str, directory: Path | None = None) -> dict[st
     if not path.is_file():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def delete_session_file(session_id: str, directory: Path | None = None) -> bool:
+    directory = directory or default_session_dir()
+    path = directory / f"{session_id}.json"
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True

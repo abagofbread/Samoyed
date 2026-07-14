@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+from samoyed.graph.persistence import default_samoyed_home, default_session_dir
 from samoyed.sessions import SessionStore
+
+
+def test_session_dir_defaults_under_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("SAMOYED_SESSION_DIR", raising=False)
+    monkeypatch.setenv("SAMOYED_HOME", str(tmp_path / "home"))
+    assert default_samoyed_home() == tmp_path / "home"
+    assert default_session_dir() == tmp_path / "home" / "sessions"
+
+
+def test_session_dir_explicit_override(tmp_path, monkeypatch):
+    custom = tmp_path / "custom-sessions"
+    monkeypatch.setenv("SAMOYED_SESSION_DIR", str(custom))
+    assert default_session_dir() == custom
 
 
 def test_session_persists_across_store_instances(tmp_path, monkeypatch):

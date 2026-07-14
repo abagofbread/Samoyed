@@ -20,6 +20,8 @@ CAPABILITY_WEIGHT = {
     "DEPENDS_ON": 0.75,
     "CAN_REACH": 0.4,
     "HAS_ESCAPE_SURFACE": 0.3,
+    "HAS_MATERIAL": 0.82,
+    "UNLOCKS": 0.88,
 }
 
 

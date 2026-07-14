@@ -58,12 +58,12 @@ def test_leaked_api_key_probe_live_localstack(leaked_key_lab):
     assert "secretsmanager:ListSecrets" in allowed_ops
     assert "lambda:ListFunctions" in allowed_ops
     assert "iam:ListUsers" in allowed_ops
+    assert "ec2:DescribeInstances" in allowed_ops
 
     # Must not have discovered admin-level attach or assume without target
     assert "iam:ListAttachedUserPolicies" not in allowed_ops
 
-    # Disabled LocalStack services return error, not allow — still not permitted
-    assert "ec2:DescribeInstances" not in allowed_ops
+    # Services not in recon-read policy should stay denied or error
     assert "rds:DescribeDBInstances" not in allowed_ops
 
     # Verify we actually got resource names back from live APIs

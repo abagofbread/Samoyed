@@ -63,3 +63,34 @@ def ensure_secret(secrets: Any, name: str) -> str:
         if exc.response.get("Error", {}).get("Code") != "ResourceExistsException":
             raise
         return secrets.describe_secret(SecretId=name)["ARN"]
+
+
+def ensure_instance_profile(iam: Any, profile_name: str, role_name: str) -> str:
+    try:
+        iam.create_instance_profile(InstanceProfileName=profile_name)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "EntityAlreadyExists":
+            raise
+    try:
+        iam.add_role_to_instance_profile(InstanceProfileName=profile_name, RoleName=role_name)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code not in {"EntityAlreadyExists", "LimitExceeded"}:
+            raise
+    return iam.get_instance_profile(InstanceProfileName=profile_name)["InstanceProfile"]["Arn"]
+
+
+def find_ec2_instance_by_name(ec2: Any, name: str) -> str | None:
+    """Return a running/stopped instance id tagged Name=name, if any."""
+    try:
+        resp = ec2.describe_instances(
+            Filters=[{"Name": "tag:Name", "Values": [name]}],
+        )
+    except ClientError:
+        return None
+    for reservation in resp.get("Reservations", []):
+        for inst in reservation.get("Instances", []):
+            state = inst.get("State", {}).get("Name")
+            if state not in {"terminated", "shutting-down"}:
+                return inst.get("InstanceId")
+    return None

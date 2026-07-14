@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from samoyed.attack.analyzer import apply_attack_analysis
+from samoyed.attack.surface import enrich_attack_surface
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.cloud.providers import make_scope_id
 from samoyed.graph.builder import GraphBuilder
@@ -54,6 +55,7 @@ def build_session_from_artifacts(
                 node.props["is_caller"] = True
 
     attack_edges = apply_attack_analysis(builder, provider=provider)
+    enrich_attack_surface(builder)
     meta = {
         "source": source,
         "artifact_count": len(artifacts),

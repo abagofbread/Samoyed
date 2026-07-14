@@ -20,6 +20,24 @@ LAB_LAMBDA = "vulnerable-handler"
 LAB_LAMBDA_ROLE = "lambda-exec"
 LAB_WEB_BUCKET = "web-app-assets"
 
+# SSRF / PCI isolation lab (seeded alongside gold path).
+LAB_SSRF_LAMBDA = "ssrf-fetcher"
+LAB_SSRF_ROLE = "ssrf-lambda-exec"
+LAB_INTERNAL_WRITER_ROLE = "internal-data-writer"
+LAB_PCI_BUCKET = "pci-internal-ledger"
+LAB_PUBLIC_UPLOADS_BUCKET = "public-uploads-staging"
+LAB_PCI_SCOPE = "pci-cardholder-env"
+
+# EC2 compute lab — marketing-web (IMDS) + GPU training instances.
+LAB_MARKETING_WEB_NAME = "marketing-web"
+LAB_MARKETING_WEB_ROLE = "marketing-web-instance"
+LAB_MARKETING_WEB_PROFILE = "marketing-web-profile"
+LAB_ML_GPU_NAME = "ml-training-gpu"
+LAB_ML_GPU_ROLE = "ml-gpu-runner"
+LAB_ML_GPU_PROFILE = "ml-gpu-runner-profile"
+LAB_ML_ARTIFACTS_BUCKET = "ml-training-artifacts"
+LAB_GPU_SPOT_NAME = "legacy-crypto-gpu-spot"
+
 # Bronze medal — orphan noise (listable, not on attack path from leaked-user).
 BRONZE_BUCKETS = (
     "logs-archive-2023-q4",

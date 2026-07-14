@@ -1,0 +1,84 @@
+{
+  "enrichment_version": 1,
+  "collector": "static-lab-bundle",
+  "collector_mode": "static",
+  "collected_at": "2026-06-19T14:00:00Z",
+  "description": "Example static collector output for the host-pivot lab (workstation repo + Lambda deploy config).",
+  "lab_fixture": "host-pivot",
+  "bindings": [
+    {
+      "target_ref": "host:workstation:bob-laptop",
+      "materials": [
+        {
+          "kind": "aws_access_key_env",
+          "locator": ".env:AKIAIOSFODNN7EXAMPLE",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env",
+            "match": "AKIAIOSFODNN7EXAMPLE"
+          },
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob"
+        },
+        {
+          "kind": "aws_secret_key_env",
+          "locator": ".env:aws_secret_key_env",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env",
+            "match": "AWS_SECRET_ACCESS_KEY=fixture-workstation-secret-not-real"
+          },
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob"
+        },
+        {
+          "kind": "azure_client_secret_env",
+          "locator": ".env:azure_client_secret_env",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env",
+            "match": "AZURE_CLIENT_SECRET=fixture-azure-secret-not-real"
+          },
+          "resolves_to": "azure:user:bob@corp.com"
+        },
+        {
+          "kind": "kubeconfig_file",
+          "locator": "kube/config.yaml:kubeconfig_file",
+          "confidence": "inferred",
+          "evidence": {
+            "file": "kube/config.yaml",
+            "match": "kind: Config"
+          },
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob"
+        }
+      ]
+    },
+    {
+      "target_ref": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:internal-tool",
+      "materials": [
+        {
+          "kind": "aws_access_key_env",
+          "locator": ".env.production:AKIAIOSFODNN7EXAMPLE",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env.production",
+            "match": "AKIAIOSFODNN7EXAMPLE"
+          },
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob"
+        },
+        {
+          "kind": "aws_secret_key_env",
+          "locator": ".env.production:aws_secret_key_env",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env.production",
+            "match": "AWS_SECRET_ACCESS_KEY=fixture-lambda-env-secret-not-real"
+          },
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob"
+        }
+      ]
+    }
+  ],
+  "source_roots": [
+    "samoyed/fixtures/collector_samples/host-pivot-workstation",
+    "samoyed/fixtures/collector_samples/internal-tool-deploy"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "enrichment_version": 1,
+  "collector": "static-config",
+  "collector_mode": "static",
+  "collected_at": "2026-06-26T02:32:23.273577+00:00",
+  "bindings": [
+    {
+      "target_ref": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:internal-tool",
+      "materials": [
+        {
+          "kind": "aws_access_key_env",
+          "locator": ".env.production:AKIAIOSFODNN7EXAMPLE",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env.production",
+            "match": "AKIAIOSFODNN7EXAMPLE"
+          },
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob"
+        },
+        {
+          "kind": "aws_secret_key_env",
+          "locator": ".env.production:aws_secret_key_env",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env.production",
+            "match": "AWS_SECRET_ACCESS_KEY=fixture-lambda-env-secret-not-real"
+          },
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob"
+        }
+      ]
+    }
+  ],
+  "source_root": "/Users/atomsk/Documents/VibeCodedStuff/Samoyed/samoyed/fixtures/collector_samples/internal-tool-deploy",
+  "files_scanned": 1,
+  "material_count": 2,
+  "lab_fixture": "host-pivot",
+  "description": "Static scan of internal-tool deploy config"
+}

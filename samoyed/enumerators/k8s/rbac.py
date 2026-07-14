@@ -169,8 +169,10 @@ class K8sRbacEnumerator:
         namespace: str | None = None,
     ) -> Iterator[ConceptArtifact]:
         grants = rule_grants(rules)
-        if role_name in DANGEROUS_CLUSTER_ROLES and ("CAN_ACCESS", "ManagementEndpoint") not in grants:
-            grants.append(("CAN_ACCESS", "ManagementEndpoint"))
+        if role_name in DANGEROUS_CLUSTER_ROLES and not any(
+            g[0] == "CAN_ACCESS" and g[1] == "ManagementEndpoint" for g in grants
+        ):
+            grants.append(("CAN_ACCESS", "ManagementEndpoint", None))
 
         if not grants:
             return
@@ -178,7 +180,7 @@ class K8sRbacEnumerator:
         native_id = f"kubernetes:rbac:{binding_kind}:{namespace or 'cluster'}:{binding_name or role_name}"
         edges: list[ConceptEdge] = []
         for subject in subjects:
-            for rel_type, target_concept in grants:
+            for rel_type, target_concept, action in grants:
                 concept = GRANT_TARGET_CONCEPT.get(target_concept)
                 if target_concept == "ManagementEndpoint":
                     target_id = api_id
@@ -186,14 +188,25 @@ class K8sRbacEnumerator:
                     target_id = f"kubernetes:{target_concept.lower()}:*"
                 else:
                     continue
+                edge_props: dict[str, Any] = {
+                    "role": role_name,
+                    "binding": binding_name or role_name,
+                    "namespace": namespace,
+                    "rbac_rule": rules,
+                    "source": "k8s-rbac-enum",
+                }
+                if action:
+                    edge_props["action"] = action
                 edges.append(
                     ConceptEdge(
                         rel_type=rel_type,
                         src_native_id=subject,
                         target_native_id=target_id,
                         target_concept_type=concept or ConceptType.MANAGEMENT_ENDPOINT,
-                        props={"role": role_name, "binding": binding_name or role_name},
-                        confidence=ConfidenceType.WILDCARD if rel_type == "READS" and target_id.endswith("*") else ConfidenceType.EXPLICIT,
+                        props=edge_props,
+                        confidence=ConfidenceType.WILDCARD
+                        if rel_type in {"READS", "CONTROLS"} and target_id.endswith("*")
+                        else ConfidenceType.EXPLICIT,
                     )
                 )
 

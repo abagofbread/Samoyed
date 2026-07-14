@@ -149,6 +149,28 @@ def list_session_summaries() -> list[dict[str, Any]]:
     return out
 
 
+def delete_snapshot(session_id: str) -> bool:
+    """Remove a session root from Neo4j (best-effort; nodes may remain if shared)."""
+    uri = os.environ.get("NEO4J_URI")
+    if not uri:
+        return False
+    from neo4j import GraphDatabase
+
+    user = os.environ.get("NEO4J_USER", "neo4j")
+    password = os.environ.get("NEO4J_PASSWORD", "samoyed-dev")
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+    with driver.session() as session:
+        result = session.run(
+            "MATCH (s:CollectionSession {session_id: $sid}) "
+            "OPTIONAL MATCH (s)-[r:DISCOVERED]->() "
+            "DELETE r, s "
+            "RETURN count(s) AS removed",
+            sid=session_id,
+        ).single()
+    driver.close()
+    return bool(result and result["removed"])
+
+
 _WRITE_KEYWORDS = frozenset(
     {
         "CREATE",

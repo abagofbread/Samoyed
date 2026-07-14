@@ -13,6 +13,7 @@ CONCEPT_FOR_RESOURCE = {
     "S3Bucket": "DataStore",
     "Secret": "SecretStore",
     "LambdaFunction": "RuntimeBinding",
+    "EC2Instance": "RuntimeBinding",
     "Role": "Identity",
 }
 
@@ -56,6 +57,8 @@ def collect_iam_report(credentials: AwsCredential) -> dict[str, Any]:
     _collect_buckets(credentials, resources, grants, caller_arn)
     _collect_secrets(credentials, resources, grants, caller_arn)
     _collect_lambda(credentials, identities, resources, grants)
+    _collect_ec2(credentials, identities, resources, grants)
+    _collect_execution_role_policies(iam, grants, identities, resources)
 
     return {
         "account_id": account_id,
@@ -228,6 +231,22 @@ def _collect_assumable_role_policies(
         depth += 1
 
 
+def _collect_execution_role_policies(
+    iam: Any,
+    grants: list[dict[str, Any]],
+    identities: dict[str, dict[str, Any]],
+    resources: dict[str, dict[str, Any]],
+) -> None:
+    """Expand inline policies for roles bound to EC2/Lambda via EXECUTES_AS."""
+    execution_roles = {
+        g["to"]
+        for g in grants
+        if g.get("rel") == "EXECUTES_AS" and ":role/" in str(g.get("to", ""))
+    }
+    if execution_roles:
+        _collect_assumable_role_policies(iam, execution_roles, identities, resources, grants)
+
+
 def _collect_buckets(
     credentials: AwsCredential,
     resources: dict[str, dict[str, Any]],
@@ -331,6 +350,92 @@ def _collect_lambda(
                     "source": "lambda:ListFunctions",
                 }
             )
+
+
+def _collect_ec2(
+    credentials: AwsCredential,
+    identities: dict[str, dict[str, Any]],
+    resources: dict[str, dict[str, Any]],
+    grants: list[dict[str, Any]],
+) -> None:
+    ec2 = credentials.client("ec2")
+    iam = credentials.client("iam")
+    try:
+        resp = ec2.describe_instances()
+    except ClientError as exc:
+        if is_access_denied(exc):
+            return
+        raise
+
+    for reservation in resp.get("Reservations", []):
+        for inst in reservation.get("Instances", []):
+            state = inst.get("State", {}).get("Name")
+            if state in {"terminated", "shutting-down"}:
+                continue
+            iid = inst["InstanceId"]
+            account = credentials.get_caller_identity()["Account"]
+            region = credentials.region or "us-east-1"
+            arn = f"arn:aws:ec2:{region}:{account}:instance/{iid}"
+            native_id = f"EC2Instance:{arn}"
+            tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+            name = tags.get("Name", iid)
+            instance_type = inst.get("InstanceType", "")
+
+            props: dict[str, Any] = {
+                "id": native_id,
+                "concept": "RuntimeBinding",
+                "type": "EC2Instance",
+                "name": name,
+                "display_name": f"{name} ({iid})",
+                "instance_id": iid,
+                "instance_type": instance_type,
+                "state": state,
+            }
+            if tags.get("samoyed:ssrf_vulnerable", "").lower() == "true":
+                props["ssrf_vulnerable"] = True
+                props["display_name"] = f"{name} ({iid}, IMDS)"
+            if tags.get("samoyed:internet_exposed", "").lower() == "true":
+                props["has_public_reach"] = True
+                props["exposure_level"] = "internet"
+            compute_class = tags.get("samoyed:compute_class")
+            if compute_class:
+                props["compute_class"] = compute_class
+            if tags.get("samoyed:gpu_accelerated", "").lower() == "true" or instance_type.startswith(
+                ("g4", "g5", "p3", "p4", "p5")
+            ):
+                props["gpu_accelerated"] = True
+                props.setdefault("compute_class", "gpu")
+
+            resources[native_id] = props
+
+            profile = inst.get("IamInstanceProfile") or {}
+            profile_name = profile.get("Arn", "").split("/")[-1] if profile.get("Arn") else None
+            role_arn = _instance_profile_role_arn(iam, profile_name)
+            if role_arn:
+                _identity(identities, arn=role_arn, name=_name_from_arn(role_arn), kind="Role")
+                grants.append(
+                    {
+                        "from": native_id,
+                        "to": role_arn,
+                        "rel": "EXECUTES_AS",
+                        "action": "ec2:DescribeInstances",
+                        "source": "instance-profile",
+                    }
+                )
+                props["execution_role_arn"] = role_arn
+
+
+def _instance_profile_role_arn(iam: Any, profile_name: str | None) -> str | None:
+    if not profile_name:
+        return None
+    try:
+        resp = iam.get_instance_profile(InstanceProfileName=profile_name)
+    except ClientError:
+        return None
+    roles = resp.get("InstanceProfile", {}).get("Roles") or []
+    if not roles:
+        return None
+    return roles[0].get("Arn")
 
 
 def _policy_grants(

@@ -34,6 +34,9 @@ const NODE_COLORS = {
 
 const PATH_NODE_COLOR = { background: "#9e6a03", border: "#ffa657" };
 const PATH_EDGE_COLOR = { color: "#ffa657", highlight: "#ffc078" };
+const ENRICHMENT_EDGE_COLOR = { color: "#3fb9b0", highlight: "#56d4dd", hover: "#7ee8df" };
+const DEFAULT_EDGE_COLOR = { color: "#484f58", highlight: "#58a6ff", hover: "#8b949e" };
+const ATTACK_EDGE_COLOR = { color: "#ffa657", highlight: "#ffc078", hover: "#ffbc66" };
 const SELECTED_NODE_COLOR = { background: "#388bfd", border: "#79c0ff" };
 const COMPROMISED_NODE_COLOR = {
   background: "#3d1518",
@@ -81,7 +84,11 @@ async function initAuth() {
 }
 
 function displayName(node) {
-  return node.display_name || node.native_id || node.arn || node.name || node.id;
+  const base = node.display_name || node.native_id || node.arn || node.name || node.id;
+  if (node.instance_id && !String(base).includes(node.instance_id)) {
+    return `${base} (${node.instance_id})`;
+  }
+  return base;
 }
 
 function shortId(id) {
@@ -89,6 +96,22 @@ function shortId(id) {
   if (id.length <= 36) return id;
   const parts = id.split(":");
   return parts.length > 2 ? parts.slice(-2).join(":") : id.slice(0, 32) + "…";
+}
+
+function wrapGraphLabel(text, width = 24) {
+  const raw = String(text || "");
+  if (raw.length <= width) return raw;
+  const parts = [];
+  let remaining = raw;
+  while (remaining.length > width) {
+    let breakAt = remaining.lastIndexOf("/", width);
+    if (breakAt < width / 3) breakAt = remaining.lastIndexOf(":", width);
+    if (breakAt < width / 3) breakAt = width;
+    parts.push(remaining.slice(0, breakAt));
+    remaining = remaining.slice(breakAt).replace(/^[/:]/, "");
+  }
+  if (remaining) parts.push(remaining);
+  return parts.slice(0, 3).join("\n") + (parts.length > 3 ? "…" : "");
 }
 
 function nodeColor(label) {
@@ -119,13 +142,14 @@ function toVisNode(node, position) {
 
   const visNode = {
     id: node.id,
-    label: shortId(displayName(node)),
+    label: wrapGraphLabel(shortId(displayName(node))),
     title,
     group: label,
     color: { ...colors },
-    font: { color: "#e6edf3", size: 12 },
+    font: { color: "#e6edf3", size: 12, multi: true, align: "center" },
     shape: label === "Principal" ? "dot" : "box",
     size: label === "Principal" ? 18 : undefined,
+    margin: 10,
     _raw: node,
   };
 
@@ -140,13 +164,158 @@ function isAttackOutcomeNode(node) {
   return node?.concept_type === "AttackOutcome" || node?.label === "AttackOutcome";
 }
 
+function isPolicyStatementNode(node) {
+  return (
+    node?.label === "PolicyStatement"
+    || node?.concept_type === "Entitlement"
+    || node?.native_kind === "PolicyStatement"
+  );
+}
+
+function isTrustNode(node) {
+  return node?.label === "Trust" || node?.concept_type === "Trust";
+}
+
+function isHiddenDisplayNode(node) {
+  return (
+    !node
+    || node.label === "CollectionSession"
+    || isAttackOutcomeNode(node)
+    || isPolicyStatementNode(node)
+    || isTrustNode(node)
+  );
+}
+
+const ENRICHMENT_EDGE_SOURCES = new Set([
+  "surface-enrichment",
+  "pivot-enrichment",
+  "enrichment",
+  "host-pivot",
+  "collector-enrichment",
+]);
+
+const ENRICHMENT_EDGE_RELS = new Set([
+  "HAS_MATERIAL",
+  "UNLOCKS",
+  "MOUNTED_INTO",
+  "REFERENCES",
+  "LOGGED_IN_AS",
+  "STORES_CREDS_FOR",
+  "CAN_STEAL_CREDS_FROM",
+]);
+
+function isEnrichmentEdge(edge) {
+  if (!edge || edge.attack_outcome) return false;
+  if (edge.edge_origin === "enrichment" || edge.is_enrichment === true) return true;
+  if (edge.source && ENRICHMENT_EDGE_SOURCES.has(edge.source)) return true;
+  if (ENRICHMENT_EDGE_RELS.has(edge.rel)) return true;
+  if (edge.rel === "CAN_ESCAPE_TO" && edge.mechanism) return true;
+  if (edge.rel === "HAS_ESCAPE_SURFACE" && ENRICHMENT_EDGE_SOURCES.has(edge.source)) return true;
+  if (
+    edge.rel === "EXECUTES_AS"
+    && (ENRICHMENT_EDGE_SOURCES.has(edge.source) || String(edge.mechanism || "").startsWith("imds"))
+  ) {
+    return true;
+  }
+  if (edge.rel === "CAN_REACH" && ENRICHMENT_EDGE_SOURCES.has(edge.source)) return true;
+  if (edge.harvest_method || edge.store_type) return true;
+  return false;
+}
+
+function edgeVisStyle(edge) {
+  if (edge.attack_outcome || edge._raw?.attack_outcome) {
+    return {
+      color: ATTACK_EDGE_COLOR,
+      fontColor: "#ffa657",
+      width: 2.5,
+      fontSize: 12,
+    };
+  }
+  if (isEnrichmentEdge(edge)) {
+    return {
+      color: ENRICHMENT_EDGE_COLOR,
+      fontColor: "#56d4dd",
+      width: 2,
+      fontSize: 10,
+    };
+  }
+  return {
+    color: DEFAULT_EDGE_COLOR,
+    fontColor: "#8b949e",
+    width: 1.5,
+    fontSize: 9,
+  };
+}
+
+const COMPACTABLE_CAPABILITY_RELS = new Set([
+  "READS",
+  "WRITES",
+  "DELETES",
+  "CONTROLS",
+  "EXECUTES",
+]);
+
+const CAPABILITY_REL_STRENGTH = {
+  CONTROLS: 50,
+  WRITES: 40,
+  DELETES: 35,
+  EXECUTES: 30,
+  READS: 10,
+};
+
+function compactCapabilityEdges(edges) {
+  const kept = [];
+  const buckets = new Map();
+
+  for (const edge of edges) {
+    if (
+      !COMPACTABLE_CAPABILITY_RELS.has(edge.rel)
+      || edge.attack_outcome
+      || edge._collapsedOutcome
+      || isEnrichmentEdge(edge)
+    ) {
+      kept.push(edge);
+      continue;
+    }
+    const key = `${edge.src}\0${edge.dst}`;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(edge);
+  }
+
+  for (const group of buckets.values()) {
+    if (group.length === 1) {
+      kept.push(group[0]);
+      continue;
+    }
+    const rels = [...new Set(group.map((edge) => edge.rel))].sort(
+      (a, b) => (CAPABILITY_REL_STRENGTH[b] || 0) - (CAPABILITY_REL_STRENGTH[a] || 0),
+    );
+    const primary = group
+      .slice()
+      .sort(
+        (a, b) => (CAPABILITY_REL_STRENGTH[b.rel] || 0) - (CAPABILITY_REL_STRENGTH[a.rel] || 0),
+      )[0];
+    const actions = [
+      ...new Set(group.map((edge) => edge.action).filter(Boolean)),
+    ].sort();
+    kept.push({
+      ...primary,
+      rel: rels[0],
+      _mergedRels: rels,
+      _mergedCount: group.length,
+      _mergedActions: actions,
+      _compactLabel: rels.length === 1 ? rels[0] : rels.join(" · "),
+    });
+  }
+
+  return kept;
+}
+
 function normalizeGraphForDisplay(graph) {
   const outcomeIds = new Set(
     (graph.nodes || []).filter(isAttackOutcomeNode).map((n) => n.id),
   );
-  const nodes = (graph.nodes || []).filter(
-    (n) => n.label !== "CollectionSession" && !isAttackOutcomeNode(n),
-  );
+  const nodes = (graph.nodes || []).filter((n) => !isHiddenDisplayNode(n));
   const nodeIds = new Set(nodes.map((n) => n.id));
   const edges = [];
 
@@ -168,12 +337,16 @@ function normalizeGraphForDisplay(graph) {
     }
   }
 
-  return { nodes, edges };
+  return { nodes, edges: compactCapabilityEdges(edges) };
 }
 
 function edgeDisplayLabel(edge) {
+  if (edge._compactLabel) return edge._compactLabel;
   if (edge.attack_outcome) {
     return `👑 ${edge.rel}`;
+  }
+  if (isEnrichmentEdge(edge)) {
+    return `◇ ${edge.rel}`;
   }
   return edge.rel;
 }
@@ -187,18 +360,32 @@ function formatEdgeHint(edge, nodeById) {
   const dst = nodeById.get(edge.dst);
   const srcLabel = src ? `${src.label}: ${displayName(src)}` : edge.src;
   const dstLabel = dst ? `${dst.label}: ${displayName(dst)}` : edge.dst;
+  const head = edge._compactLabel || edge.rel;
   const lines = edge.attack_outcome
     ? [
         `👑 ${edge.outcome_display || edge.attack_outcome}`,
         edge.pattern_name ? `via ${edge.pattern_name}` : null,
         edge.src === edge.dst ? shortId(srcLabel) : `${shortId(srcLabel)} → ${shortId(dstLabel)}`,
       ].filter(Boolean)
-    : [edge.rel, `${shortId(srcLabel)} → ${shortId(dstLabel)}`];
+    : [head, `${shortId(srcLabel)} → ${shortId(dstLabel)}`];
+
+  if (edge._mergedCount > 1) {
+    lines.push(`merged ${edge._mergedCount} capability edges`);
+    if (edge._mergedRels?.length) lines.push(`relations: ${edge._mergedRels.join(", ")}`);
+  }
 
   const meta = [];
   if (edge.confidence) meta.push(`confidence: ${edge.confidence}`);
-  if (edge.action) meta.push(`action: ${edge.action}`);
+  if (edge._mergedActions?.length) {
+    const shown = edge._mergedActions.slice(0, 8);
+    meta.push(
+      `actions: ${shown.join(", ")}${edge._mergedActions.length > 8 ? ` (+${edge._mergedActions.length - 8})` : ""}`,
+    );
+  } else if (edge.action) {
+    meta.push(`action: ${edge.action}`);
+  }
   if (edge.source) meta.push(`source: ${edge.source}`);
+  if (edge.edge_origin === "enrichment" || isEnrichmentEdge(edge)) meta.push("derived: enrichment");
   if (edge.discovered_via) meta.push(`via: ${edge.discovered_via}`);
   if (edge.cartography_rel) meta.push(`cartography: ${edge.cartography_rel}`);
   if (edge.pattern_name) meta.push(`pattern: ${edge.pattern_name}`);
@@ -213,47 +400,147 @@ function formatEdgeHint(edge, nodeById) {
   return lines.join("\n");
 }
 
-function computeLayeredLayout(nodes, edges, rootId) {
-  const nodeIds = nodes.map((n) => n.id);
-  const idSet = new Set(nodeIds);
-  const outEdges = new Map();
+function estimateNodeFootprint(node) {
+  const wrapped = wrapGraphLabel(shortId(displayName(node || {})));
+  const lines = wrapped.split("\n");
+  const longest = Math.max(...lines.map((line) => line.length), 4);
+  const isPrincipal = (node?.label || "") === "Principal";
+  return {
+    width: isPrincipal ? 56 : Math.min(240, 40 + longest * 7),
+    height: isPrincipal ? 42 : 24 + lines.length * 16,
+  };
+}
 
-  edges.forEach((edge) => {
-    if (!idSet.has(edge.src) || !idSet.has(edge.dst)) return;
-    if (!outEdges.has(edge.src)) outEdges.set(edge.src, []);
-    outEdges.get(edge.src).push(edge.dst);
+function buildAdjacency(nodes, edges) {
+  const idSet = new Set(nodes.map((n) => n.id));
+  const outgoing = new Map();
+  const undirected = new Map();
+  idSet.forEach((id) => {
+    outgoing.set(id, []);
+    undirected.set(id, []);
   });
+  edges.forEach((edge) => {
+    if (!idSet.has(edge.src) || !idSet.has(edge.dst) || edge.src === edge.dst) return;
+    outgoing.get(edge.src).push(edge.dst);
+    undirected.get(edge.src).push(edge.dst);
+    undirected.get(edge.dst).push(edge.src);
+  });
+  return { outgoing, undirected, idSet };
+}
 
-  const levels = new Map();
+function pickLayoutRoots(nodes, rootId, idSet) {
   const roots = [];
   if (rootId && idSet.has(rootId)) roots.push(rootId);
   nodes.forEach((node) => {
-    if (node.is_caller && idSet.has(node.id) && !roots.includes(node.id)) roots.push(node.id);
+    if (!idSet.has(node.id) || roots.includes(node.id)) return;
+    if (node.is_caller || node.is_scenario_start || node.is_compromised) roots.push(node.id);
   });
-  if (!roots.length && nodeIds.length) roots.push(nodeIds[0]);
+  if (!roots.length && nodes.length) {
+    const principals = nodes.filter((n) => n.label === "Principal" || n.concept_type === "Identity");
+    roots.push((principals[0] || nodes[0]).id);
+  }
+  return roots;
+}
 
+function assignLayoutLevels(nodes, edges, rootId) {
+  const { outgoing, undirected, idSet } = buildAdjacency(nodes, edges);
+  const levels = new Map();
+  const roots = pickLayoutRoots(nodes, rootId, idSet);
   const queue = [...roots];
   roots.forEach((id) => levels.set(id, 0));
 
+  // Prefer attack-direction (outgoing) BFS from roots.
   while (queue.length) {
     const id = queue.shift();
     const level = levels.get(id) ?? 0;
-    for (const dst of outEdges.get(id) || []) {
-      const nextLevel = level + 1;
-      if (!levels.has(dst) || levels.get(dst) > nextLevel) {
-        levels.set(dst, nextLevel);
+    for (const dst of outgoing.get(id) || []) {
+      const next = level + 1;
+      if (!levels.has(dst) || levels.get(dst) > next) {
+        levels.set(dst, next);
         queue.push(dst);
       }
     }
   }
 
-  let fallbackLevel = levels.size ? Math.max(...levels.values()) + 1 : 0;
-  nodeIds.forEach((id) => {
-    if (!levels.has(id)) {
-      levels.set(id, fallbackLevel);
-      fallbackLevel += 1;
+  // Pull remaining connected nodes near already-placed neighbors (avoids one-node-per-column lines).
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const node of nodes) {
+      if (levels.has(node.id)) continue;
+      const neighborLevels = (undirected.get(node.id) || [])
+        .map((nid) => levels.get(nid))
+        .filter((value) => value !== undefined);
+      if (!neighborLevels.length) continue;
+      levels.set(node.id, Math.min(...neighborLevels) + 1);
+      progressed = true;
     }
-  });
+  }
+
+  // Pack still-disconnected components into compact level blocks instead of a long spine.
+  const unplaced = nodes.map((n) => n.id).filter((id) => !levels.has(id));
+  if (unplaced.length) {
+    let blockStart = (levels.size ? Math.max(...levels.values()) : -1) + 1;
+    const seen = new Set();
+    for (const start of unplaced) {
+      if (seen.has(start)) continue;
+      const component = [];
+      const q = [start];
+      seen.add(start);
+      while (q.length) {
+        const id = q.shift();
+        component.push(id);
+        for (const nbr of undirected.get(id) || []) {
+          if (seen.has(nbr) || levels.has(nbr)) continue;
+          seen.add(nbr);
+          q.push(nbr);
+        }
+      }
+      // local BFS depths within the component
+      const local = new Map([[component[0], 0]]);
+      const lq = [component[0]];
+      while (lq.length) {
+        const id = lq.shift();
+        for (const nbr of undirected.get(id) || []) {
+          if (!component.includes(nbr) || local.has(nbr)) continue;
+          local.set(nbr, (local.get(id) || 0) + 1);
+          lq.push(nbr);
+        }
+      }
+      component.forEach((id) => {
+        levels.set(id, blockStart + (local.get(id) || 0));
+      });
+      blockStart += 1 + Math.max(0, ...[...local.values()]);
+    }
+  }
+
+  return { levels, roots };
+}
+
+function orderLayerByBarycenter(layerIds, prevPositions, undirected) {
+  if (!prevPositions || !prevPositions.size) {
+    return layerIds.slice().sort();
+  }
+  return layerIds
+    .slice()
+    .sort((a, b) => {
+      const bary = (id) => {
+        const nbrs = (undirected.get(id) || []).filter((n) => prevPositions.has(n));
+        if (!nbrs.length) return prevPositions.has(id) ? prevPositions.get(id) : Number.POSITIVE_INFINITY;
+        return nbrs.reduce((sum, n) => sum + prevPositions.get(n), 0) / nbrs.length;
+      };
+      const diff = bary(a) - bary(b);
+      if (Number.isFinite(diff) && diff !== 0) return diff;
+      return String(a).localeCompare(String(b));
+    });
+}
+
+function computeLayeredLayout(nodes, edges, rootId) {
+  if (!nodes.length) return {};
+
+  const nodeById = graphNodeMap(nodes);
+  const { undirected } = buildAdjacency(nodes, edges);
+  const { levels } = assignLayoutLevels(nodes, edges, rootId);
 
   const byLevel = new Map();
   levels.forEach((level, id) => {
@@ -261,18 +548,54 @@ function computeLayeredLayout(nodes, edges, rootId) {
     byLevel.get(level).push(id);
   });
 
-  const xGap = 260;
-  const yGap = 120;
-  const positions = {};
-  [...byLevel.entries()]
-    .sort(([a], [b]) => a - b)
-    .forEach(([level, ids]) => {
-      ids.sort();
-      const offset = ((ids.length - 1) * yGap) / 2;
-      ids.forEach((id, index) => {
-        positions[id] = { x: level * xGap, y: index * yGap - offset };
-      });
+  const orderedLevels = [...byLevel.keys()].sort((a, b) => a - b);
+  const levelOrder = new Map();
+  let prevY = new Map();
+
+  // A couple of barycenter sweeps reduce edge crossings within columns.
+  for (let pass = 0; pass < 3; pass += 1) {
+    const nextPrev = new Map();
+    orderedLevels.forEach((level) => {
+      const ordered = orderLayerByBarycenter(byLevel.get(level), prevY, undirected);
+      levelOrder.set(level, ordered);
+      ordered.forEach((id, index) => nextPrev.set(id, index));
     });
+    prevY = nextPrev;
+  }
+
+  const positions = {};
+  let cursorX = 0;
+  const minXGap = 260;
+  const minYGap = 100;
+  const maxColumnHeight = 12;
+
+  orderedLevels.forEach((level) => {
+    const ids = levelOrder.get(level) || byLevel.get(level);
+    const columns = [];
+    for (let i = 0; i < ids.length; i += maxColumnHeight) {
+      columns.push(ids.slice(i, i + maxColumnHeight));
+    }
+
+    let levelWidth = 0;
+    columns.forEach((columnIds, colIndex) => {
+      const colFeet = columnIds.map((id) => estimateNodeFootprint(nodeById.get(id)));
+      const colWidth = Math.max(80, ...colFeet.map((f) => f.width));
+      const gaps = colFeet.map((foot) => Math.max(minYGap, foot.height + 40));
+      const stackHeight = gaps.reduce((sum, gap, index) => (
+        index === gaps.length - 1 ? sum + colFeet[index].height : sum + gap
+      ), 0);
+      const center = stackHeight / 2;
+      let y = 0;
+      const x = cursorX + colIndex * (colWidth + 56);
+      columnIds.forEach((id, index) => {
+        positions[id] = { x, y: y - center + colFeet[index].height / 2 };
+        if (index < columnIds.length - 1) y += gaps[index];
+      });
+      levelWidth = Math.max(levelWidth, (colIndex + 1) * (colWidth + 56) - 56);
+    });
+
+    cursorX += Math.max(levelWidth, minXGap) + 72;
+  });
 
   return positions;
 }
@@ -367,6 +690,11 @@ function resolveStepEdges(steps) {
       "action",
       "confidence",
       "source",
+      "edge_origin",
+      "is_enrichment",
+      "mechanism",
+      "harvest_method",
+      "store_type",
       "severity",
       "required_actions",
       "mitre_technique_ids",
@@ -381,22 +709,22 @@ function resolveStepEdges(steps) {
 }
 
 function buildPathViewEdges(stepEdges, nodeById) {
-  return buildVisEdges(annotateEdgeSourceIndex(stepEdges), nodeById).map((edge) => ({
-    ...edge,
-    label: edge._hideLabel ? "" : edge._relLabel || edge.label,
-    width: Math.max(edge.width || 1.5, 2.5),
-    font: {
-      ...edge.font,
-      size: Math.max(edge.font?.size || 9, 10),
-      color: edge.attack_outcome ? "#ffa657" : "#c9d1d9",
-      strokeWidth: 0,
-      align: "horizontal",
-    },
-    color:
-      edge.attack_outcome || edge._raw?.attack_outcome
-        ? { color: "#ffa657", highlight: "#ffc078", hover: "#ffbc66" }
-        : { color: "#8b949e", highlight: "#58a6ff", hover: "#d0d7de" },
-  }));
+  return buildVisEdges(annotateEdgeSourceIndex(stepEdges), nodeById).map((edge) => {
+    const style = edgeVisStyle(edge._raw || edge);
+    return {
+      ...edge,
+      label: edge._hideLabel ? "" : edge._relLabel || edge.label,
+      width: Math.max(edge.width || 1.5, style.width),
+      font: {
+        ...edge.font,
+        size: Math.max(edge.font?.size || 9, style.fontSize),
+        color: style.fontColor,
+        strokeWidth: 0,
+        align: "horizontal",
+      },
+      color: style.color,
+    };
+  });
 }
 
 function edgeMatchesStep(visEdge, step) {
@@ -453,8 +781,9 @@ function buildVisEdges(edges, nodeById) {
       };
     }
 
-    const hideLabel = pairTotal > 1 && !edge.attack_outcome;
+    const hideLabel = pairTotal > 1 && !edge.attack_outcome && !isEnrichmentEdge(edge);
     const relLabel = edgeDisplayLabel(edge);
+    const style = edgeVisStyle(edge);
     const visEdge = {
       id: visEdgeId(edge, idCounts),
       from: edge.src,
@@ -464,14 +793,12 @@ function buildVisEdges(edges, nodeById) {
       arrows: "to",
       font: {
         align: "horizontal",
-        size: edge.attack_outcome ? 12 : 9,
-        color: edge.attack_outcome ? "#ffa657" : "#8b949e",
+        size: style.fontSize,
+        color: style.fontColor,
         strokeWidth: 0,
       },
-      color: edge.attack_outcome
-        ? { color: "#ffa657", highlight: "#ffc078", hover: "#ffbc66" }
-        : { color: "#484f58", highlight: "#58a6ff", hover: "#8b949e" },
-      width: edge.attack_outcome ? 2.5 : 1.5,
+      color: style.color,
+      width: style.width,
       smooth,
       _raw: edge,
       _hint: hint,
@@ -595,14 +922,6 @@ function initNetwork() {
     }
   });
 
-  state.network.on("oncontext", (params) => {
-    params.event.preventDefault();
-    hideContextMenu();
-    if (params.nodes.length) {
-      showContextMenu(params.event, params.nodes[0]);
-    }
-  });
-
   state.network.on("doubleClick", (params) => {
     if (params.nodes.length) {
       openNodeDetail(params.nodes[0]);
@@ -616,6 +935,7 @@ function initNetwork() {
   });
 
   initContextMenu();
+  initEnrichmentUpload();
   initPathGraph();
   initPanelResizer();
   restoreGraphViewPreference();
@@ -717,6 +1037,11 @@ function swapGraphViews() {
   updateGraphViewLabels();
   updateMiniGraphSectionVisibility();
   resizeGraphNetworks({ fitMain: true });
+  // Container move breaks cached canvas offsets until redraw.
+  requestAnimationFrame(() => {
+    state.network?.redraw();
+    state.pathNetwork?.redraw();
+  });
 }
 
 function ensureGeneratedGraphOnMain() {
@@ -834,6 +1159,7 @@ function initPathGraph() {
   });
 
   state.pathNetwork.on("click", (params) => {
+    hideContextMenu();
     if (params.nodes.length) setPathSearchStart(params.nodes[0]);
   });
 
@@ -903,44 +1229,85 @@ function syncGraphFromServer(graph) {
   state.edgesDS.clear();
   state.edgesDS.add(buildVisEdges(layoutEdges, nodeById));
   populateNodeDatalist(visibleNodes);
+  refreshPathGraphNodeStyles();
 
   if (state.selectedNodeId && nodeIds.has(state.selectedNodeId)) {
     refreshMainGraphSelection();
   }
 }
 
+function refreshPathGraphNodeStyles() {
+  if (!state.pathNodesDS || !state.graph?.nodes) return;
+  const byId = new Map((state.graph.nodes || []).map((n) => [n.id, n]));
+  const updates = [];
+  const emptyStart = state.generatedPaths?.[0]?.empty
+    ? state.generatedPaths[0]?.node_ids?.[0]
+    : null;
+  for (const vis of state.pathNodesDS.get()) {
+    const raw = byId.get(vis.id);
+    if (!raw) continue;
+    const next = toVisNode(raw, { x: vis.x, y: vis.y });
+    if (vis.id === state.selectedNodeId || vis.id === emptyStart) {
+      next.color = SELECTED_NODE_COLOR;
+      next.borderWidth = 3;
+    } else if (raw.is_high_value || raw.is_compromised) {
+      next.borderWidth = 3;
+    } else if (state.generatedPaths?.length) {
+      next.color = PATH_NODE_COLOR;
+      next.borderWidth = 3;
+    }
+    updates.push(next);
+  }
+  if (updates.length) state.pathNodesDS.update(updates);
+}
+
 function populateNodeDatalist(nodes) {
   const dl = document.getElementById("nodeOptions");
   dl.innerHTML = '<option value="caller">caller (compromised identity)</option>';
+  const seen = new Set(["caller"]);
   nodes
     .slice()
     .sort((a, b) => displayName(a).localeCompare(displayName(b)))
     .forEach((n) => {
-      const opt = document.createElement("option");
-      opt.value = n.id;
-      opt.label = `${n.label}: ${displayName(n)}`;
-      dl.appendChild(opt);
+      const aliases = [
+        n.id,
+        n.native_id,
+        n.arn,
+        n.bucket_name,
+        n.name,
+        n.display_name,
+      ].filter(Boolean);
+      aliases.forEach((alias) => {
+        const value = String(alias);
+        if (seen.has(value)) return;
+        seen.add(value);
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.label = `${n.label}: ${displayName(n)}`;
+        dl.appendChild(opt);
+      });
     });
 }
 
 function collectPathSubgraph(paths) {
-  const outcomeIds = new Set(
-    (state.graph.nodes || []).filter(isAttackOutcomeNode).map((n) => n.id),
+  const hiddenIds = new Set(
+    (state.graph.nodes || []).filter(isHiddenDisplayNode).map((n) => n.id),
   );
   const nodeIds = new Set();
   const steps = [];
   const stepKeys = new Set();
   for (const p of paths || []) {
     for (const id of p.node_ids || []) {
-      if (!outcomeIds.has(id)) nodeIds.add(id);
+      if (!hiddenIds.has(id)) nodeIds.add(id);
     }
     for (const s of p.steps || []) {
       let src = s.src;
       let dst = s.dst;
       let rel = s.rel;
-      if (outcomeIds.has(dst) && rel === "CAN_PRIVESC_TO") {
+      if (hiddenIds.has(dst) && rel === "CAN_PRIVESC_TO") {
         dst = src;
       }
+      if (hiddenIds.has(src) || (dst && hiddenIds.has(dst))) continue;
       const key = `${src}|${rel}|${dst}`;
       if (stepKeys.has(key)) continue;
       stepKeys.add(key);
@@ -966,6 +1333,25 @@ function clearGeneratedPathGraph() {
   updateMiniGraphSectionVisibility();
 }
 
+function resolvePathGraphStartId(preferred) {
+  const candidates = [
+    preferred,
+    document.getElementById("startSearch")?.value,
+    document.getElementById("queryStart")?.value,
+    state.selectedNodeId,
+    state.callerNodeId,
+  ];
+  const nodes = state.graph?.nodes || [];
+  for (const candidate of candidates) {
+    if (!candidate || candidate === "caller") continue;
+    if (nodes.some((n) => n.id === candidate)) return candidate;
+    const resolved = resolveStartNodeId(candidate);
+    if (resolved && resolved !== "caller" && nodes.some((n) => n.id === resolved)) return resolved;
+  }
+  if (state.callerNodeId && nodes.some((n) => n.id === state.callerNodeId)) return state.callerNodeId;
+  return null;
+}
+
 function renderGeneratedPathGraph(paths, { fit = true } = {}) {
   if (!state.pathNodesDS || !state.pathEdgesDS || !paths?.length) {
     clearGeneratedPathGraph();
@@ -973,7 +1359,7 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
   }
 
   const { nodeIds, steps } = collectPathSubgraph(paths);
-  const visibleNodes = state.graph.nodes.filter((n) => nodeIds.has(n.id) && !isAttackOutcomeNode(n));
+  const visibleNodes = state.graph.nodes.filter((n) => nodeIds.has(n.id) && !isHiddenDisplayNode(n));
   if (!visibleNodes.length) {
     clearGeneratedPathGraph();
     return;
@@ -983,6 +1369,7 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
   const nodeById = graphNodeMap(visibleNodes);
   const stepEdges = resolveStepEdges(steps);
   const positions = computeLayeredLayout(visibleNodes, stepEdges, rootId);
+  const emptyResult = Boolean(paths[0]?.empty);
 
   state.pathNodesDS.clear();
   state.pathEdgesDS.clear();
@@ -1002,7 +1389,11 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
   state.pathEdgesDS.add(buildPathViewEdges(stepEdges, nodeById));
 
   const badge = document.getElementById("pathGraphBadge");
-  if (badge) badge.textContent = `${visibleNodes.length} nodes · ${paths.length} path${paths.length === 1 ? "" : "s"}`;
+  if (badge) {
+    badge.textContent = emptyResult
+      ? `1 node · 0 paths`
+      : `${visibleNodes.length} nodes · ${paths.length} path${paths.length === 1 ? "" : "s"}`;
+  }
 
   if (fit && state.pathNetwork) {
     requestAnimationFrame(() => {
@@ -1013,15 +1404,24 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
   }
 }
 
-function showGeneratedPaths(paths) {
-  state.generatedPaths = paths || [];
-  if (!paths?.length) {
+function showGeneratedPaths(paths, { startNodeId } = {}) {
+  const list = paths || [];
+  if (!list.length) {
+    const startId = resolvePathGraphStartId(startNodeId);
+    if (startId) {
+      state.generatedPaths = [{ node_ids: [startId], steps: [], empty: true }];
+      updateMiniGraphSectionVisibility();
+      ensureGeneratedGraphOnMain();
+      renderGeneratedPathGraph(state.generatedPaths, { fit: true });
+      return;
+    }
     clearGeneratedPathGraph();
     return;
   }
+  state.generatedPaths = list;
   updateMiniGraphSectionVisibility();
   ensureGeneratedGraphOnMain();
-  renderGeneratedPathGraph(paths, { fit: true });
+  renderGeneratedPathGraph(list, { fit: true });
 }
 
 function refreshMainGraphSelection() {
@@ -1090,10 +1490,10 @@ function renderPaths(paths, mode = "paths", opts = {}) {
   if (!paths.length) {
     const hint =
       mode === "blast"
-        ? "No blast-radius paths found — the start node may have no outgoing edges in this session."
+        ? "No blast-radius paths found — no outgoing edges matched."
         : mode === "neighbors"
           ? "No neighbors found for this node."
-          : "No paths found for this query.";
+          : "No paths found for this query — start node is shown alone.";
     ul.innerHTML = `<li class="empty">${hint}</li>`;
     return;
   }
@@ -1182,7 +1582,7 @@ async function runPathQuery(query) {
     }
 
     renderPaths(data.paths || [], mode);
-    showGeneratedPaths(data.paths || []);
+    showGeneratedPaths(data.paths || [], { startNodeId: data.start || body.start });
     return data;
   } catch (err) {
     console.error("Path search failed", err);
@@ -1201,7 +1601,7 @@ async function runSuggestion(suggestion) {
       method: "POST",
     });
     renderPaths(data.paths || [], suggestion.mode === "scenario" ? "paths" : suggestion.mode);
-    showGeneratedPaths(data.paths || []);
+    showGeneratedPaths(data.paths || [], { startNodeId: data.start || suggestion.start });
     switchTab("search");
     return;
   }
@@ -1302,7 +1702,7 @@ async function runGraphQuery() {
     if (data.start) document.getElementById("queryStart").value = data.start;
     const paths = data.paths || [];
     renderPaths(paths, body.mode, { listId: "queryPaths", countId: "queryPathCount" });
-    showGeneratedPaths(paths);
+    showGeneratedPaths(paths, { startNodeId: data.start || body.start });
     switchTab("query");
     return data;
   } catch (err) {
@@ -1486,8 +1886,13 @@ async function loadFixtureSession() {
 }
 
 async function markSelectedNode({ compromised, high_value, clear = false }) {
-  if (!state.sessionId || !state.selectedNodeId) return alert("Select a node first");
-  return markNode(state.selectedNodeId, { compromised, high_value, clear });
+  if (!state.sessionId) return alert("Select a session first");
+  const nodeId =
+    state.selectedNodeId
+    || resolvePathGraphStartId(document.getElementById("startSearch")?.value)
+    || resolvePathGraphStartId(document.getElementById("queryStart")?.value);
+  if (!nodeId) return alert("Select a node first (click it, or put it in Start)");
+  return markNode(nodeId, { compromised, high_value, clear });
 }
 
 async function markNode(nodeId, { compromised, high_value, clear = false, refreshPaths = true }) {
@@ -1576,7 +1981,9 @@ async function runMarkingPathsQuery(kind, { silent = false } = {}) {
     state.markings = data.markings || state.markings;
     refreshMarkingsSummaryFromData(data.markings);
     renderPaths(data.paths || [], kind === "blast_compromised" ? "blast" : "paths");
-    showGeneratedPaths(data.paths || []);
+    showGeneratedPaths(data.paths || [], {
+      startNodeId: data.start || state.selectedNodeId || state.callerNodeId,
+    });
     switchTab("search");
     return data;
   } catch (err) {
@@ -1602,13 +2009,62 @@ function refreshMarkingsSummaryFromData(summary) {
 
 let contextMenuEl = null;
 
+function nodeIdAtPointer(network, event) {
+  if (!network) return null;
+  const canvas = network.canvas?.frame?.canvas;
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const pointer = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+  if (pointer.x < 0 || pointer.y < 0 || pointer.x > rect.width || pointer.y > rect.height) {
+    return null;
+  }
+  try {
+    return network.getNodeAt(pointer) || null;
+  } catch {
+    return null;
+  }
+}
+
+function handleGraphHostContextMenu(event, network) {
+  if (!network) return;
+  const nodeId = nodeIdAtPointer(network, event);
+  event.preventDefault();
+  event.stopPropagation();
+  hideContextMenu();
+  if (!nodeId) return;
+  setPathSearchStart(nodeId);
+  showContextMenu(event, nodeId);
+}
+
+function initGraphContextMenus() {
+  const mainHost = document.getElementById("mainGraphHost");
+  const miniHost = document.getElementById("miniGraphHost");
+  mainHost?.addEventListener("contextmenu", (event) => {
+    handleGraphHostContextMenu(event, getMainViewportNetwork());
+  });
+  miniHost?.addEventListener("contextmenu", (event) => {
+    handleGraphHostContextMenu(event, getMiniViewportNetwork());
+  });
+}
+
 function initContextMenu() {
   contextMenuEl = document.createElement("div");
   contextMenuEl.id = "graphContextMenu";
   contextMenuEl.className = "context-menu";
   document.body.appendChild(contextMenuEl);
-  document.addEventListener("click", hideContextMenu);
+  // Left-click outside dismisses; right-click must not immediately close the menu we just opened.
+  document.addEventListener("mousedown", (event) => {
+    if (!contextMenuEl || contextMenuEl.style.display === "none") return;
+    if (event.button !== 0) return;
+    if (contextMenuEl.contains(event.target)) return;
+    hideContextMenu();
+  });
   document.addEventListener("scroll", hideContextMenu, true);
+  initGraphContextMenus();
 }
 
 function hideContextMenu() {
@@ -1740,6 +2196,120 @@ document.getElementById("startSearch").addEventListener("keydown", (event) => {
   }
 });
 document.getElementById("runGraphQuery").onclick = runGraphQuery;
+async function applyEnrichmentExample(exampleId) {
+  const status = document.getElementById("enrichmentStatus");
+  if (!state.sessionId) {
+    if (status) status.textContent = "Load a session first";
+    return;
+  }
+  const id = exampleId || document.getElementById("enrichmentExampleSelect")?.value;
+  if (!id) {
+    if (status) status.textContent = "Choose a lab enrichment example";
+    return;
+  }
+  if (status) status.textContent = "Applying lab example…";
+  try {
+    const data = await fetchJSON(`/api/sessions/${state.sessionId}/enrichment/examples/${id}`, {
+      method: "POST",
+    });
+    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
+    renderGraph(graph);
+    refreshGraphViewports({ fit: false });
+    const stats = data.stats || {};
+    const unresolved = stats.unresolved_bindings?.length || 0;
+    if (status) {
+      status.textContent = unresolved
+        ? `Applied example; ${unresolved} binding(s) unmatched — load the ${data.lab_fixture || "matching"} demo first`
+        : `Applied ${stats.materials_applied || 0} material(s), ${stats.edges_added || 0} edge(s) from lab example`;
+    }
+    if (state.selectedNodeId) openNodeDetail(state.selectedNodeId);
+  } catch (err) {
+    if (status) status.textContent = String(err.message || err);
+  }
+}
+
+async function loadEnrichmentExamples() {
+  const select = document.getElementById("enrichmentExampleSelect");
+  if (!select) return;
+  const examples = await fetchJSON("/api/enrichment/examples");
+  select.innerHTML = "";
+  examples.forEach((ex) => {
+    const opt = document.createElement("option");
+    opt.value = ex.id;
+    opt.textContent = ex.description;
+    if (ex.id === "host-pivot-lab") opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+async function applyEnrichmentFile(file) {
+  const status = document.getElementById("enrichmentStatus");
+  if (!state.sessionId) {
+    if (status) status.textContent = "Load a session first";
+    return;
+  }
+  if (!file) {
+    if (status) status.textContent = "Choose an enrichment JSON file";
+    return;
+  }
+  if (status) status.textContent = "Applying enrichment…";
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const res = await fetch(`/api/sessions/${state.sessionId}/enrichment`, {
+      method: "POST",
+      credentials: "same-origin",
+      body: form,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
+    renderGraph(graph);
+    refreshGraphViewports({ fit: false });
+    const stats = data.stats || {};
+    const unresolved = stats.unresolved_bindings?.length || 0;
+    if (status) {
+      status.textContent = unresolved
+        ? `Applied ${stats.materials_applied || 0} material(s); ${unresolved} binding(s) unmatched — check target_ref`
+        : `Applied ${stats.materials_applied || 0} material(s), ${stats.edges_added || 0} edge(s)`;
+    }
+    if (state.selectedNodeId) openNodeDetail(state.selectedNodeId);
+  } catch (err) {
+    if (status) status.textContent = String(err.message || err);
+  }
+}
+
+function initEnrichmentUpload() {
+  const applyBtn = document.getElementById("applyEnrichment");
+  const applyExampleBtn = document.getElementById("applyEnrichmentExample");
+  const fileInput = document.getElementById("enrichmentFile");
+  const dropZone = document.getElementById("enrichmentDropZone");
+
+  applyExampleBtn?.addEventListener("click", () => applyEnrichmentExample());
+
+  applyBtn?.addEventListener("click", () => {
+    applyEnrichmentFile(fileInput?.files?.[0]);
+  });
+
+  fileInput?.addEventListener("change", () => {
+    if (fileInput.files?.[0]) applyEnrichmentFile(fileInput.files[0]);
+  });
+
+  const handleDrop = (event) => {
+    event.preventDefault();
+    dropZone?.classList.remove("drag-over");
+    const file = event.dataTransfer?.files?.[0];
+    if (file && file.name.endsWith(".json")) applyEnrichmentFile(file);
+  };
+
+  dropZone?.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    dropZone.classList.add("drag-over");
+  });
+  dropZone?.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+  dropZone?.addEventListener("drop", handleDrop);
+}
+
 document.getElementById("importReport").onclick = importReport;
 document.getElementById("fitGraph").onclick = fitGraphView;
 document.getElementById("exportMainGraph").onclick = () => {
@@ -1798,5 +2368,5 @@ document.getElementById("sessions").addEventListener("keydown", (event) => {
 initNetwork();
 updateTargetFieldsVisibility();
 initAuth()
-  .then(() => Promise.all([loadConnectors(), loadFixturesCatalog(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
-  .catch(() => Promise.all([loadConnectors(), loadFixturesCatalog(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));
+  .then(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
+  .catch(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));

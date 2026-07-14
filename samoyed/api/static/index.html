@@ -44,9 +44,28 @@
         <ul id="sessions" class="list"></ul>
       </div>
 
+      <div class="section">
+        <h3>Static enrichment</h3>
+        <p class="empty" style="padding:0 0 8px;text-align:left;font-size:11px">
+          Apply collector JSON to the loaded session. Bindings use <code>target_ref</code> (native id / ARN / name) — no node pick required.
+        </p>
+        <p class="empty" style="padding:0 0 8px;text-align:left;font-size:11px;color:var(--muted)">
+          Sources: <strong>static-repo</strong> · <strong>static-config</strong> (CLI: <code>samoyed collect static</code> → <code>samoyed enrich file.json</code>)
+        </p>
+        <label>Lab example</label>
+        <select id="enrichmentExampleSelect"></select>
+        <button id="applyEnrichmentExample" class="ghost" style="margin-top:8px;width:100%">Apply lab example</button>
+        <div id="enrichmentDropZone" class="enrichment-drop-zone" style="margin-top:10px">
+          Drop enrichment JSON here
+        </div>
+        <input id="enrichmentFile" type="file" accept=".json" />
+        <button id="applyEnrichment" class="ghost" style="margin-top:8px;width:100%">Apply enrichment</button>
+        <p class="empty" id="enrichmentStatus"></p>
+      </div>
+
       <div class="section section-muted">
         <h3>Demos</h3>
-        <p class="empty" style="padding:0 0 8px;text-align:left;font-size:11px">Bundled field fixtures — no real cloud required</p>
+        <p class="empty" style="padding:0 0 8px;text-align:left;font-size:11px">Bundled field fixtures — load <strong>host-pivot</strong> then apply the lab enrichment example above</p>
         <label>Fixture</label>
         <select id="fixtureSelect"></select>
         <button id="loadFixture" class="ghost" style="margin-top:8px;width:100%">Load demo</button>
@@ -68,6 +87,11 @@
         <button id="focusCaller" class="ghost">Focus caller</button>
         <button id="exportMainGraph" class="ghost">Export PNG</button>
         <button id="swapGraphViews" class="ghost">Swap views</button>
+        <span class="graph-legend" aria-label="Edge colors">
+          <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--iam"></i> IAM / enum</span>
+          <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--enrichment"></i> Enrichment / pivot</span>
+          <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--attack"></i> Attack outcome</span>
+        </span>
       </div>
       <div id="mainGraphHost" class="graph-host">
         <div id="graph" class="graph-canvas graph-canvas--large"></div>

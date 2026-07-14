@@ -247,7 +247,15 @@ def _list_ec2_instances(ec2: Any) -> list[dict[str, Any]]:
                 (t["Value"] for t in inst.get("Tags", []) if t.get("Key") == "Name"),
                 inst.get("InstanceId", ""),
             )
-            items.append({"instance_id": inst.get("InstanceId", ""), "name": name, "state": inst.get("State", {}).get("Name", "")})
+            items.append(
+                {
+                    "instance_id": inst.get("InstanceId", ""),
+                    "name": name,
+                    "state": inst.get("State", {}).get("Name", ""),
+                    "instance_type": inst.get("InstanceType", ""),
+                    "tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])},
+                }
+            )
     return items
 
 

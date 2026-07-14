@@ -360,6 +360,10 @@ def _ensure_load_balancer(elbv2: Any, name: str) -> None:
 
 
 def _try_ec2_instance(ec2: Any, name: str, report: dict[str, Any]) -> str | None:
+    existing = aws_helpers.find_ec2_instance_by_name(ec2, name)
+    if existing:
+        return existing
+
     def _create() -> str:
         resp = ec2.run_instances(
             ImageId="ami-00000000",

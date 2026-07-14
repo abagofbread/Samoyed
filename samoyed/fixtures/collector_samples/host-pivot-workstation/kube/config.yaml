@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Config
+clusters:
+  - cluster:
+      server: https://corp-eks.example:443
+    name: corp-dev
+contexts:
+  - context:
+      cluster: corp-dev
+      user: bob@corp.com
+    name: corp-dev
+current-context: corp-dev

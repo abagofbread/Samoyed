@@ -170,6 +170,50 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-right: 4px;
 }
 
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.graph-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.graph-legend-swatch {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+  background: #484f58;
+}
+
+.graph-legend-swatch--iam { background: #484f58; }
+.graph-legend-swatch--enrichment { background: #3fb9b0; }
+.graph-legend-swatch--attack { background: #ffa657; }
+
+.enrichment-drop-zone {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 14px 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(63, 185, 176, 0.06);
+}
+
+.enrichment-drop-zone.drag-over {
+  border-color: #3fb9b0;
+  color: #56d4dd;
+  background: rgba(63, 185, 176, 0.12);
+}
+
 .graph-host {
   flex: 1;
   min-height: 0;

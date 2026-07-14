@@ -10,6 +10,8 @@ from botocore.exceptions import ClientError
 
 from samoyed.firing_range import aws_helpers
 from samoyed.firing_range.clutter import seed_lab_clutter
+from samoyed.firing_range.compute_lab import seed_compute_lab
+from samoyed.firing_range.ssrf_lab import seed_ssrf_pci_lab
 from samoyed.firing_range.config import (
     ARTIFACTS_DIR,
     CLIENT_IAM_REPORT_FILE,
@@ -162,6 +164,23 @@ def seed_aws_lab(
         leaked_user_arn=user_arn,
     )
 
+    ssrf_lab = seed_ssrf_pci_lab(
+        iam=iam,
+        s3=s3,
+        lambda_client=_client("lambda", endpoint_url=endpoint_url, region=region),
+        account=account,
+        region=region,
+    )
+
+    compute_lab = seed_compute_lab(
+        iam=iam,
+        ec2=_client("ec2", endpoint_url=endpoint_url, region=region),
+        s3=s3,
+        account=account,
+        region=region,
+        internal_writer_role_arn=ssrf_lab.get("internal_writer_role_arn"),
+    )
+
     leaked_creds = _ensure_leaked_access_key(iam, endpoint_url=endpoint_url, region=region)
     credentials_path = None
     if write_credentials:
@@ -181,6 +200,8 @@ def seed_aws_lab(
         "lambda_arn": lambda_arn,
         "lambda_role_arn": lambda_role_arn,
         "clutter": clutter,
+        "ssrf_lab": ssrf_lab,
+        "compute_lab": compute_lab,
         "leaked_credentials_file": credentials_path,
         "seed_access_key_id": DEFAULT_ACCESS_KEY,
         "hint": (

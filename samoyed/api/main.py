@@ -309,6 +309,28 @@ def list_sessions(
     )
 
 
+class ClearSessionsRequest(BaseModel):
+    confirm: str
+    include_demos: bool = False
+
+
+@app.delete("/api/sessions/{session_ref}")
+def delete_session(session_ref: str, include_demo: bool = Query(False)):
+    try:
+        return SESSION_STORE.delete_session(session_ref, allow_demo=include_demo)
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(403, str(exc))
+
+
+@app.post("/api/sessions/clear")
+def clear_sessions(req: ClearSessionsRequest):
+    if req.confirm != "clear-sessions":
+        raise HTTPException(400, "confirm must be exactly 'clear-sessions'")
+    return SESSION_STORE.clear_sessions(include_demos=req.include_demos)
+
+
 @app.get("/api/sessions/{session_ref}")
 def get_session(session_ref: str):
     s = _resolve_session_ref(session_ref)
@@ -322,17 +344,19 @@ def get_session(session_ref: str):
 
 
 @app.get("/api/sessions/{session_ref}/graph")
-def get_graph(session_ref: str):
-    s = _resolve_session_ref(session_ref)
-    return {
-        "nodes": [
-            {"id": n.node_id, "label": n.label, **n.props} for n in s.snapshot.nodes.values()
-        ],
-        "edges": [
-            {"src": e.src_id, "rel": e.rel_type, "dst": e.dst_id, **e.props}
-            for e in s.snapshot.edges
-        ],
-    }
+def get_graph(session_ref: str, request: Request, detail: str = "full"):
+    from samoyed.api.auth import verify_api_token
+
+    session = _resolve_session_ref(session_ref)
+    allow_restricted = verify_api_token(request.headers.get("Authorization"))
+    try:
+        return SESSION_STORE.graph_payload(
+            session.session_id,
+            detail=detail,
+            allow_restricted=allow_restricted,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
 
 
 class PathQueryRequest(BaseModel):
@@ -398,6 +422,40 @@ class DeclareRelationshipRequest(BaseModel):
     propagate: bool = True
 
 
+class ProposedChangeRequest(BaseModel):
+    type: str
+    principal: str | None = None
+    target: str | None = None
+    action: str | None = None
+    rel: str | None = None
+    properties: dict[str, Any] = {}
+
+
+class ChangeAnalyzeRequest(BaseModel):
+    changes: list[ProposedChangeRequest]
+    context_principal: str | None = "caller"
+    max_depth: int = 8
+
+
+class GraphCompareRequest(BaseModel):
+    baseline_ref: str
+    proposed_ref: str
+    context_principal: str | None = "caller"
+    max_depth: int = 10
+    max_paths: int = 40
+
+
+class SessionGraphRoleRequest(BaseModel):
+    graph_role: str | None = None
+    graph_access: str | None = None
+
+
+class PolicyAccessRequest(BaseModel):
+    principal: str = "caller"
+    target: str
+    action: str | None = None
+
+
 @app.get("/api/sessions/{session_ref}/nodes")
 def search_nodes(session_ref: str, q: str = "", concept_type: str | None = None, limit: int = 50):
     session = _resolve_session_ref(session_ref)
@@ -405,6 +463,76 @@ def search_nodes(session_ref: str, q: str = "", concept_type: str | None = None,
         return SESSION_STORE.search_nodes(session.session_id, q=q, concept_type=concept_type, limit=limit)
     except KeyError:
         raise HTTPException(404, "Session not found")
+
+
+@app.get("/api/enrichment/catalog")
+def enrichment_catalog():
+    from samoyed.enrichment.catalog import export_catalog
+
+    return export_catalog()
+
+
+@app.get("/api/enrichment/examples")
+def enrichment_examples():
+    from samoyed.fixtures.enrichment_registry import list_enrichment_examples
+
+    return list_enrichment_examples()
+
+
+@app.post("/api/sessions/{session_ref}/enrichment/examples/{example_id}")
+def apply_enrichment_example(session_ref: str, example_id: str):
+    from samoyed.fixtures.enrichment_registry import get_enrichment_example, read_enrichment_example_bytes
+
+    session = _resolve_session_ref(session_ref)
+    try:
+        spec = get_enrichment_example(example_id)
+        payload = read_enrichment_example_bytes(example_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown enrichment example: {example_id}")
+    except FileNotFoundError as exc:
+        raise HTTPException(500, str(exc))
+    try:
+        stats = SESSION_STORE.apply_enrichment(session.session_id, payload)
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {
+        "session_id": session.session_id,
+        "example_id": example_id,
+        "lab_fixture": spec.lab_fixture,
+        "stats": stats,
+    }
+
+
+@app.post("/api/sessions/{session_ref}/enrichment")
+async def apply_session_enrichment(
+    session_ref: str,
+    file: UploadFile = File(...),
+    target_node_id: str | None = Form(None),
+):
+    session = _resolve_session_ref(session_ref)
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(400, "Empty file")
+    try:
+        stats = SESSION_STORE.apply_enrichment(
+            session.session_id,
+            payload,
+            target_node_id=target_node_id or None,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid JSON: {exc}")
+
+    return {
+        "session_id": session.session_id,
+        "stats": stats,
+        "target_node_id": target_node_id,
+    }
 
 
 @app.patch("/api/sessions/{session_ref}/nodes")
@@ -537,6 +665,67 @@ def post_propagate_compromise(session_ref: str):
         return SESSION_STORE.propagate_compromise(session.session_id)
     except KeyError:
         raise HTTPException(404, "Session not found")
+
+
+@app.post("/api/sessions/compare")
+def compare_sessions(req: GraphCompareRequest):
+    try:
+        return SESSION_STORE.compare_sessions(
+            req.baseline_ref,
+            req.proposed_ref,
+            context_principal=req.context_principal,
+            max_depth=req.max_depth,
+            max_paths=req.max_paths,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.patch("/api/sessions/{session_ref}/graph-role")
+def patch_session_graph_role(session_ref: str, req: SessionGraphRoleRequest):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.set_session_graph_role(
+            session.session_id,
+            graph_role=req.graph_role,
+            graph_access=req.graph_access,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+
+
+@app.post("/api/sessions/{session_ref}/changes/analyze")
+def analyze_proposed_changes(session_ref: str, req: ChangeAnalyzeRequest):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.analyze_proposed_changes(
+            session.session_id,
+            [c.model_dump(exclude_none=True) for c in req.changes],
+            context_principal=req.context_principal,
+            max_depth=req.max_depth,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/sessions/{session_ref}/policy/access-check")
+def policy_access_check(session_ref: str, req: PolicyAccessRequest):
+    session = _resolve_session_ref(session_ref)
+    try:
+        return SESSION_STORE.check_policy_access(
+            session.session_id,
+            principal=req.principal,
+            target=req.target,
+            action=req.action,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.get("/api/sessions/{session_ref}/search-suggestions")

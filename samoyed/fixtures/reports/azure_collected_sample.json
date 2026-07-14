@@ -1,0 +1,174 @@
+{
+  "account_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "provider": "azure",
+  "scope_id": "azure:scope:subscription:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "scope_display": "Azure subscription a1b2c3d4…",
+  "source": "samoyed-client",
+  "collected_via": "live-azure-api-sample",
+  "metadata": {
+    "note": "Sanitized iam-report shaped like collect_azure_iam_report() output. Field names match live Azure RBAC + resource inventory.",
+    "sample_source": "authored-from-azure-rest-shapes",
+    "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  },
+  "identities": [
+    {
+      "id": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "name": "sp-ci-deploy-dev",
+      "kind": "ServicePrincipal",
+      "display_name": "sp-ci-deploy-dev",
+      "provider": "azure",
+      "client_id": "3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "is_caller": true
+    },
+    {
+      "id": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "name": "mi-marketing-api",
+      "kind": "ManagedIdentity",
+      "display_name": "mi-marketing-api",
+      "provider": "azure"
+    },
+    {
+      "id": "azure:user:99999999-aaaa-bbbb-cccc-dddddddddddd",
+      "name": "legacy.deploy.bot@corp.example",
+      "kind": "User",
+      "display_name": "legacy.deploy.bot@corp.example",
+      "provider": "azure"
+    }
+  ],
+  "resources": [
+    {
+      "id": "StorageAccount:corpartifactsdev",
+      "concept": "DataStore",
+      "type": "StorageAccount",
+      "name": "corpartifactsdev",
+      "display_name": "corpartifactsdev",
+      "account_name": "corpartifactsdev",
+      "resource_group": "rg-dev-cicd"
+    },
+    {
+      "id": "StorageAccount:corpbackuporphan",
+      "concept": "DataStore",
+      "type": "StorageAccount",
+      "name": "corpbackuporphan",
+      "display_name": "corpbackuporphan",
+      "account_name": "corpbackuporphan",
+      "resource_group": "rg-retired-backups"
+    },
+    {
+      "id": "KeyVault:corp-kv-dev",
+      "concept": "SecretStore",
+      "type": "KeyVault",
+      "name": "corp-kv-dev",
+      "display_name": "corp-kv-dev",
+      "vault_name": "corp-kv-dev",
+      "resource_group": "rg-dev-cicd"
+    },
+    {
+      "id": "KeyVault:corp-kv-prod",
+      "concept": "SecretStore",
+      "type": "KeyVault",
+      "name": "corp-kv-prod",
+      "display_name": "corp-kv-prod",
+      "vault_name": "corp-kv-prod",
+      "resource_group": "rg-prod-platform",
+      "environment": "prod",
+      "sensitivity": "pii"
+    },
+    {
+      "id": "KeyVaultSecret:corp-kv-dev/api-hubspot-sandbox",
+      "concept": "SecretStore",
+      "type": "KeyVaultSecret",
+      "name": "api-hubspot-sandbox",
+      "display_name": "corp-kv-dev/api-hubspot-sandbox",
+      "secret_name": "api-hubspot-sandbox",
+      "vault_name": "corp-kv-dev"
+    },
+    {
+      "id": "KeyVaultSecret:corp-kv-prod/customer-pii-export",
+      "concept": "SecretStore",
+      "type": "KeyVaultSecret",
+      "name": "customer-pii-export",
+      "display_name": "corp-kv-prod/customer-pii-export",
+      "secret_name": "customer-pii-export",
+      "vault_name": "corp-kv-prod",
+      "environment": "prod",
+      "sensitivity": "pii"
+    },
+    {
+      "id": "WebApp:marketing-api",
+      "concept": "RuntimeBinding",
+      "type": "WebApp",
+      "name": "marketing-api",
+      "display_name": "marketing-api",
+      "resource_group": "rg-dev-cicd",
+      "execution_role_arn": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333"
+    }
+  ],
+  "grants": [
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "StorageAccount:corpartifactsdev",
+      "rel": "READS",
+      "role": "Storage Blob Data Reader",
+      "scope": "/subscriptions/a1b2c3d4-e5f6-7890-abcd-ef1234567890/resourceGroups/rg-dev-cicd/providers/Microsoft.Storage/storageAccounts/corpartifactsdev",
+      "source": "authorization.roleAssignments.list"
+    },
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "KeyVault:corp-kv-dev",
+      "rel": "READS",
+      "role": "Key Vault Secrets User",
+      "scope": "/subscriptions/a1b2c3d4-e5f6-7890-abcd-ef1234567890/resourceGroups/rg-dev-cicd/providers/Microsoft.KeyVault/vaults/corp-kv-dev",
+      "source": "authorization.roleAssignments.list"
+    },
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "KeyVaultSecret:corp-kv-dev/api-hubspot-sandbox",
+      "rel": "READS",
+      "role": "Key Vault Secrets User",
+      "scope": "/subscriptions/a1b2c3d4-e5f6-7890-abcd-ef1234567890/resourceGroups/rg-dev-cicd/providers/Microsoft.KeyVault/vaults/corp-kv-dev",
+      "source": "authorization.roleAssignments.list"
+    },
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "WebApp:marketing-api",
+      "rel": "CONTROLS",
+      "role": "Website Contributor",
+      "scope": "/subscriptions/a1b2c3d4-e5f6-7890-abcd-ef1234567890/resourceGroups/rg-dev-cicd/providers/Microsoft.Web/sites/marketing-api",
+      "source": "authorization.roleAssignments.list"
+    },
+    {
+      "from": "WebApp:marketing-api",
+      "to": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "rel": "EXECUTES_AS",
+      "source": "webapp-managed-identity",
+      "confidence": "explicit"
+    },
+    {
+      "from": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "to": "KeyVault:corp-kv-prod",
+      "rel": "READS",
+      "role": "Key Vault Secrets User",
+      "scope": "/subscriptions/a1b2c3d4-e5f6-7890-abcd-ef1234567890/resourceGroups/rg-prod-platform/providers/Microsoft.KeyVault/vaults/corp-kv-prod",
+      "source": "authorization.roleAssignments.list"
+    },
+    {
+      "from": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "to": "KeyVaultSecret:corp-kv-prod/customer-pii-export",
+      "rel": "READS",
+      "role": "Key Vault Secrets User",
+      "scope": "/subscriptions/a1b2c3d4-e5f6-7890-abcd-ef1234567890/resourceGroups/rg-prod-platform/providers/Microsoft.KeyVault/vaults/corp-kv-prod",
+      "source": "authorization.roleAssignments.list"
+    },
+    {
+      "from": "azure:user:99999999-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "StorageAccount:corpbackuporphan",
+      "rel": "READS",
+      "role": "Storage Blob Data Reader",
+      "scope": "/subscriptions/a1b2c3d4-e5f6-7890-abcd-ef1234567890/resourceGroups/rg-retired-backups/providers/Microsoft.Storage/storageAccounts/corpbackuporphan",
+      "source": "authorization.roleAssignments.list"
+    }
+  ],
+  "caller_arn": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd"
+}

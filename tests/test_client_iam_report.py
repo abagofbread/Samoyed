@@ -27,9 +27,10 @@ def test_collect_iam_report_parses_inline_policies(mock_identity, mock_client):
     s3 = MagicMock()
     sm = MagicMock()
     lam = MagicMock()
+    ec2 = MagicMock()
 
     def client(service: str, region: str | None = None):
-        return {"iam": iam, "s3": s3, "secretsmanager": sm, "lambda": lam}[service]
+        return {"iam": iam, "s3": s3, "secretsmanager": sm, "lambda": lam, "ec2": ec2}[service]
 
     mock_client.side_effect = client
 
@@ -51,6 +52,7 @@ def test_collect_iam_report_parses_inline_policies(mock_identity, mock_client):
         "SecretList": [{"ARN": "arn:aws:secretsmanager:us-east-1:000000000000:secret:prod-db", "Name": "prod-db"}]
     }
     lam.list_functions.return_value = {"Functions": []}
+    ec2.describe_instances.return_value = {"Reservations": []}
 
     report = collect_iam_report(_cred())
     assert report["account_id"] == "000000000000"

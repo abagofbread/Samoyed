@@ -117,7 +117,36 @@ def _artifacts_from_report(
         }
         if resource.get("is_scenario_start"):
             props["is_scenario_start"] = True
-        for key in ("bucket_name", "function_name", "namespace", "cluster", "ou", "severity", "instance_id"):
+        for key in (
+            "bucket_name",
+            "function_name",
+            "namespace",
+            "cluster",
+            "ou",
+            "severity",
+            "instance_id",
+            "secret_name",
+            "vault_name",
+            "account_name",
+            "resource_group",
+            "client_id",
+            "service_account",
+            "environment",
+            "sensitivity",
+            "scope_boundary",
+            "ssrf_vulnerable",
+            "has_public_url",
+            "has_public_reach",
+            "public_write",
+            "public_read",
+            "internet_write",
+            "internal_only",
+            "exposure_level",
+            "execution_role_arn",
+            "instance_type",
+            "compute_class",
+            "gpu_accelerated",
+        ):
             if resource.get(key) is not None:
                 props[key] = resource[key]
         yield ConceptArtifact(

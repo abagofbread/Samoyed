@@ -26,6 +26,7 @@ from samoyed.graph.relationships import (
     resolve_relationship_endpoints,
 )
 from samoyed.graph.neo4j_store import (
+    delete_snapshot as neo4j_delete_snapshot,
     list_session_summaries as neo4j_list_session_summaries,
     load_session_meta,
     load_snapshot,
@@ -34,12 +35,14 @@ from samoyed.graph.neo4j_store import (
 )
 from samoyed.graph.persistence import (
     default_session_dir,
+    delete_session_file,
     read_session_file,
     snapshot_from_dict,
     snapshot_to_dict,
     write_session_file,
 )
 from samoyed.attack.analyzer import apply_attack_analysis
+from samoyed.attack.surface import enrich_attack_surface
 from samoyed.ingest.concept_normalizer import ConceptNormalizer
 from samoyed.path_engine.explain import explain_path as build_path_explanation
 from samoyed.path_engine.models import PathResult
@@ -174,6 +177,7 @@ class SessionStore:
 
         ConceptNormalizer().ingest(builder, artifacts)
         attack_edges = apply_attack_analysis(builder, provider=credentials.provider)
+        enrich_attack_surface(builder)
 
         metadata = {
             "artifact_count": len(artifacts),
@@ -242,6 +246,7 @@ class SessionStore:
         builder.link_session(scope_node)
         ConceptNormalizer().ingest(builder, artifacts)
         attack_edges = apply_attack_analysis(builder, provider=credentials.provider)
+        enrich_attack_surface(builder)
 
         metadata = {
             "artifact_count": len(artifacts),
@@ -345,6 +350,9 @@ class SessionStore:
         *,
         caller_arn: str | None = None,
         session_id: str | None = None,
+        graph_role: str | None = None,
+        graph_access: str | None = None,
+        persist: bool = True,
     ) -> SessionRecord:
         from samoyed.connectors.registry import import_report
 
@@ -378,6 +386,10 @@ class SessionStore:
         rebind_graph_session_id(builder.snapshot, "import-pending", sid)
         meta["short_name"] = short_name
         meta["scope_key"] = scope_key
+        if graph_role:
+            meta["graph_role"] = graph_role
+        if graph_access:
+            meta["graph_access"] = graph_access
         record = SessionRecord(
             session_id=sid,
             provider=provider,
@@ -390,9 +402,83 @@ class SessionStore:
             metadata=meta,
         )
         write_snapshot(builder.snapshot, session_meta=self._neo4j_meta(record))
-        self._persist(record)
+        if persist:
+            self._persist(record)
         self._sessions[sid] = record
         return record
+
+    def set_session_graph_role(
+        self,
+        session_id: str,
+        *,
+        graph_role: str | None = None,
+        graph_access: str | None = None,
+    ) -> dict[str, Any]:
+        session = self.get(session_id)
+        if not session:
+            raise KeyError(session_id)
+        if graph_role is not None:
+            session.metadata["graph_role"] = graph_role
+        if graph_access is not None:
+            session.metadata["graph_access"] = graph_access
+        self._persist(session)
+        write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
+        return {
+            "session_id": session_id,
+            "graph_role": session.metadata.get("graph_role"),
+            "graph_access": session.metadata.get("graph_access"),
+        }
+
+    def graph_payload(
+        self,
+        session_id: str,
+        *,
+        detail: str = "full",
+        allow_restricted: bool = False,
+    ) -> dict[str, Any]:
+        from samoyed.graph.access import filter_graph_payload, graph_access_for_metadata
+
+        session = self.get(session_id)
+        if not session:
+            raise KeyError(session_id)
+        access = graph_access_for_metadata(session.metadata)
+        if detail == "summary":
+            access = "summary"
+        elif allow_restricted and access == "compare_only":
+            access = "full"
+        return filter_graph_payload(session.snapshot, access=access)
+
+    def compare_sessions(
+        self,
+        baseline_ref: str,
+        proposed_ref: str,
+        *,
+        context_principal: str | None = None,
+        max_depth: int = 10,
+        max_paths: int = 40,
+    ) -> dict[str, Any]:
+        from samoyed.change_impact import compare_attack_surfaces
+
+        baseline = self.resolve_session_ref(baseline_ref)
+        proposed = self.resolve_session_ref(proposed_ref)
+        if not baseline:
+            raise KeyError(f"baseline session not found: {baseline_ref}")
+        if not proposed:
+            raise KeyError(f"proposed session not found: {proposed_ref}")
+
+        principal = context_principal or baseline.caller_arn or "caller"
+        if principal in {"caller", "start"}:
+            principal = self.find_caller_node(baseline) or principal
+
+        result = compare_attack_surfaces(
+            baseline.snapshot,
+            proposed.snapshot,
+            provider=baseline.provider,
+            context_principal=principal,
+            max_depth=max_depth,
+            max_paths=max_paths,
+        )
+        return result.to_dict()
 
     def get(self, session_id: str) -> SessionRecord | None:
         cached = self._sessions.get(session_id)
@@ -485,6 +571,65 @@ class SessionStore:
             return summaries[:limit] if limit else summaries
         return summaries
 
+    def delete_session(self, session_ref: str, *, allow_demo: bool = False) -> dict[str, Any]:
+        """Delete one session from memory, disk, and Neo4j."""
+        record = self.resolve_session_ref(session_ref, include_demos=True)
+        session_id = record.session_id if record else session_ref
+        metadata = record.metadata if record else {}
+        if not record:
+            disk = read_session_file(session_ref)
+            if disk:
+                session_id = disk["session_id"]
+                metadata = disk.get("metadata") or {}
+            else:
+                raise KeyError(session_ref)
+
+        if not allow_demo and is_demo_session(session_id, metadata):
+            raise ValueError(f"Refusing to delete demo/fixture session {session_id}")
+
+        self._sessions.pop(session_id, None)
+        removed_file = delete_session_file(session_id)
+        removed_neo4j = neo4j_delete_snapshot(session_id)
+        return {
+            "session_id": session_id,
+            "deleted": removed_file or record is not None or removed_neo4j,
+            "removed_file": removed_file,
+            "removed_neo4j": removed_neo4j,
+        }
+
+    def clear_sessions(self, *, include_demos: bool = False) -> dict[str, Any]:
+        """Delete persisted attack-graph sessions. Demo/fixture sessions are kept unless requested."""
+        session_ids: set[str] = set(self._sessions.keys())
+        session_dir = default_session_dir()
+        if session_dir.is_dir():
+            session_ids.update(path.stem for path in session_dir.glob("*.json"))
+        for summary in self._collect_session_summaries():
+            session_ids.add(summary["session_id"])
+
+        deleted: list[str] = []
+        skipped: list[str] = []
+        for session_id in sorted(session_ids):
+            record = self.get(session_id)
+            metadata = record.metadata if record else {}
+            if not metadata:
+                disk = read_session_file(session_id)
+                metadata = (disk or {}).get("metadata") or {}
+            if not include_demos and is_demo_session(session_id, metadata):
+                skipped.append(session_id)
+                continue
+            try:
+                result = self.delete_session(session_id, allow_demo=include_demos)
+                if result["deleted"]:
+                    deleted.append(session_id)
+            except KeyError:
+                continue
+        return {
+            "deleted_count": len(deleted),
+            "deleted": deleted,
+            "skipped_count": len(skipped),
+            "skipped": skipped,
+        }
+
     def _collect_session_summaries(self) -> list[dict[str, Any]]:
         seen: set[str] = set()
         summaries: list[dict[str, Any]] = []
@@ -575,6 +720,56 @@ class SessionStore:
             max_depth=max_depth,
             max_paths=max_paths,
         )
+
+    def analyze_proposed_changes(
+        self,
+        session_id: str,
+        changes: list[dict[str, Any]],
+        *,
+        context_principal: str | None = None,
+        max_depth: int = 8,
+    ) -> dict[str, Any]:
+        from samoyed.change_impact import analyze_proposed_changes
+
+        session = self.get(session_id)
+        if not session:
+            raise KeyError(session_id)
+        principal = context_principal or session.caller_arn or "caller"
+        if principal in {"caller", "start"}:
+            principal = self.find_caller_node(session) or principal
+        result = analyze_proposed_changes(
+            session.snapshot,
+            changes,
+            provider=session.provider,
+            context_principal=principal,
+            max_depth=max_depth,
+        )
+        return result.to_dict()
+
+    def check_policy_access(
+        self,
+        session_id: str,
+        *,
+        principal: str,
+        target: str,
+        action: str | None = None,
+    ) -> dict[str, Any]:
+        from samoyed.policy.access import can_principal_access_node, principal_has_crypto_mining_risk
+
+        session = self.get(session_id)
+        if not session:
+            raise KeyError(session_id)
+        resolved_principal = principal
+        if principal in {"caller", "start"}:
+            resolved_principal = self.find_caller_node(session) or principal
+        access = can_principal_access_node(
+            session.snapshot,
+            resolved_principal,
+            target,
+            action=action,
+        )
+        mining = principal_has_crypto_mining_risk(session.snapshot, resolved_principal)
+        return {"access": access, "crypto_mining_risk": mining}
 
     def run_marking_paths_query(
         self,
@@ -835,6 +1030,32 @@ class SessionStore:
         self._persist(session)
         write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
         return {"id": node.node_id, "label": node.label, **node.props}
+
+    def apply_enrichment(
+        self,
+        session_id: str,
+        payload: bytes | str | dict[str, Any],
+        *,
+        target_node_id: str | None = None,
+    ) -> dict[str, Any]:
+        from samoyed.enrichment.apply import apply_enrichment_report
+        from samoyed.graph.builder import GraphBuilder
+
+        session = self.get(session_id)
+        if not session:
+            raise KeyError(session_id)
+        builder = GraphBuilder(session.session_id)
+        builder.snapshot = session.snapshot
+        stats = apply_enrichment_report(
+            builder,
+            payload,
+            default_target_node_id=target_node_id,
+        )
+        session.snapshot = builder.snapshot
+        session.metadata.setdefault("enrichment_runs", []).append(stats)
+        self._persist(session)
+        write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
+        return stats
 
     def resolve_start_node(self, session_id: str, start: str | None) -> str | None:
         session = self.get(session_id)

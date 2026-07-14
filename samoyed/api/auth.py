@@ -123,6 +123,15 @@ def verify_credentials(username: str, password: str) -> bool:
     )
 
 
+def verify_api_token(authorization: str | None) -> bool:
+    """True when Authorization bearer matches SAMOYED_API_TOKEN (CI / automation)."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return False
+    token = authorization[7:].strip()
+    settings = get_auth_settings()
+    return bool(settings.api_token and secrets.compare_digest(token, settings.api_token))
+
+
 def verify_bearer_token(authorization: str | None) -> bool:
     if not authorization or not authorization.lower().startswith("bearer "):
         return False

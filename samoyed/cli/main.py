@@ -37,7 +37,11 @@ from samoyed.cloud.concepts import CloudProvider
 
 app = typer.Typer(no_args_is_help=True, help="Samoyed — BloodHound for cloud")
 firing_range_app = typer.Typer(help="Emulated vulnerable clouds (LocalStack, no lab data in repo)")
+sessions_app = typer.Typer(help="Manage attack-graph sessions")
+collect_app = typer.Typer(help="Static collectors that produce enrichment reports")
 app.add_typer(firing_range_app, name="firing-range")
+app.add_typer(sessions_app, name="sessions")
+app.add_typer(collect_app, name="collect")
 
 
 @firing_range_app.command("status")
@@ -131,6 +135,49 @@ def firing_range_client_report_cmd(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     typer.echo(json.dumps({"output": str(output), "identities": len(report["identities"]), "grants": len(report["grants"])}, indent=2))
+
+
+@app.command("collect-azure-report")
+def collect_azure_report_cmd(
+    output: Path = typer.Option(
+        Path(".samoyed/azure/client-iam-report.json"),
+        help="Where to write iam-report JSON",
+    ),
+    subscription_id: str | None = typer.Option(None, envvar="AZURE_SUBSCRIPTION_ID", help="Azure subscription ID"),
+) -> None:
+    """Collect iam-report JSON from live Azure APIs (requires az login or SP env vars)."""
+    from samoyed.client.azure_report import collect_azure_iam_report
+
+    try:
+        cred = load_azure_credential(subscription_id=subscription_id)
+    except ImportError:
+        typer.echo("Install Azure support: pip install 'samoyed[azure]'", err=True)
+        raise typer.Exit(1)
+    except ValueError as exc:
+        typer.echo(f"{exc}", err=True)
+        typer.echo("Set AZURE_SUBSCRIPTION_ID and run az login or SP env vars.", err=True)
+        raise typer.Exit(1)
+
+    try:
+        report = collect_azure_iam_report(cred)
+    except Exception as exc:
+        typer.echo(f"Collection failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    typer.echo(
+        json.dumps(
+            {
+                "output": str(output),
+                "provider": report["provider"],
+                "identities": len(report["identities"]),
+                "resources": len(report["resources"]),
+                "grants": len(report["grants"]),
+            },
+            indent=2,
+        )
+    )
 
 
 @firing_range_app.command("probe-leaked")
@@ -705,6 +752,35 @@ def paths_cmd(
     typer.echo(json.dumps([_path_to_dict(p) for p in results], indent=2, default=str))
 
 
+@sessions_app.command("clear")
+def sessions_clear_cmd(
+    include_demos: bool = typer.Option(False, "--include-demos", help="Also delete demo/fixture sessions"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+) -> None:
+    """Delete persisted attack-graph sessions from ~/.samoyed/sessions (or SAMOYED_HOME)."""
+    if not yes and not typer.confirm("Delete all non-demo sessions?", default=False):
+        raise typer.Abort()
+    result = SESSION_STORE.clear_sessions(include_demos=include_demos)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@sessions_app.command("delete")
+def sessions_delete_cmd(
+    session_ref: str = typer.Argument(..., help="Session id or short name"),
+    include_demo: bool = typer.Option(False, "--include-demo", help="Allow deleting demo/fixture sessions"),
+) -> None:
+    """Delete one persisted session."""
+    try:
+        result = SESSION_STORE.delete_session(session_ref, allow_demo=include_demo)
+    except KeyError:
+        typer.echo(f"Session not found: {session_ref}", err=True)
+        raise typer.Exit(1)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    typer.echo(json.dumps(result, indent=2))
+
+
 @app.command("ui")
 def ui_cmd(
     host: str = typer.Option("127.0.0.1", help="Bind address"),
@@ -792,6 +868,112 @@ def _path_to_dict(p) -> dict:
             for s in p.steps
         ],
     }
+
+
+@app.command("enrich")
+def enrich_cmd(
+    file: Path = typer.Argument(..., help="Enrichment report JSON (bindings use target_ref)"),
+    session: Optional[str] = typer.Option(
+        None,
+        "--session",
+        "-s",
+        help="Session id or short name (default: most recent)",
+    ),
+) -> None:
+    """Apply a collector enrichment file to the attack graph."""
+    if not file.is_file():
+        typer.echo(f"File not found: {file}", err=True)
+        raise typer.Exit(1)
+
+    record = SESSION_STORE.resolve_session_ref(session)
+    if not record:
+        typer.echo("No session found — import or enum first, or pass --session", err=True)
+        raise typer.Exit(1)
+
+    try:
+        stats = SESSION_STORE.apply_enrichment(record.session_id, file.read_bytes())
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+    if stats.get("unresolved_bindings"):
+        typer.echo(
+            json.dumps(
+                {
+                    "session_id": record.session_id,
+                    "warning": "Some bindings could not be matched to graph nodes",
+                    **stats,
+                },
+                indent=2,
+            ),
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    typer.echo(
+        json.dumps(
+            {
+                "session_id": record.session_id,
+                "file": str(file),
+                **stats,
+            },
+            indent=2,
+        )
+    )
+
+
+@collect_app.command("static")
+def collect_static_cmd(
+    path: Path = typer.Argument(..., help="Repo or config directory to scan"),
+    target_ref: str = typer.Option(
+        ...,
+        "--bind-ref",
+        help="Graph node ref for findings (native_id, ARN, or name)",
+    ),
+    output: Path = typer.Option(
+        Path("enrichment.json"),
+        "--output",
+        "-o",
+        help="Where to write enrichment report JSON",
+    ),
+    resolves_to: Optional[str] = typer.Option(
+        None,
+        help="Optional identity native_id/ARN to attach when rules find credentials",
+    ),
+    collector: str = typer.Option(
+        "static-repo",
+        help="Collector label (static-repo, static-config, …)",
+    ),
+) -> None:
+    """Scan static files (configs, repos) and write an enrichment report."""
+    from samoyed.collectors.static import collect_static_source
+
+    try:
+        report = collect_static_source(
+            path,
+            target_ref=target_ref,
+            collector_name=collector,
+            resolves_to=resolves_to,
+        )
+    except FileNotFoundError:
+        typer.echo(f"Path not found: {path}", err=True)
+        raise typer.Exit(1)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    typer.echo(
+        json.dumps(
+            {
+                "output": str(output),
+                "source_root": report.get("source_root"),
+                "files_scanned": report.get("files_scanned"),
+                "material_count": report.get("material_count"),
+                "target_ref": target_ref,
+                "hint": f"samoyed enrich {output}",
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

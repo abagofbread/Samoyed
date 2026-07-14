@@ -19,6 +19,13 @@
       "namespace": "default"
     },
     {
+      "id": "kubernetes:serviceaccount:default:deployer-sa",
+      "name": "deployer-sa",
+      "kind": "ServiceAccount",
+      "display_name": "default/deployer-sa",
+      "namespace": "default"
+    },
+    {
       "arn": "arn:aws:iam::111111111111:role/eks-workload-admin",
       "id": "arn:aws:iam::111111111111:role/eks-workload-admin",
       "kind": "Role",
@@ -26,6 +33,13 @@
     }
   ],
   "resources": [
+    {
+      "id": "kubernetes:workload:*",
+      "concept": "Workload",
+      "type": "WorkloadWildcard",
+      "name": "Any pod",
+      "display_name": "Any pod (namespace wildcard)"
+    },
     {
       "id": "kubernetes:secret:default:db-credentials",
       "concept": "SecretStore",
@@ -44,7 +58,8 @@
       "concept": "Workload",
       "type": "Pod",
       "name": "evil-pod",
-      "namespace": "default"
+      "namespace": "default",
+      "service_account": "app-sa"
     },
     {
       "id": "kubernetes:escape:default:evil-pod:docker-socket",
@@ -79,6 +94,14 @@
       "to": "arn:aws:iam::111111111111:role/eks-workload-admin",
       "rel": "PROJECTS_TO",
       "binding_type": "IRSA"
+    },
+    {
+      "from": "kubernetes:serviceaccount:default:deployer-sa",
+      "to": "kubernetes:workload:*",
+      "rel": "CONTROLS",
+      "action": "rbac:pods:create",
+      "namespace": "default",
+      "confidence": "explicit"
     },
     {
       "from": "kubernetes:pod:default:evil-pod",

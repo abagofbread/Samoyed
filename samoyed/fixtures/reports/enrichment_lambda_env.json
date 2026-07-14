@@ -1,0 +1,35 @@
+{
+  "enrichment_version": 1,
+  "collector": "static-config",
+  "collector_mode": "static",
+  "collected_at": "2026-06-19T12:00:00Z",
+  "description": "Legacy alias — use enrichment_internal_tool_static.json or enrichment_host_pivot_lab.json",
+  "lab_fixture": "host-pivot",
+  "bindings": [
+    {
+      "target_ref": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:internal-tool",
+      "materials": [
+        {
+          "kind": "aws_access_key_env",
+          "locator": ".env.production:AKIAIOSFODNN7EXAMPLE",
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env.production",
+            "match": "AKIAIOSFODNN7EXAMPLE"
+          }
+        },
+        {
+          "kind": "aws_secret_key_env",
+          "locator": ".env.production:aws_secret_key_env",
+          "resolves_to": "arn:aws:iam::111111111111:user/dev-bob",
+          "confidence": "explicit",
+          "evidence": {
+            "file": ".env.production",
+            "match": "AWS_SECRET_ACCESS_KEY=fixture-lambda-env-secret-not-real"
+          }
+        }
+      ]
+    }
+  ]
+}

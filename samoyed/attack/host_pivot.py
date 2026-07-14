@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from samoyed.cloud.concepts import CloudProvider, ConceptType
-from samoyed.graph.builder import GraphBuilder
+from samoyed.graph.enrichment import enrichment_edge_props, mark_enrichment_edges
 
 
 @dataclass
@@ -90,22 +90,24 @@ def apply_host_pivot(builder: GraphBuilder, spec: HostPivotSpec) -> str:
             src_id=host_id,
             rel_type="LOGGED_IN_AS",
             dst_id=identity_id,
-            props={
-                "session_type": session.session_type,
-                "harvest_method": "interactive-token-theft",
-                "notes": session.notes or "LSASS / mimikatz / token duplication",
-                "confidence": "explicit",
-            },
+            props=enrichment_edge_props(
+                session_type=session.session_type,
+                harvest_method="interactive-token-theft",
+                notes=session.notes or "LSASS / mimikatz / token duplication",
+                confidence="explicit",
+                source="host-pivot",
+            ),
         )
         # Synthetic capability — host compromise unlocks cached SSO / refresh tokens
         builder.add_edge(
             src_id=host_id,
             rel_type="CAN_STEAL_CREDS_FROM",
             dst_id=identity_id,
-            props={
-                "action": "host:interactive-session",
-                "confidence": "explicit",
-            },
+            props=enrichment_edge_props(
+                action="host:interactive-session",
+                confidence="explicit",
+                source="host-pivot",
+            ),
         )
 
     for store in spec.credential_stores:
@@ -114,23 +116,26 @@ def apply_host_pivot(builder: GraphBuilder, spec: HostPivotSpec) -> str:
             src_id=host_id,
             rel_type="STORES_CREDS_FOR",
             dst_id=identity_id,
-            props={
-                "store_type": store.store_type,
-                "path_hint": store.path_hint,
-                "confidence": "explicit",
-            },
+            props=enrichment_edge_props(
+                store_type=store.store_type,
+                path_hint=store.path_hint,
+                confidence="explicit",
+                source="host-pivot",
+            ),
         )
         builder.add_edge(
             src_id=host_id,
             rel_type="CAN_STEAL_CREDS_FROM",
             dst_id=identity_id,
-            props={
-                "action": "host:credential-store",
-                "store_type": store.store_type,
-                "confidence": "explicit",
-            },
+            props=enrichment_edge_props(
+                action="host:credential-store",
+                store_type=store.store_type,
+                confidence="explicit",
+                source="host-pivot",
+            ),
         )
 
+    mark_enrichment_edges(builder.snapshot)
     builder.link_session(host_id)
     return host_id
 

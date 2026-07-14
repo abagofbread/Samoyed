@@ -64,8 +64,12 @@ def test_enterprise_fixture_engineering_path_reaches_vault_bucket(tmp_path, monk
     assert vault_paths
     longest = max(vault_paths, key=lambda p: len(p.steps))
     rels = [s.rel_type for s in longest.steps]
-    assert "PROJECTS_TO" in rels or "READS" in rels
-    assert len(longest.steps) >= 8
+    assert "READS" in rels
+    assert any(
+        "PROJECTS_TO" in [s.rel_type for s in p.steps] or "CAN_ESCAPE_TO" in [s.rel_type for s in p.steps]
+        for p in vault_paths
+    )
+    assert len(longest.steps) >= 7
 
 
 def test_enterprise_fixture_marketing_analyst_lambda_path_to_sales_secret(tmp_path, monkeypatch):

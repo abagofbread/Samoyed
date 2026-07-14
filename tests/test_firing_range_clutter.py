@@ -41,6 +41,7 @@ def test_seed_lab_clutter_reports_bronze_and_silver(mock_client_factory):
     secrets.create_secret.return_value = {"ARN": "arn:aws:secretsmanager:us-east-1:000000000000:secret:x"}
     lam.create_function.return_value = {"FunctionArn": "arn:aws:lambda:us-east-1:000000000000:function:x"}
     ec2.run_instances.return_value = {"Instances": [{"InstanceId": "i-bronze123"}]}
+    ec2.describe_instances.return_value = {"Reservations": []}
     eks.create_cluster.return_value = {"cluster": {"arn": f"arn:aws:eks:us-east-1:000000000000:cluster/{SILVER_DEV_EKS}"}}
 
     report = seed_lab_clutter(
@@ -56,3 +57,19 @@ def test_seed_lab_clutter_reports_bronze_and_silver(mock_client_factory):
     assert report["attack_paths"]["bronze"]["three_hop"]
     assert s3.create_bucket.call_count >= len(BRONZE_BUCKETS)
     codepipeline.create_pipeline.assert_called()
+
+
+@patch("samoyed.firing_range.aws_helpers.aws_client")
+def test_bronze_ec2_seed_is_idempotent(mock_client_factory):
+    ec2 = MagicMock()
+    mock_client_factory.side_effect = lambda service, **kwargs: ec2 if service == "ec2" else MagicMock()
+    ec2.describe_instances.return_value = {
+        "Reservations": [{"Instances": [{"InstanceId": "i-existing", "State": {"Name": "running"}}]}]
+    }
+
+    from samoyed.firing_range.clutter import _try_ec2_instance
+
+    report: dict = {"skipped": []}
+    iid = _try_ec2_instance(ec2, "retired-bastion", report)
+    assert iid == "i-existing"
+    ec2.run_instances.assert_not_called()

@@ -122,6 +122,8 @@ samoyed init-extension connector my_graph_source
 | `SAMOYED_PASSWORD` | — | Web UI login password (enables auth when set) |
 | `SAMOYED_API_TOKEN` | — | Optional bearer token for API clients |
 | `SAMOYED_SECRET_KEY` | random per process | Session signing secret (set in production) |
+| `SAMOYED_HOME` | `~/.samoyed` | Data root for persisted sessions |
+| `SAMOYED_SESSION_DIR` | `$SAMOYED_HOME/sessions` | Override session storage directory |
 
 ## Development
 

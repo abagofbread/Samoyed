@@ -37,26 +37,31 @@ def call_k8s(ctx: EnumContext, *, operation: str, call: Callable[[], T]) -> T | 
         raise
 
 
-def rule_grants(rules: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    """Map RBAC rules to (rel_type, target_concept) pairs."""
-    grants: list[tuple[str, str]] = []
+def rule_grants(rules: list[dict[str, Any]]) -> list[tuple[str, str, str | None]]:
+    """Map RBAC rules to (rel_type, target_concept, action) triples."""
+    grants: list[tuple[str, str, str | None]] = []
     for rule in rules or []:
         verbs = set(rule.get("verbs") or [])
         resources = set(rule.get("resources") or [])
         if not verbs:
             continue
+        wildcard_resources = "*" in resources
         if verbs & {"*", "create", "update", "patch", "delete", "deletecollection"}:
-            if "secrets" in resources or "*" in resources:
-                grants.append(("WRITES", "SecretStore"))
-            if "pods" in resources or "*" in resources:
-                grants.append(("CONTROLS", "Workload"))
+            if "secrets" in resources or wildcard_resources:
+                grants.append(("WRITES", "SecretStore", None))
+            pod_exec = "pods/exec" in resources or wildcard_resources
+            pod_resource = "pods" in resources or wildcard_resources
+            if pod_exec and (verbs & {"*", "create"}):
+                grants.append(("CONTROLS", "Workload", "rbac:pods:exec"))
+            if pod_resource and (verbs & {"*", "create", "update", "patch", "delete", "deletecollection"}):
+                grants.append(("CONTROLS", "Workload", "rbac:pods:create"))
         if verbs & {"*", "get", "list", "watch"}:
-            if "secrets" in resources or "*" in resources:
-                grants.append(("READS", "SecretStore"))
-            if "pods" in resources or "*" in resources:
-                grants.append(("READS", "Workload"))
+            if "secrets" in resources or wildcard_resources:
+                grants.append(("READS", "SecretStore", None))
+            if "pods" in resources or wildcard_resources:
+                grants.append(("READS", "Workload", None))
         if verbs & {"*"} and resources & {"*"}:
-            grants.append(("CAN_ACCESS", "ManagementEndpoint"))
+            grants.append(("CAN_ACCESS", "ManagementEndpoint", None))
     return grants
 
 

@@ -1,0 +1,97 @@
+{
+  "account_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "provider": "azure",
+  "scope_id": "azure:scope:subscription:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "scope_display": "Azure subscription a1b2c3d4…",
+  "source": "samoyed-client",
+  "collected_via": "fixture-export",
+  "scenario": "azure-rbac-lab",
+  "metadata": {
+    "description": "Leaked dev CI SP → dev KV + web app control → managed identity → prod PII secret",
+    "fixture_id": "lab-azure"
+  },
+  "identities": [
+    {
+      "id": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "name": "sp-ci-deploy-dev",
+      "kind": "ServicePrincipal",
+      "display_name": "sp-ci-deploy-dev",
+      "provider": "azure",
+      "client_id": "3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "is_caller": true
+    },
+    {
+      "id": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "name": "mi-marketing-api",
+      "kind": "ManagedIdentity",
+      "display_name": "mi-marketing-api",
+      "provider": "azure"
+    }
+  ],
+  "resources": [
+    {
+      "id": "StorageAccount:corpartifactsdev",
+      "concept": "DataStore",
+      "type": "StorageAccount",
+      "name": "corpartifactsdev",
+      "display_name": "corpartifactsdev"
+    },
+    {
+      "id": "KeyVaultSecret:corp-kv-dev/api-hubspot-sandbox",
+      "concept": "SecretStore",
+      "type": "KeyVaultSecret",
+      "name": "api-hubspot-sandbox",
+      "display_name": "corp-kv-dev/api-hubspot-sandbox"
+    },
+    {
+      "id": "KeyVaultSecret:corp-kv-prod/customer-pii-export",
+      "concept": "SecretStore",
+      "type": "KeyVaultSecret",
+      "name": "customer-pii-export",
+      "display_name": "corp-kv-prod/customer-pii-export",
+      "environment": "prod",
+      "sensitivity": "pii"
+    },
+    {
+      "id": "WebApp:marketing-api",
+      "concept": "RuntimeBinding",
+      "type": "WebApp",
+      "name": "marketing-api",
+      "display_name": "marketing-api",
+      "execution_role_arn": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333"
+    }
+  ],
+  "grants": [
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "StorageAccount:corpartifactsdev",
+      "rel": "READS",
+      "role": "Storage Blob Data Reader"
+    },
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "KeyVaultSecret:corp-kv-dev/api-hubspot-sandbox",
+      "rel": "READS",
+      "role": "Key Vault Secrets User"
+    },
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "WebApp:marketing-api",
+      "rel": "CONTROLS",
+      "role": "Website Contributor"
+    },
+    {
+      "from": "WebApp:marketing-api",
+      "to": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "rel": "EXECUTES_AS",
+      "source": "webapp-managed-identity"
+    },
+    {
+      "from": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "to": "KeyVaultSecret:corp-kv-prod/customer-pii-export",
+      "rel": "READS",
+      "role": "Key Vault Secrets User"
+    }
+  ],
+  "caller_arn": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd"
+}

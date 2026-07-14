@@ -67,6 +67,28 @@ FIXTURES: tuple[FixtureSpec, ...] = (
         description="Leaked key WRITES artifact bucket; CI/CD and prod depend on it (dependency marking demos)",
         tags=("aws", "cicd", "supply-chain"),
     ),
+    FixtureSpec(
+        id="compute-exposure-lab",
+        connector="iam-report",
+        filename="lab_compute_exposure.json",
+        description="SSRF Lambda → metadata → STS assume role → PCI bucket; internet write and mining-risk change analysis",
+        tags=("aws", "compute", "ssrf", "pci", "change-impact"),
+    ),
+    FixtureSpec(
+        id="azure-collected-sample",
+        connector="iam-report",
+        filename="azure_collected_sample.json",
+        description="Sanitized live-shaped Azure iam-report (RBAC assignments, storage, Key Vault, web app MI)",
+        tags=("azure", "iam-report", "sample"),
+        demo=False,
+    ),
+    FixtureSpec(
+        id="lab-azure",
+        connector="iam-report",
+        filename="lab_azure_rbac.json",
+        description="Leaked CI service principal → dev secrets + web app → managed identity → prod Key Vault PII",
+        tags=("azure", "rbac", "multi-hop", "keyvault"),
+    ),
 )
 
 
