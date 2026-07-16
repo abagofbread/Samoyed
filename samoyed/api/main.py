@@ -392,6 +392,7 @@ class MarkNodesRequest(BaseModel):
     refs: list[str]
     compromised: bool | None = None
     high_value: bool | None = None
+    mechanism: str | None = None
     source: str = "analyst"
     clear: bool = False
 
@@ -555,6 +556,26 @@ def get_markings(session_ref: str):
         raise HTTPException(404, "Session not found")
 
 
+@app.get("/api/sessions/{session_ref}/resources/{node_id}/consumers")
+def get_resource_consumers(session_ref: str, node_id: str):
+    """List producers/consumers of a store — shared-env / poison blast helper."""
+    from urllib.parse import unquote
+
+    from samoyed.attack.shared_env import list_resource_consumers
+
+    session = _resolve_session_ref(session_ref)
+    resolved = unquote(node_id)
+    try:
+        ids, _unresolved = SESSION_STORE.resolve_node_refs(session.session_id, [resolved])
+        target = ids[0] if ids else resolved
+    except Exception:
+        target = resolved
+    result = list_resource_consumers(session.snapshot, target)
+    if result.get("error"):
+        raise HTTPException(404, "Resource not found")
+    return result
+
+
 @app.post("/api/sessions/{session_ref}/markings")
 def post_markings(session_ref: str, req: MarkNodesRequest):
     session = _resolve_session_ref(session_ref)
@@ -564,6 +585,7 @@ def post_markings(session_ref: str, req: MarkNodesRequest):
             req.refs,
             compromised=req.compromised,
             high_value=req.high_value,
+            mechanism=req.mechanism,
             source=req.source,
             clear=req.clear,
         )

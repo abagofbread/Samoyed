@@ -60,6 +60,13 @@ STATIC_SUGGESTIONS: list[dict[str, Any]] = [
         "max_depth": 5,
     },
     {
+        "id": "shared-env-blast",
+        "title": "Shared-environment resources",
+        "description": "Data stores / registries consumed across prod+dev (poisonable geometry)",
+        "mode": "markings",
+        "filter": "shared_across_envs",
+    },
+    {
         "id": "paths-to-runtime",
         "title": "Paths to RuntimeBinding",
         "description": "Cloud IAM bindings via IRSA, instance profiles, nodes",

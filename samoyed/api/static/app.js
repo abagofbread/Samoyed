@@ -29,6 +29,7 @@ const NODE_COLORS = {
   EscapeSurface: { background: "#4a2870", border: "#d2a8ff", highlight: { background: "#6e40b8", border: "#e2b0ff" } },
   ScopeBoundary: { background: "#30363d", border: "#8b949e", highlight: { background: "#484f58", border: "#b1bac4" } },
   PolicyStatement: { background: "#5a3c00", border: "#ffa657", highlight: { background: "#7d4e00", border: "#ffc078" } },
+  AttackOutcome: { background: "#7a3a08", border: "#ffa657", highlight: { background: "#9e4b0e", border: "#ffc078" } },
   Unknown: { background: "#21262d", border: "#484f58", highlight: { background: "#30363d", border: "#8b949e" } },
 };
 
@@ -47,6 +48,11 @@ const HIGH_VALUE_NODE_COLOR = {
   background: "#3d2a00",
   border: "#ffa657",
   highlight: { background: "#5a3c00", border: "#ffc078" },
+};
+const SHADOW_ADMIN_NODE_COLOR = {
+  background: "#2a1f4a",
+  border: "#a371f7",
+  highlight: { background: "#3d2d6b", border: "#d2a8ff" },
 };
 const BOTH_MARKING_COLOR = {
   background: "#4a2030",
@@ -121,9 +127,11 @@ function nodeColor(label) {
 function nodeMarkingColor(node) {
   const compromised = !!node.is_compromised;
   const highValue = !!node.is_high_value;
+  const shadow = !!node.is_shadow_admin;
   if (compromised && highValue) return BOTH_MARKING_COLOR;
   if (compromised) return COMPROMISED_NODE_COLOR;
   if (highValue) return HIGH_VALUE_NODE_COLOR;
+  if (shadow) return SHADOW_ADMIN_NODE_COLOR;
   return nodeColor(node.label || "Unknown");
 }
 
@@ -138,6 +146,9 @@ function toVisNode(node, position) {
   ];
   if (node.is_compromised) titleParts.push("⚠ Marked compromised");
   if (node.is_high_value) titleParts.push("★ Marked high-value");
+  if (node.is_shadow_admin) {
+    titleParts.push(`◉ Shadow admin — ${node.shadow_admin_reason || node.shadow_admin_mechanism || "can escalate to admin"}`);
+  }
   const title = titleParts.filter(Boolean).join("\n");
 
   const visNode = {
@@ -176,13 +187,61 @@ function isTrustNode(node) {
   return node?.label === "Trust" || node?.concept_type === "Trust";
 }
 
+/** Concrete / high-value stores worth showing; IAM Describe/List stubs are not. */
+const INTERESTING_DATASTORE_TYPES = new Set([
+  "S3Bucket",
+  "GCSBucket",
+  "StorageAccount",
+  "BlobContainer",
+  "DynamoDBTable",
+  "RdsInstance",
+  "RdsCluster",
+  "RedshiftCluster",
+  "BigQueryDataset",
+  "CosmosDB",
+  "EFSFileSystem",
+  "SQSQueue",
+  "SNSTopic",
+  "KMSKey",
+  "Secret",
+  "SSMParameter",
+  "ECRRepository",
+  "EC2Instance",
+  "LambdaFunction",
+  "Lambda",
+]);
+
+const INTERESTING_DATASTORE_NATIVE = /^(S3Bucket|S3|Secret|SSMParameter|ECRRepository|EC2Instance|LambdaFunction|DynamoDB|RdsInstance|RdsCluster|GCSBucket|StorageAccount|SQSQueue|SNSTopic|KMSKey):/i;
+
+function isInterestingDataStore(node) {
+  if (!node) return false;
+  if (node.concept_type === "SecretStore" || node.concept_type === "RegistryStore") return true;
+  if (node.concept_type !== "DataStore" && node.label !== "Resource") return false;
+  if (node.is_high_value) return true;
+  const rt = node.resource_type || node.native_kind;
+  if (rt && INTERESTING_DATASTORE_TYPES.has(rt)) return true;
+  const nid = String(node.native_id || node.id || "");
+  if (INTERESTING_DATASTORE_NATIVE.test(nid)) return true;
+  return /^Resource:(Secret|SSMParameter|ECRRepository|EC2Instance|LambdaFunction|S3Bucket)\b/i.test(nid);
+}
+
+/** IAM-inferred service wildcards (Logs:*, Ec2 describe stubs, …) — hide those only. */
+function isMundaneResourceNode(node) {
+  if (!node) return false;
+  if (node.concept_type === "SecretStore" || node.concept_type === "RegistryStore") return false;
+  if (node.concept_type !== "DataStore" && node.label !== "Resource") return false;
+  return !isInterestingDataStore(node);
+}
+
 function isHiddenDisplayNode(node) {
   return (
     !node
     || node.label === "CollectionSession"
-    || isAttackOutcomeNode(node)
     || isPolicyStatementNode(node)
     || isTrustNode(node)
+    || isMundaneResourceNode(node)
+    // Crown-jewel AttackOutcome nodes duplicate high_value / admin markings on identities.
+    || isAttackOutcomeNode(node)
   );
 }
 
@@ -312,26 +371,14 @@ function compactCapabilityEdges(edges) {
 }
 
 function normalizeGraphForDisplay(graph) {
-  const outcomeIds = new Set(
-    (graph.nodes || []).filter(isAttackOutcomeNode).map((n) => n.id),
-  );
   const nodes = (graph.nodes || []).filter((n) => !isHiddenDisplayNode(n));
   const nodeIds = new Set(nodes.map((n) => n.id));
   const edges = [];
 
   for (const edge of graph.edges || []) {
     if (edge.rel === "DISCOVERED") continue;
-    if (outcomeIds.has(edge.dst) && edge.rel === "CAN_PRIVESC_TO") {
-      if (!nodeIds.has(edge.src)) continue;
-      edges.push({
-        ...edge,
-        dst: edge.src,
-        attack_outcome: edge.attack_outcome || "administrator-access",
-        outcome_display: edge.outcome_display || "Administrator access",
-        _collapsedOutcome: true,
-      });
-      continue;
-    }
+    // Drop legacy self-loops (old admin_outcome modelling); real edges target AttackOutcome.
+    if (edge.rel === "CAN_PRIVESC_TO" && edge.src === edge.dst) continue;
     if (nodeIds.has(edge.src) && nodeIds.has(edge.dst)) {
       edges.push(edge);
     }
@@ -442,6 +489,44 @@ function pickLayoutRoots(nodes, rootId, idSet) {
   return roots;
 }
 
+function findConnectedComponents(nodes, undirected) {
+  const seen = new Set();
+  const components = [];
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue;
+    const ids = [];
+    const queue = [node.id];
+    seen.add(node.id);
+    while (queue.length) {
+      const id = queue.shift();
+      ids.push(id);
+      for (const nbr of undirected.get(id) || []) {
+        if (seen.has(nbr)) continue;
+        seen.add(nbr);
+        queue.push(nbr);
+      }
+    }
+    components.push(ids);
+  }
+  return components;
+}
+
+function scoreLayoutComponent(ids, nodeById, preferredRoot) {
+  let score = ids.length * 10;
+  for (const id of ids) {
+    const node = nodeById.get(id);
+    if (!node) continue;
+    if (id === preferredRoot) score += 10000;
+    if (node.is_caller || node.is_scenario_start) score += 5000;
+    if (node.is_compromised) score += 800;
+    if (node.is_high_value) score += 300;
+    if (node.is_shadow_admin) score += 220;
+    if (node.label === "Principal" || node.concept_type === "Identity") score += 25;
+    if (node.concept_type === "SecretStore" || node.concept_type === "RegistryStore") score += 40;
+  }
+  return score;
+}
+
 function assignLayoutLevels(nodes, edges, rootId) {
   const { outgoing, undirected, idSet } = buildAdjacency(nodes, edges);
   const levels = new Map();
@@ -477,41 +562,21 @@ function assignLayoutLevels(nodes, edges, rootId) {
     }
   }
 
-  // Pack still-disconnected components into compact level blocks instead of a long spine.
+  // Any leftovers (shouldn't happen inside one component) get a tight local BFS pack.
   const unplaced = nodes.map((n) => n.id).filter((id) => !levels.has(id));
   if (unplaced.length) {
-    let blockStart = (levels.size ? Math.max(...levels.values()) : -1) + 1;
-    const seen = new Set();
-    for (const start of unplaced) {
-      if (seen.has(start)) continue;
-      const component = [];
-      const q = [start];
-      seen.add(start);
-      while (q.length) {
-        const id = q.shift();
-        component.push(id);
-        for (const nbr of undirected.get(id) || []) {
-          if (seen.has(nbr) || levels.has(nbr)) continue;
-          seen.add(nbr);
-          q.push(nbr);
-        }
+    const local = new Map([[unplaced[0], 0]]);
+    const lq = [unplaced[0]];
+    while (lq.length) {
+      const id = lq.shift();
+      for (const nbr of undirected.get(id) || []) {
+        if (!unplaced.includes(nbr) || local.has(nbr)) continue;
+        local.set(nbr, (local.get(id) || 0) + 1);
+        lq.push(nbr);
       }
-      // local BFS depths within the component
-      const local = new Map([[component[0], 0]]);
-      const lq = [component[0]];
-      while (lq.length) {
-        const id = lq.shift();
-        for (const nbr of undirected.get(id) || []) {
-          if (!component.includes(nbr) || local.has(nbr)) continue;
-          local.set(nbr, (local.get(id) || 0) + 1);
-          lq.push(nbr);
-        }
-      }
-      component.forEach((id) => {
-        levels.set(id, blockStart + (local.get(id) || 0));
-      });
-      blockStart += 1 + Math.max(0, ...[...local.values()]);
     }
+    const base = (levels.size ? Math.max(...levels.values()) : -1) + 1;
+    unplaced.forEach((id) => levels.set(id, base + (local.get(id) || 0)));
   }
 
   return { levels, roots };
@@ -535,8 +600,10 @@ function orderLayerByBarycenter(layerIds, prevPositions, undirected) {
     });
 }
 
-function computeLayeredLayout(nodes, edges, rootId) {
-  if (!nodes.length) return {};
+function layoutConnectedComponent(nodes, edges, rootId) {
+  if (!nodes.length) {
+    return { positions: {}, width: 0, height: 0, minX: 0, minY: 0 };
+  }
 
   const nodeById = graphNodeMap(nodes);
   const { undirected } = buildAdjacency(nodes, edges);
@@ -552,7 +619,6 @@ function computeLayeredLayout(nodes, edges, rootId) {
   const levelOrder = new Map();
   let prevY = new Map();
 
-  // A couple of barycenter sweeps reduce edge crossings within columns.
   for (let pass = 0; pass < 3; pass += 1) {
     const nextPrev = new Map();
     orderedLevels.forEach((level) => {
@@ -565,9 +631,10 @@ function computeLayeredLayout(nodes, edges, rootId) {
 
   const positions = {};
   let cursorX = 0;
-  const minXGap = 260;
-  const minYGap = 100;
-  const maxColumnHeight = 12;
+  const minXGap = 220;
+  const minYGap = 88;
+  // Prefer taller columns so attack depth stays compact left→right.
+  const maxColumnHeight = Math.max(8, Math.ceil(Math.sqrt(nodes.length) * 1.6));
 
   orderedLevels.forEach((level) => {
     const ids = levelOrder.get(level) || byLevel.get(level);
@@ -577,24 +644,93 @@ function computeLayeredLayout(nodes, edges, rootId) {
     }
 
     let levelWidth = 0;
+    let levelHeight = 0;
     columns.forEach((columnIds, colIndex) => {
       const colFeet = columnIds.map((id) => estimateNodeFootprint(nodeById.get(id)));
-      const colWidth = Math.max(80, ...colFeet.map((f) => f.width));
-      const gaps = colFeet.map((foot) => Math.max(minYGap, foot.height + 40));
+      const colWidth = Math.max(72, ...colFeet.map((f) => f.width));
+      const gaps = colFeet.map((foot) => Math.max(minYGap, foot.height + 28));
       const stackHeight = gaps.reduce((sum, gap, index) => (
         index === gaps.length - 1 ? sum + colFeet[index].height : sum + gap
       ), 0);
       const center = stackHeight / 2;
       let y = 0;
-      const x = cursorX + colIndex * (colWidth + 56);
+      const x = cursorX + colIndex * (colWidth + 48);
       columnIds.forEach((id, index) => {
         positions[id] = { x, y: y - center + colFeet[index].height / 2 };
         if (index < columnIds.length - 1) y += gaps[index];
       });
-      levelWidth = Math.max(levelWidth, (colIndex + 1) * (colWidth + 56) - 56);
+      levelWidth = Math.max(levelWidth, (colIndex + 1) * (colWidth + 48) - 48);
+      levelHeight = Math.max(levelHeight, stackHeight);
     });
 
-    cursorX += Math.max(levelWidth, minXGap) + 72;
+    cursorX += Math.max(levelWidth, minXGap) + 56;
+  });
+
+  const xs = Object.values(positions).map((p) => p.x);
+  const ys = Object.values(positions).map((p) => p.y);
+  const feet = nodes.map((n) => estimateNodeFootprint(n));
+  const maxHalfW = Math.max(40, ...feet.map((f) => f.width / 2));
+  const maxHalfH = Math.max(20, ...feet.map((f) => f.height / 2));
+  const minX = Math.min(...xs) - maxHalfW;
+  const maxX = Math.max(...xs) + maxHalfW;
+  const minY = Math.min(...ys) - maxHalfH;
+  const maxY = Math.max(...ys) + maxHalfH;
+
+  return {
+    positions,
+    width: Math.max(80, maxX - minX),
+    height: Math.max(60, maxY - minY),
+    minX,
+    minY,
+  };
+}
+
+function computeLayeredLayout(nodes, edges, rootId) {
+  if (!nodes.length) return {};
+
+  const nodeById = graphNodeMap(nodes);
+  const { undirected } = buildAdjacency(nodes, edges);
+  const components = findConnectedComponents(nodes, undirected).sort(
+    (a, b) => scoreLayoutComponent(b, nodeById, rootId) - scoreLayoutComponent(a, nodeById, rootId),
+  );
+
+  const gapX = 140;
+  const gapY = 160;
+  const layouts = components.map((ids) => {
+    const idSet = new Set(ids);
+    const componentNodes = ids.map((id) => nodeById.get(id)).filter(Boolean);
+    const componentEdges = edges.filter((edge) => idSet.has(edge.src) && idSet.has(edge.dst));
+    const localRoot = ids.includes(rootId)
+      ? rootId
+      : pickLayoutRoots(componentNodes, null, idSet)[0];
+    return layoutConnectedComponent(componentNodes, componentEdges, localRoot);
+  });
+
+  // Soft viewport budget: keep primary attack-path band readable, wrap extras beside/below.
+  const primaryWidth = layouts[0]?.width || 720;
+  const maxRowWidth = Math.max(primaryWidth * 1.35, 980);
+
+  const positions = {};
+  let rowX = 0;
+  let rowY = 0;
+  let rowHeight = 0;
+
+  layouts.forEach((layout, index) => {
+    if (index > 0 && rowX > 0 && rowX + layout.width > maxRowWidth) {
+      rowX = 0;
+      rowY += rowHeight + gapY;
+      rowHeight = 0;
+    }
+
+    Object.entries(layout.positions).forEach(([id, point]) => {
+      positions[id] = {
+        x: point.x - layout.minX + rowX,
+        y: point.y - layout.minY + rowY,
+      };
+    });
+
+    rowX += layout.width + gapX;
+    rowHeight = Math.max(rowHeight, layout.height);
   });
 
   return positions;
@@ -651,9 +787,6 @@ function buildGraphEdgeLookup(graph) {
 
 function resolveStepEdges(steps) {
   const lookup = buildGraphEdgeLookup(state.graph);
-  const outcomeIds = new Set(
-    (state.graph.nodes || []).filter(isAttackOutcomeNode).map((n) => n.id),
-  );
 
   return steps.map((step, index) => {
     const rel = step.rel || step.rel_type;
@@ -661,8 +794,14 @@ function resolveStepEdges(steps) {
     let dst = step.dst || step.dst_id;
     const evidence = step.evidence || {};
 
-    if (outcomeIds.has(dst) && rel === "CAN_PRIVESC_TO") {
-      dst = src;
+    // Never collapse privesc onto self — outcomes are real graph nodes now.
+    if (rel === "CAN_PRIVESC_TO" && src === dst && evidence.attack_outcome) {
+      const outcome = (state.graph.nodes || []).find(
+        (n) => isAttackOutcomeNode(n)
+          && (n.attack_outcome === evidence.attack_outcome
+            || n.resource_type === evidence.attack_outcome),
+      );
+      if (outcome) dst = outcome.id;
     }
 
     let graphEdge =
@@ -1166,16 +1305,43 @@ function initPathGraph() {
   wireEdgeInteractionHandlers(state.pathNetwork, state.pathEdgesDS);
 }
 
-function fitGraphView() {
+function fitGraphView(opts = {}) {
   const graphEl = document.getElementById("graph");
   const pathEl = document.getElementById("pathGraph");
   const network = getMainViewportNetwork();
   const container = isGraphOnMain() ? graphEl : pathEl;
   if (!network || !container) return;
   resizeNetworkToContainer(network, container);
+
+  const focusIds = opts.nodeIds;
+  if (focusIds?.length) {
+    try {
+      network.fit({
+        nodes: focusIds,
+        animation: { duration: 350, easingFunction: "easeInOutQuad" },
+        padding: 48,
+      });
+      return;
+    } catch {
+      // fall through to full fit
+    }
+  }
+
   const hasNodes = (state.nodesDS?.get()?.length || 0) + (state.pathNodesDS?.get()?.length || 0);
   if (!hasNodes) return;
   network.fit({ animation: { duration: 350, easingFunction: "easeInOutQuad" } });
+}
+
+function primaryLayoutFocusIds(visibleNodes, edges, rootId) {
+  if (!visibleNodes?.length) return null;
+  const { undirected } = buildAdjacency(visibleNodes, edges);
+  const components = findConnectedComponents(visibleNodes, undirected);
+  if (!components.length) return null;
+  const nodeById = graphNodeMap(visibleNodes);
+  components.sort(
+    (a, b) => scoreLayoutComponent(b, nodeById, rootId) - scoreLayoutComponent(a, nodeById, rootId),
+  );
+  return components[0];
 }
 
 function applyGraphLayout(visibleNodes, edges, { fit = false } = {}) {
@@ -1184,7 +1350,10 @@ function applyGraphLayout(visibleNodes, edges, { fit = false } = {}) {
   state.nodePositions = computeLayeredLayout(visibleNodes, edges, state.layoutRootId);
 
   state.nodesDS.update(visibleNodes.map((node) => toVisNode(node, state.nodePositions[node.id])));
-  if (fit) fitGraphView();
+  if (fit) {
+    const focusIds = primaryLayoutFocusIds(visibleNodes, edges, state.layoutRootId);
+    fitGraphView({ nodeIds: focusIds });
+  }
 }
 
 function renderGraph(graph) {
@@ -1265,27 +1434,20 @@ function populateNodeDatalist(nodes) {
   const dl = document.getElementById("nodeOptions");
   dl.innerHTML = '<option value="caller">caller (compromised identity)</option>';
   const seen = new Set(["caller"]);
+  // One option per node: the graph node id (e.g. Principal:arn:…:role/x).
+  // Emitting arn / short name / native_id as separate values duplicates the same
+  // identity and breaks resolve when those aliases match multiple nodes.
   nodes
     .slice()
     .sort((a, b) => displayName(a).localeCompare(displayName(b)))
     .forEach((n) => {
-      const aliases = [
-        n.id,
-        n.native_id,
-        n.arn,
-        n.bucket_name,
-        n.name,
-        n.display_name,
-      ].filter(Boolean);
-      aliases.forEach((alias) => {
-        const value = String(alias);
-        if (seen.has(value)) return;
-        seen.add(value);
-        const opt = document.createElement("option");
-        opt.value = value;
-        opt.label = `${n.label}: ${displayName(n)}`;
-        dl.appendChild(opt);
-      });
+      const value = String(n.id || "");
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.label = `${n.label}: ${displayName(n)}`;
+      dl.appendChild(opt);
     });
 }
 
@@ -1304,10 +1466,9 @@ function collectPathSubgraph(paths) {
       let src = s.src;
       let dst = s.dst;
       let rel = s.rel;
-      if (hiddenIds.has(dst) && rel === "CAN_PRIVESC_TO") {
-        dst = src;
-      }
+      // Skip edges into hidden nodes (incl. suppressed AttackOutcome endpoints).
       if (hiddenIds.has(src) || (dst && hiddenIds.has(dst))) continue;
+      if (rel === "CAN_PRIVESC_TO" && src === dst) continue;
       const key = `${src}|${rel}|${dst}`;
       if (stepKeys.has(key)) continue;
       stepKeys.add(key);
@@ -1957,6 +2118,9 @@ async function refreshMarkingsUI() {
     if (summary.high_value_count) {
       parts.push(`<span class="marking-chip high-value">${summary.high_value_count} high-value</span>`);
     }
+    if (summary.shadow_admin_count) {
+      parts.push(`<span class="marking-chip shadow-admin">${summary.shadow_admin_count} shadow admin</span>`);
+    }
     if (parts.length) {
       el.innerHTML = parts.join("") + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Right-click nodes to add or change markings</div>';
     } else {
@@ -2001,6 +2165,9 @@ function refreshMarkingsSummaryFromData(summary) {
   }
   if (summary.high_value_count) {
     parts.push(`<span class="marking-chip high-value">${summary.high_value_count} high-value</span>`);
+  }
+  if (summary.shadow_admin_count) {
+    parts.push(`<span class="marking-chip shadow-admin">${summary.shadow_admin_count} shadow admin</span>`);
   }
   if (parts.length) {
     el.innerHTML = parts.join("") + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Right-click nodes to add or change markings</div>';

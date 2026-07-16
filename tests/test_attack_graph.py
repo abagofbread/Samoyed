@@ -37,9 +37,10 @@ def test_iam_attach_policy_privesc_edge():
     privesc = [e for e in builder.snapshot.edges if e.rel_type == "CAN_PRIVESC_TO"]
     assert len(privesc) == 1
     assert privesc[0].src_id == user
-    assert privesc[0].dst_id == user
+    assert privesc[0].dst_id != user
+    assert builder.snapshot.nodes[privesc[0].dst_id].props.get("concept_type") == "AttackOutcome"
     assert privesc[0].props.get("attack_outcome") == "administrator-access"
-    assert not any(n.props.get("concept_type") == "AttackOutcome" for n in builder.snapshot.nodes.values())
+    assert any(n.props.get("concept_type") == "AttackOutcome" for n in builder.snapshot.nodes.values())
 
 
 def test_find_attack_paths_to_admin_outcome_via_edge():
@@ -64,8 +65,10 @@ def test_find_attack_paths_to_admin_outcome_via_edge():
         max_depth=2,
     )
     assert len(paths) == 1
-    assert paths[0].target_match.get("virtual") is True
+    assert paths[0].target_match.get("concept_type") == "AttackOutcome"
+    assert paths[0].target_match.get("virtual") is not True
     assert paths[0].steps[0].rel_type == "CAN_PRIVESC_TO"
+    assert paths[0].steps[0].dst_id != user
     assert paths[0].steps[0].evidence.get("attack_outcome") == "administrator-access"
 
 

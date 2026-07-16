@@ -30,6 +30,13 @@
       "id": "arn:aws:iam::111111111111:role/eks-workload-admin",
       "kind": "Role",
       "provider": "aws"
+    },
+    {
+      "arn": "arn:aws:iam::111111111111:role/eks-node-role",
+      "id": "arn:aws:iam::111111111111:role/eks-node-role",
+      "kind": "Role",
+      "provider": "aws",
+      "name": "eks-node-role"
     }
   ],
   "resources": [
@@ -72,6 +79,21 @@
       "concept": "RuntimeBinding",
       "type": "NodeHost",
       "cluster": "samoyed-lab"
+    },
+    {
+      "id": "kubernetes:node:samoyed-lab:ip-10-0-1-20",
+      "concept": "RuntimeBinding",
+      "type": "KubernetesNode",
+      "name": "ip-10-0-1-20",
+      "cluster": "samoyed-lab",
+      "aws_instance_id": "i-0escapednode01"
+    },
+    {
+      "id": "EC2Instance:i-0escapednode01",
+      "concept": "RuntimeBinding",
+      "type": "EC2Instance",
+      "instance_id": "i-0escapednode01",
+      "execution_role_arn": "arn:aws:iam::111111111111:role/eks-node-role"
     }
   ],
   "grants": [
@@ -119,6 +141,26 @@
       "to": "kubernetes:node:host:samoyed-lab",
       "rel": "CAN_ESCAPE_TO",
       "severity": "critical"
+    },
+    {
+      "from": "kubernetes:escape:default:evil-pod:docker-socket",
+      "to": "kubernetes:node:samoyed-lab:ip-10-0-1-20",
+      "rel": "CAN_ESCAPE_TO",
+      "target": "node",
+      "severity": "critical",
+      "mechanism": "docker-socket"
+    },
+    {
+      "from": "kubernetes:node:samoyed-lab:ip-10-0-1-20",
+      "to": "EC2Instance:i-0escapednode01",
+      "rel": "CAN_ESCAPE_TO",
+      "mechanism": "node-instance-profile"
+    },
+    {
+      "from": "EC2Instance:i-0escapednode01",
+      "to": "arn:aws:iam::111111111111:role/eks-node-role",
+      "rel": "EXECUTES_AS",
+      "role_arn": "arn:aws:iam::111111111111:role/eks-node-role"
     }
   ],
   "caller_arn": "kubernetes:serviceaccount:default:app-sa",

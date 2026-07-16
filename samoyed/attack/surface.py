@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from samoyed.cloud.concepts import ConceptType
+from samoyed.attack.capability_bindings import enrich_capability_bindings
 from samoyed.attack.k8s_pivot import enrich_k8s_deploy_pivot
+from samoyed.attack.high_value import enrich_high_value_targets
+from samoyed.attack.resource_pivot import enrich_resource_pivots
+from samoyed.attack.service_admin import enrich_service_admins
+from samoyed.attack.shared_env import enrich_shared_environments
+from samoyed.attack.shadow_admin import enrich_shadow_admins
+from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.graph.builder import GraphBuilder, stable_id
 from samoyed.graph.enrichment import mark_enrichment_edges
+from samoyed.graph.markings import COMPROMISE_MECHANISM
 from samoyed.graph.model import GraphSnapshot
 
 COMPUTE_RESOURCE_TYPES = frozenset(
@@ -13,7 +20,22 @@ COMPUTE_RESOURCE_TYPES = frozenset(
         "LambdaFunction",
         "EC2Instance",
         "ECSTask",
+        "ECSService",
         "CloudFunction",
+        "CodeBuildProject",
+        "CodePipeline",
+    }
+)
+
+# ECS task/container identity comes from 169.254.170.2, not classic IMDS.
+# Host IMDS is modeled on the RUNS_ON EC2Instance after container escape.
+_SKIP_IMDS_RESOURCE_TYPES = frozenset(
+    {
+        "LambdaFunction",
+        "ECSTask",
+        "ECSContainer",
+        "ECSService",
+        "ECSEscape",
     }
 )
 
@@ -50,7 +72,11 @@ def _ensure_imds_node(builder: GraphBuilder, graph: GraphSnapshot, compute_id: s
     )
 
 
-def enrich_attack_surface(builder: GraphBuilder) -> dict[str, int]:
+def enrich_attack_surface(
+    builder: GraphBuilder,
+    *,
+    provider: CloudProvider | None = None,
+) -> dict[str, int]:
     """Add compute escape surfaces and network exposure edges to the graph."""
     graph = builder.snapshot
     stats = {
@@ -60,6 +86,14 @@ def enrich_attack_surface(builder: GraphBuilder) -> dict[str, int]:
         "scope_hosting": _wire_scope_hosting(builder, graph),
     }
     stats.update(enrich_k8s_deploy_pivot(builder))
+    # Bind policy Resource globs to inventored assets before FEEDS intersection.
+    stats.update(enrich_capability_bindings(builder))
+    stats.update(enrich_resource_pivots(builder))
+    stats.update(enrich_shared_environments(builder))
+    stats.update(enrich_high_value_targets(builder, provider=provider))
+    stats.update(enrich_service_admins(builder, provider=provider))
+    # After standing admins are marked, detect principals that can reach them.
+    stats.update(enrich_shadow_admins(builder, provider=provider))
     stats["enrichment_edges_marked"] = mark_enrichment_edges(builder.snapshot)
     return stats
 
@@ -71,7 +105,7 @@ def _wire_imds_surfaces(builder: GraphBuilder, graph: GraphSnapshot) -> int:
         concept = node.props.get("concept_type")
         if concept not in {"RuntimeBinding", "Workload"} and rtype not in COMPUTE_RESOURCE_TYPES:
             continue
-        if rtype == "LambdaFunction":
+        if rtype in _SKIP_IMDS_RESOURCE_TYPES or node.props.get("native_kind") == "ECSContainer":
             continue
         role_id = _execution_role_for_compute(graph, node_id)
         if not role_id:
@@ -106,11 +140,22 @@ def _wire_imds_surfaces(builder: GraphBuilder, graph: GraphSnapshot) -> int:
     return added
 
 
+def _is_ssrf_hypothesis(props: dict[str, Any]) -> bool:
+    """Lab oracle flag or analyst mechanism — substrate (IMDS+role) is the real story."""
+    if props.get("ssrf_vulnerable"):
+        return True
+    mech = str(props.get(COMPROMISE_MECHANISM) or props.get("mechanism") or "").lower()
+    return mech in {"ssrf", "ssrf-to-imds", "server-side-request-forgery"}
+
+
 def _wire_ssrf_chains(builder: GraphBuilder, graph: GraphSnapshot) -> int:
     added = 0
     for node_id, node in list(graph.nodes.items()):
-        if not node.props.get("ssrf_vulnerable"):
+        if not _is_ssrf_hypothesis(node.props):
             continue
+        # Normalize lab flag into mechanism without forcing compromised.
+        if node.props.get("ssrf_vulnerable") and not node.props.get(COMPROMISE_MECHANISM):
+            node.props[COMPROMISE_MECHANISM] = "ssrf"
         role_id = _execution_role_for_compute(graph, node_id)
         if not role_id:
             continue

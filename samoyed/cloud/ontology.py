@@ -64,7 +64,7 @@ CONCEPT_MAPPINGS: tuple[ConceptMapping, ...] = (
     ConceptMapping(
         ConceptType.WORKLOAD,
         "Compromised pod/container pivot",
-        "EKS Pod",
+        "ECS container / EKS Pod",
         "GKE Pod",
         "AKS Pod",
         "Pod/Deployment",
@@ -73,7 +73,7 @@ CONCEPT_MAPPINGS: tuple[ConceptMapping, ...] = (
     ConceptMapping(
         ConceptType.ESCAPE_SURFACE,
         "Container→host escalation",
-        "Privileged EKS pod",
+        "Privileged ECS task / EKS pod",
         "Privileged GKE pod",
         "Privileged AKS pod",
         "privileged/hostPath/caps",
@@ -132,6 +132,14 @@ CONCEPT_MAPPINGS: tuple[ConceptMapping, ...] = (
         "NetworkPolicy gaps",
         "Published ports",
     ),
+    ConceptMapping(
+        ConceptType.ATTACK_OUTCOME,
+        "Crown-jewel compromise outcome",
+        "Account root / IAM admin / AdministratorAccess",
+        "Project Owner",
+        "Subscription Owner",
+        "cluster-admin",
+    ),
 )
 
 
@@ -142,8 +150,10 @@ CROSS_LAYER_EDGES: tuple[dict[str, str], ...] = (
     {"rel": "USES_IMAGE", "meaning": "Workload references container image"},
     {"rel": "PULLS_FROM", "meaning": "Image or artifact pulled from registry/bucket (factual)"},
     {"rel": "DEPENDS_ON", "meaning": "Analyst-declared controlling dependency — downstream depends on upstream control point"},
+    {"rel": "FEEDS", "meaning": "Principal can write/control a resource scope that a consumer uses (intersection)"},
     {"rel": "HAS_ESCAPE_SURFACE", "meaning": "Workload has container escape misconfiguration"},
     {"rel": "CAN_ESCAPE_TO", "meaning": "Escape surface reaches node/host/cloud runtime"},
+    {"rel": "RUNS_ON", "meaning": "Workload/task placed on host (topology; escalate via CAN_ESCAPE_TO)"},
     {"rel": "CAN_ACCESS", "meaning": "Identity reaches management API"},
     {"rel": "CAN_ASSUME_ROLE", "meaning": "Trust allows identity→role pivot"},
 )

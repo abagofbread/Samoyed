@@ -112,3 +112,24 @@ def test_k8s_fixture_pod_escape_scenario(tmp_path, monkeypatch):
         max_depth=3,
     )
     assert len(escape_paths) >= 1
+
+
+def test_k8s_fixture_pod_escape_reaches_node_role(tmp_path, monkeypatch):
+    snapshot = _k8s_snapshot(tmp_path, monkeypatch, "k8s-escape-cloud")
+    pod = next(n for n in snapshot.nodes.values() if n.props.get("name") == "evil-pod")
+    node_role = next(
+        nid
+        for nid, n in snapshot.nodes.items()
+        if "eks-node-role" in str(n.props.get("native_id") or n.props.get("arn") or "")
+    )
+    paths = find_attack_paths(
+        snapshot,
+        start_node_id=pod.node_id,
+        end_node_id=node_role,
+        max_depth=8,
+    )
+    assert paths
+    rels = [s.rel_type for s in paths[0].steps]
+    assert "HAS_ESCAPE_SURFACE" in rels
+    assert "CAN_ESCAPE_TO" in rels
+    assert "EXECUTES_AS" in rels

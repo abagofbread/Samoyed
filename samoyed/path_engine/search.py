@@ -95,9 +95,9 @@ def _iter_traversal_steps(
     *,
     direction: Direction,
     allowed_rels: set[str],
-) -> list[tuple[str, str, str, dict]]:
+) -> list[tuple[str, str, str, str, dict]]:
     """Yield (next_node_id, step_src, step_rel, step_dst, props) for each traversable step."""
-    steps: list[tuple[str, str, str, dict]] = []
+    steps: list[tuple[str, str, str, str, dict]] = []
     if direction in {"out", "both"}:
         for dst_id, rel_type, props in graph.adjacency.get(node_id, []):
             if rel_type in allowed_rels:
@@ -107,8 +107,19 @@ def _iter_traversal_steps(
             if edge.dst_id != node_id or edge.rel_type not in allowed_rels:
                 continue
             steps.append((edge.src_id, edge.src_id, edge.rel_type, edge.dst_id, edge.props))
+    steps.sort(key=_traversal_step_priority)
     return steps
 
+
+def _traversal_step_priority(step: tuple[str, str, str, str, dict]) -> tuple:
+    """Prefer PassRole / capability→resource edges when multiple edges share a destination."""
+    _next, _src, rel, _dst, props = step
+    passrole = 0 if (
+        rel == "CAN_PRIVESC_TO"
+        and "PassRole" in str(props.get("pattern_name") or props.get("pattern_id") or "")
+    ) else 1
+    capability = 0 if rel in _CAPABILITY_BLAST_RELS else 1
+    return (passrole, capability, rel)
 
 def _path_result_from_edges(
     node_seq: list[str],
@@ -223,6 +234,82 @@ def find_attack_paths(
     return results[:max_paths]
 
 
+_CAPABILITY_BLAST_RELS = frozenset({"READS", "WRITES", "DELETES", "CONTROLS", "EXECUTES"})
+_RESOURCEISH_CONCEPTS = frozenset(
+    {
+        "DataStore",
+        "SecretStore",
+        "RegistryStore",
+        "RuntimeBinding",
+        "Workload",
+        "NetworkExposure",
+        "AttackOutcome",
+    }
+)
+
+
+def _is_aws_service_linked_role(node_id: str, props: dict) -> bool:
+    hay = f"{node_id} {props.get('arn', '')} {props.get('native_id', '')}"
+    return "/aws-service-role/" in hay or ":role/aws-service-role/" in hay
+
+
+def _blast_rank_key(graph: GraphSnapshot, path: PathResult) -> tuple:
+    """Rank blast hits: concrete resource impact + FEEDS influence first."""
+    node_id = path.target_match.get("node_id") or ""
+    node = graph.nodes.get(node_id)
+    props = node.props if node else {}
+    last = path.steps[-1] if path.steps else None
+    last_rel = last.rel_type if last else ""
+    last_props = last.evidence if last else {}
+
+    hvt = 1 if is_high_value(props) else 0
+    # AttackOutcome nodes are UI-suppressed and crowd out real impact — demote hard.
+    outcome = -1 if props.get("concept_type") == "AttackOutcome" or props.get("virtual") else 0
+
+    concrete = 0
+    native = str(props.get("native_id") or node_id)
+    if "*" not in native and not native.endswith(":*"):
+        if props.get("concept_type") in _RESOURCEISH_CONCEPTS or node_id.startswith("Resource:"):
+            concrete = 2
+        elif props.get("concept_type") == "Workload":
+            concrete = 2
+
+    feeds_hit = 1 if last_rel == "FEEDS" else 0
+
+    resource_hit = 0
+    if last_rel in _CAPABILITY_BLAST_RELS:
+        ctype = props.get("concept_type") or ""
+        if ctype in _RESOURCEISH_CONCEPTS or node_id.startswith("Resource:"):
+            resource_hit = 2 if concrete else 1
+        elif ctype == "Workload":
+            resource_hit = 2
+        elif ctype != "Identity":
+            resource_hit = 1
+    passrole = 1 if (
+        last_rel == "CAN_PRIVESC_TO"
+        and "PassRole" in str(last_props.get("pattern_name") or last_props.get("pattern_id") or "")
+    ) else 0
+    service_noise = 1 if _is_aws_service_linked_role(node_id, props) else 0
+    stub_noise = 0
+    if ("*" in native or native.endswith(":*")) and props.get("concept_type") in _RESOURCEISH_CONCEPTS:
+        # ControLS/WRITES on * is real influence ("can create/poison any X"); demote only READS stubs.
+        if last_rel == "READS":
+            stub_noise = 1
+    # Higher tuple sorts first when reverse=True — put noise last via negative.
+    return (
+        concrete,
+        feeds_hit,
+        hvt,
+        resource_hit,
+        passrole,
+        outcome,
+        -service_noise,
+        -stub_noise,
+        path.score,
+        -len(path.steps),
+    )
+
+
 def find_forward_reachability(
     graph: GraphSnapshot,
     *,
@@ -231,7 +318,11 @@ def find_forward_reachability(
     max_depth: int = 6,
     max_paths: int = 20,
 ) -> list[PathResult]:
-    """Shortest forward-only path to each node reachable from the start."""
+    """Shortest forward-only path to each node reachable from the start.
+
+    Completes BFS before truncating so capability→resource hits aren't dropped
+    when many CAN_PRIVESC_TO edges appear first in adjacency.
+    """
     if start_node_id not in graph.nodes:
         return []
 
@@ -241,8 +332,10 @@ def find_forward_reachability(
     queue.append((start_node_id, 0, [start_node_id], []))
     visited: set[str] = {start_node_id}
     visited_outcomes: set[str] = set()
+    # Soft cap so dense graphs stay bounded; still far above typical max_paths.
+    max_visit = max(max_paths * 40, 400)
 
-    while queue and len(results) < max_paths:
+    while queue and len(visited) <= max_visit:
         current, depth, node_seq, edge_seq = queue.popleft()
         if depth >= max_depth:
             continue
@@ -288,15 +381,10 @@ def find_forward_reachability(
                 )
             )
 
-            if next_depth < max_depth:
+            if next_depth < max_depth and len(visited) < max_visit:
                 queue.append((next_id, next_depth, next_nodes, next_edges))
 
-    def _endpoint_high_value(path: PathResult) -> bool:
-        node_id = path.target_match.get("node_id")
-        node = graph.nodes.get(node_id) if node_id else None
-        return is_high_value(node.props) if node else False
-
-    results.sort(key=lambda p: (_endpoint_high_value(p), p.score, len(p.steps)), reverse=True)
+    results.sort(key=lambda p: _blast_rank_key(graph, p), reverse=True)
     return results[:max_paths]
 
 

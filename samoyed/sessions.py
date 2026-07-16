@@ -177,7 +177,7 @@ class SessionStore:
 
         ConceptNormalizer().ingest(builder, artifacts)
         attack_edges = apply_attack_analysis(builder, provider=credentials.provider)
-        enrich_attack_surface(builder)
+        enrich_attack_surface(builder, provider=credentials.provider)
 
         metadata = {
             "artifact_count": len(artifacts),
@@ -246,7 +246,7 @@ class SessionStore:
         builder.link_session(scope_node)
         ConceptNormalizer().ingest(builder, artifacts)
         attack_edges = apply_attack_analysis(builder, provider=credentials.provider)
-        enrich_attack_surface(builder)
+        enrich_attack_surface(builder, provider=credentials.provider)
 
         metadata = {
             "artifact_count": len(artifacts),
@@ -1167,12 +1167,13 @@ class SessionStore:
         high_value: bool | None = None,
         source: str = "analyst",
         clear: bool = False,
+        mechanism: str | None = None,
     ) -> dict[str, Any]:
         session = self.get(session_id)
         if not session:
             raise KeyError(session_id)
-        if compromised is None and high_value is None:
-            raise ValueError("Specify compromised and/or high_value")
+        if compromised is None and high_value is None and mechanism is None:
+            raise ValueError("Specify compromised, high_value, and/or mechanism")
 
         node_ids, unresolved = self.resolve_node_refs(session_id, refs)
         marked: list[dict[str, Any]] = []
@@ -1184,6 +1185,7 @@ class SessionStore:
                 high_value=high_value,
                 source=source,
                 clear=clear,
+                mechanism=mechanism,
             )
             marked.append(
                 {
@@ -1193,6 +1195,7 @@ class SessionStore:
                     or node_id,
                     "is_compromised": bool(node.props.get("is_compromised")),
                     "is_high_value": bool(node.props.get("is_high_value")),
+                    "compromise_mechanism": node.props.get("compromise_mechanism"),
                 }
             )
         if marked:

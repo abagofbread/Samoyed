@@ -1,0 +1,19 @@
+# Samoyed intentionally ships fake credentials in fixtures/tests for collector demos.
+# Prefer path + regex allowlists over baselines so line edits don't churn allowlists.
+title = "samoyed"
+
+[extend]
+# Use gitleaks default rules, then apply our allowlist.
+useDefault = true
+
+[allowlist]
+description = "Known-fake lab materials (not real cloud credentials)"
+paths = [
+  '''(^|/)(\.gitleaks\.toml)$''',
+]
+regexes = [
+  # AWS documentation example access key id
+  '''AKIAIOSFODNN7EXAMPLE''',
+  # Explicitly marked fake material in this repo
+  '''fixture-[A-Za-z0-9_-]+-not-real''',
+]

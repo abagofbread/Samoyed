@@ -18,6 +18,7 @@ BloodHound for cloud — ingest identity and resource data, build an attack-path
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,mcp]"
+pre-commit install     # gitleaks: block secrets before commit
 docker compose up -d   # optional Neo4j persistence
 ```
 

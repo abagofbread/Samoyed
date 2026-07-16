@@ -9,6 +9,7 @@ from samoyed.cloud.concepts import CloudProvider, ConceptType, ConfidenceType
 from samoyed.credentials.protocol import EnumContext
 from samoyed.enumerators.contracts import ConceptEnumerator
 from samoyed.enumerators.runner import paginate_call
+from samoyed.graph.resource_scope import resolve_policy_resource
 
 
 def _iter_statements(doc: dict[str, Any]) -> list[dict[str, Any]]:
@@ -41,6 +42,25 @@ class AwsIdentityEnumerator:
             evidence=Evidence("sts:GetCallerIdentity", {"arn": arn}),
             confidence=ConfidenceType.EXPLICIT,
         )
+
+        # Account root is a permanent crown jewel even when the caller is not root.
+        root_arn = f"arn:aws:iam::{account}:root"
+        if arn != root_arn:
+            yield ConceptArtifact(
+                concept_type=ConceptType.IDENTITY,
+                provider=CloudProvider.AWS,
+                native_id=root_arn,
+                scope_id=ctx.scope.scope_id,
+                properties={
+                    "native_kind": "Root",
+                    "account_id": account,
+                    "arn": root_arn,
+                    "name": "root",
+                    "display_name": f"Account root ({account})",
+                    "blatant_high_value": True,
+                },
+                evidence=Evidence("sts:GetCallerIdentity", {"account": account, "synthetic": "account-root"}),
+            )
 
         iam = cred.client("iam")  # type: ignore[attr-defined]
         for op, fn, kind in [
@@ -204,14 +224,20 @@ def _policy_to_artifacts(
                 continue
             for resource in resources:
                 resource_type = mapping.resource_type or "UnresolvedResource"
-                resource_id = f"{resource_type}:{resource}"
+                resource_id, scope = resolve_policy_resource(resource, resource_type)
                 edges.append(
                     ConceptEdge(
                         rel_type=mapping.capability.value,
                         src_native_id=principal_arn,
                         target_native_id=resource_id,
-                        target_concept_type=_resource_concept(resource_type),
-                        props={"action": action, "resource": resource},
+                        target_concept_type=_resource_concept(scope.resource_type or resource_type),
+                        props={
+                            "action": action,
+                            "resource": resource,
+                            "resource_type": scope.resource_type,
+                            "scope_canonical_id": scope.canonical_id,
+                            **({"path_prefix": scope.path_prefix} if scope.path_prefix else {}),
+                        },
                         confidence=conf,
                     )
                 )
@@ -239,6 +265,8 @@ def _resource_concept(resource_type: str) -> ConceptType:
         return ConceptType.SECRET_STORE
     if resource_type in {"S3Bucket", "ECRRepository"}:
         return ConceptType.DATA_STORE if resource_type == "S3Bucket" else ConceptType.REGISTRY_STORE
+    if resource_type in {"Role", "User", "IAM", "Policy"}:
+        return ConceptType.IDENTITY if resource_type != "Policy" else ConceptType.ENTITLEMENT
     return ConceptType.DATA_STORE
 
 
@@ -247,15 +275,15 @@ class AwsComputeEnumerator:
     name = "aws-compute"
 
     def enumerate(self, ctx: EnumContext) -> Iterator[ConceptArtifact]:
+        from samoyed.enumerators.aws.ecs import enumerate_ecs_topology
         from samoyed.enumerators.aws.runtime_bindings import (
             enumerate_ec2_instances,
-            enumerate_ecs_task_roles,
             enumerate_lambda_functions,
         )
 
         yield from enumerate_ec2_instances(ctx)
         yield from enumerate_lambda_functions(ctx)
-        yield from enumerate_ecs_task_roles(ctx)
+        yield from enumerate_ecs_topology(ctx)
 
 
 class AwsStorageEnumerator:
@@ -263,6 +291,8 @@ class AwsStorageEnumerator:
     name = "aws-storage"
 
     def enumerate(self, ctx: EnumContext) -> Iterator[ConceptArtifact]:
+        from samoyed.enumerators.aws.tags import environment_from_tags, normalize_tag_map
+
         cred = ctx.credentials
         s3 = cred.client("s3")  # type: ignore[attr-defined]
         resp = paginate_call(ctx, operation="s3:ListBuckets", call=lambda: s3.list_buckets())
@@ -271,12 +301,24 @@ class AwsStorageEnumerator:
         for bucket in resp.get("Buckets", []):
             name = bucket["Name"]
             native_id = f"S3Bucket:{name}"
+            tags_resp = paginate_call(
+                ctx,
+                operation="s3:GetBucketTagging",
+                call=lambda n=name: s3.get_bucket_tagging(Bucket=n),
+            )
+            tags = normalize_tag_map((tags_resp or {}).get("TagSet"))
+            env = environment_from_tags(tags)
+            props: dict[str, Any] = {"resource_type": "S3Bucket", "bucket_name": name}
+            if tags:
+                props["tags"] = tags
+            if env:
+                props["environment"] = env
             yield ConceptArtifact(
                 concept_type=ConceptType.DATA_STORE,
                 provider=CloudProvider.AWS,
                 native_id=native_id,
                 scope_id=ctx.scope.scope_id,
-                properties={"resource_type": "S3Bucket", "bucket_name": name},
+                properties=props,
                 evidence=Evidence("s3:ListBuckets", {"bucket": name}),
             )
 
@@ -321,6 +363,30 @@ class AwsSecretEnumerator:
                 )
 
 
+def _access_analyzer_enumerator() -> ConceptEnumerator:
+    from samoyed.enumerators.aws.access_analyzer import AwsAccessAnalyzerEnumerator
+
+    return AwsAccessAnalyzerEnumerator()
+
+
+def _cloudtrail_enumerator() -> ConceptEnumerator:
+    from samoyed.enumerators.aws.cloudtrail_observed import AwsCloudTrailObservedEnumerator
+
+    return AwsCloudTrailObservedEnumerator()
+
+
+def _cicd_enumerator() -> ConceptEnumerator:
+    from samoyed.enumerators.aws.cicd import AwsCicdEnumerator
+
+    return AwsCicdEnumerator()
+
+
+def _static_hosting_enumerator() -> ConceptEnumerator:
+    from samoyed.enumerators.aws.static_hosting import AwsStaticHostingEnumerator
+
+    return AwsStaticHostingEnumerator()
+
+
 AWS_ENUMERATORS: list[ConceptEnumerator] = [
     AwsIdentityEnumerator(),
     AwsTrustEnumerator(),
@@ -328,4 +394,8 @@ AWS_ENUMERATORS: list[ConceptEnumerator] = [
     AwsComputeEnumerator(),
     AwsStorageEnumerator(),
     AwsSecretEnumerator(),
+    _cicd_enumerator(),
+    _static_hosting_enumerator(),
+    _access_analyzer_enumerator(),
+    _cloudtrail_enumerator(),
 ]

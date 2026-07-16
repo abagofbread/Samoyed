@@ -143,7 +143,7 @@ def collect_azure_report_cmd(
         Path(".samoyed/azure/client-iam-report.json"),
         help="Where to write iam-report JSON",
     ),
-    subscription_id: str | None = typer.Option(None, envvar="AZURE_SUBSCRIPTION_ID", help="Azure subscription ID"),
+    subscription_id: Optional[str] = typer.Option(None, envvar="AZURE_SUBSCRIPTION_ID", help="Azure subscription ID"),
 ) -> None:
     """Collect iam-report JSON from live Azure APIs (requires az login or SP env vars)."""
     from samoyed.client.azure_report import collect_azure_iam_report
@@ -484,7 +484,7 @@ def firing_range_enum_cmd(
 @app.command("import-fixture")
 def import_fixture_cmd(
     fixture_id: str = typer.Argument(..., help="Fixture id (lab-aws, enterprise-aws, k8s-lab, …)"),
-    session_id: str | None = typer.Option(None, help="Optional session id override"),
+    session_id: Optional[str] = typer.Option(None, help="Optional session id override"),
 ) -> None:
     """Import a bundled field report through the connector pipeline (no cloud APIs)."""
     try:
@@ -504,13 +504,13 @@ def import_fixture_cmd(
 
 @app.command("import-cartography")
 def import_cartography_cmd(
-    caller_arn: str | None = typer.Option(None, help="Principal ARN to treat as blast-radius start"),
-    account_id: str | None = typer.Option(None, help="Filter to one AWS account id"),
-    project_id: str | None = typer.Option(None, help="Filter to one GCP project id"),
-    neo4j_uri: str | None = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_URI", help="Cartography Neo4j bolt URI"),
-    neo4j_user: str | None = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_USER"),
-    neo4j_password: str | None = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_PASSWORD"),
-    neo4j_database: str | None = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_DATABASE"),
+    caller_arn: Optional[str] = typer.Option(None, help="Principal ARN to treat as blast-radius start"),
+    account_id: Optional[str] = typer.Option(None, help="Filter to one AWS account id"),
+    project_id: Optional[str] = typer.Option(None, help="Filter to one GCP project id"),
+    neo4j_uri: Optional[str] = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_URI", help="Cartography Neo4j bolt URI"),
+    neo4j_user: Optional[str] = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_USER"),
+    neo4j_password: Optional[str] = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_PASSWORD"),
+    neo4j_database: Optional[str] = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_DATABASE"),
 ) -> None:
     """Import a Cartography Neo4j graph into a Samoyed attack-path session."""
     try:
@@ -535,11 +535,11 @@ def import_cartography_cmd(
 
 @app.command("cartography-status")
 def cartography_status_cmd(
-    neo4j_uri: str | None = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_URI"),
-    neo4j_user: str | None = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_USER"),
-    neo4j_password: str | None = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_PASSWORD"),
-    neo4j_database: str | None = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_DATABASE"),
-    account_id: str | None = typer.Option(None, help="Optional AWS account filter for stats"),
+    neo4j_uri: Optional[str] = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_URI"),
+    neo4j_user: Optional[str] = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_USER"),
+    neo4j_password: Optional[str] = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_PASSWORD"),
+    neo4j_database: Optional[str] = typer.Option(None, envvar="CARTOGRAPHY_NEO4J_DATABASE"),
+    account_id: Optional[str] = typer.Option(None, help="Optional AWS account filter for stats"),
 ) -> None:
     """Show Cartography Neo4j connectivity and synced AWS account summary."""
     from samoyed.connectors.cartography.client import CartographyClient
@@ -565,14 +565,14 @@ def cartography_status_cmd(
 @app.command("whoami")
 def whoami_cmd(
     provider: str = typer.Option("aws", help="Cloud provider (aws | kubernetes | gcp | azure)"),
-    profile: str | None = typer.Option(None, help="AWS profile name"),
-    key_file: Path | None = typer.Option(None, help="JSON key file"),
-    region: str | None = typer.Option(None, help="AWS region"),
-    endpoint_url: str | None = typer.Option(None, help="AWS API endpoint (e.g. Moto/LocalStack)"),
-    kubeconfig: Path | None = typer.Option(None, help="Kubeconfig path"),
-    context: str | None = typer.Option(None, help="Kubeconfig context"),
-    project_id: str | None = typer.Option(None, help="GCP project ID"),
-    subscription_id: str | None = typer.Option(None, help="Azure subscription ID"),
+    profile: Optional[str] = typer.Option(None, help="AWS profile name"),
+    key_file: Optional[Path] = typer.Option(None, help="JSON key file"),
+    region: Optional[str] = typer.Option(None, help="AWS region"),
+    endpoint_url: Optional[str] = typer.Option(None, help="AWS API endpoint (e.g. Moto/LocalStack)"),
+    kubeconfig: Optional[Path] = typer.Option(None, help="Kubeconfig path"),
+    context: Optional[str] = typer.Option(None, help="Kubeconfig context"),
+    project_id: Optional[str] = typer.Option(None, help="GCP project ID"),
+    subscription_id: Optional[str] = typer.Option(None, help="Azure subscription ID"),
 ) -> None:
     """Print caller identity for configured credentials."""
     cred = _load_provider_credential(
@@ -594,14 +594,14 @@ def whoami_cmd(
 @app.command("enum")
 def enum_cmd(
     provider: str = typer.Option("aws", help="Cloud provider (aws | kubernetes | gcp | azure)"),
-    profile: str | None = typer.Option(None, help="AWS profile name"),
-    key_file: Path | None = typer.Option(None, help="JSON key file"),
-    region: str | None = typer.Option(None, help="AWS region"),
-    endpoint_url: str | None = typer.Option(None, help="AWS API endpoint (e.g. Moto/LocalStack)"),
-    kubeconfig: Path | None = typer.Option(None, help="Kubeconfig path"),
-    context: str | None = typer.Option(None, help="Kubeconfig context"),
-    project_id: str | None = typer.Option(None, help="GCP project ID"),
-    subscription_id: str | None = typer.Option(None, help="Azure subscription ID"),
+    profile: Optional[str] = typer.Option(None, help="AWS profile name"),
+    key_file: Optional[Path] = typer.Option(None, help="JSON key file"),
+    region: Optional[str] = typer.Option(None, help="AWS region"),
+    endpoint_url: Optional[str] = typer.Option(None, help="AWS API endpoint (e.g. Moto/LocalStack)"),
+    kubeconfig: Optional[Path] = typer.Option(None, help="Kubeconfig path"),
+    context: Optional[str] = typer.Option(None, help="Kubeconfig context"),
+    project_id: Optional[str] = typer.Option(None, help="GCP project ID"),
+    subscription_id: Optional[str] = typer.Option(None, help="Azure subscription ID"),
     with_probe: bool = typer.Option(
         False,
         "--with-probe",
@@ -640,12 +640,12 @@ def enum_cmd(
 @app.command("probe")
 def probe_cmd(
     provider: str = typer.Option("aws", help="Cloud provider (aws | gcp | azure)"),
-    profile: str | None = typer.Option(None, help="AWS profile name"),
-    key_file: Path | None = typer.Option(None, help="JSON key file"),
-    region: str | None = typer.Option(None, help="AWS region"),
-    endpoint_url: str | None = typer.Option(None, help="AWS API endpoint"),
-    project_id: str | None = typer.Option(None, help="GCP project ID"),
-    subscription_id: str | None = typer.Option(None, help="Azure subscription ID"),
+    profile: Optional[str] = typer.Option(None, help="AWS profile name"),
+    key_file: Optional[Path] = typer.Option(None, help="JSON key file"),
+    region: Optional[str] = typer.Option(None, help="AWS region"),
+    endpoint_url: Optional[str] = typer.Option(None, help="AWS API endpoint"),
+    project_id: Optional[str] = typer.Option(None, help="GCP project ID"),
+    subscription_id: Optional[str] = typer.Option(None, help="Azure subscription ID"),
     high_value_only: bool = typer.Option(False, help="Only probe high-value APIs"),
     report_only: bool = typer.Option(False, help="Print probe report JSON without building a session"),
     list_catalog: bool = typer.Option(False, "--list", help="List probe operations and exit"),
@@ -691,11 +691,11 @@ def probe_cmd(
 @app.command("scenario")
 def scenario_cmd(
     name: str = typer.Argument("leaked-credential"),
-    session_id: str | None = typer.Option(None, help="Session id, short name, or omit for most recent"),
-    start: str | None = typer.Option(None, "--as", help="Compromised principal ARN or node id"),
+    session_id: Optional[str] = typer.Option(None, help="Session id, short name, or omit for most recent"),
+    start: Optional[str] = typer.Option(None, "--as", help="Compromised principal ARN or node id"),
     provider: str = typer.Option("aws"),
-    profile: str | None = typer.Option(None),
-    key_file: Path | None = typer.Option(None),
+    profile: Optional[str] = typer.Option(None),
+    key_file: Optional[Path] = typer.Option(None),
 ) -> None:
     """Run a blast-radius scenario."""
     from samoyed.path_engine.format import format_path_query_response
@@ -733,9 +733,9 @@ def scenario_cmd(
 
 @app.command("paths")
 def paths_cmd(
-    session_id: str | None = typer.Argument(None, help="Session id, short name, or omit for most recent"),
-    target_concept: str | None = typer.Option(None),
-    target_resource_type: str | None = typer.Option(None),
+    session_id: Optional[str] = typer.Argument(None, help="Session id, short name, or omit for most recent"),
+    target_concept: Optional[str] = typer.Option(None),
+    target_resource_type: Optional[str] = typer.Option(None),
     max_depth: int = typer.Option(6),
 ) -> None:
     """Query attack paths for a session."""
@@ -785,9 +785,9 @@ def sessions_delete_cmd(
 def ui_cmd(
     host: str = typer.Option("127.0.0.1", help="Bind address"),
     port: int = typer.Option(8000, help="HTTP port"),
-    username: str | None = typer.Option(None, envvar="SAMOYED_USERNAME", help="UI login username"),
-    password: str | None = typer.Option(None, envvar="SAMOYED_PASSWORD", help="UI login password"),
-    api_token: str | None = typer.Option(None, envvar="SAMOYED_API_TOKEN", help="Optional API bearer token"),
+    username: Optional[str] = typer.Option(None, envvar="SAMOYED_USERNAME", help="UI login username"),
+    password: Optional[str] = typer.Option(None, envvar="SAMOYED_PASSWORD", help="UI login password"),
+    api_token: Optional[str] = typer.Option(None, envvar="SAMOYED_API_TOKEN", help="Optional API bearer token"),
 ) -> None:
     """Start API + web UI."""
     import secrets
