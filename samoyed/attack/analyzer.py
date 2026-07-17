@@ -42,11 +42,89 @@ def action_matches(granted: str, required: str) -> bool:
     return False
 
 
-def has_required_actions(available: set[str], required: frozenset[str]) -> bool:
-    return all(any(action_matches(a, req) for a in available) for req in required)
+def has_required_actions(
+    available: set[str],
+    required: frozenset[str],
+    *,
+    denies: set[str] | frozenset[str] | None = None,
+) -> bool:
+    deny_set = denies or frozenset()
+    for req in required:
+        if any(action_matches(d, req) for d in deny_set):
+            return False
+        if not any(action_matches(a, req) for a in available):
+            return False
+    return True
 
 
 def collect_principal_actions(graph: GraphSnapshot, node_id: str) -> set[str]:
+    """Return *effective* actions (identity ∩ permissions boundary ∩ SCPs)."""
+    node = graph.nodes.get(node_id)
+    if not node:
+        return set()
+    raw = _raw_principal_actions(graph, node_id)
+    boundary = node.props.get("permissions_boundary_actions")
+    actions = raw
+    if boundary:
+        actions = _apply_permissions_boundary(actions, {str(a) for a in boundary})
+    constraints = _scp_constraints_for_principal(graph, node)
+    if constraints:
+        from samoyed.policy.scp import apply_scp_clamp
+
+        actions = apply_scp_clamp(
+            actions,
+            constraints,
+            action_matches=action_matches,
+            apply_allow_ceiling=_apply_permissions_boundary,
+        )
+    return actions
+
+
+def collect_principal_scp_denies(graph: GraphSnapshot, node_id: str) -> set[str]:
+    """SCP Deny patterns that still carve into leftover wildcards."""
+    node = graph.nodes.get(node_id)
+    if not node:
+        return set()
+    constraints = _scp_constraints_for_principal(graph, node)
+    if not constraints or constraints.exempt:
+        return set()
+    return set(constraints.deny_actions)
+
+
+def _scp_constraints_for_principal(graph: GraphSnapshot, node) -> "ScpConstraints | None":
+    from samoyed.policy.scp import ScpConstraints, constraints_from_scope_props
+
+    props = node.props or {}
+    # Identity-level override (tests / analyst stamp)
+    local = constraints_from_scope_props(props)
+    if local and local.applies:
+        return local
+
+    account = str(props.get("account_id") or "")
+    if not account:
+        arn = str(props.get("arn") or props.get("native_id") or "")
+        account = _account_id_from_arn(arn)
+    if not account:
+        return None
+
+    for other in graph.nodes.values():
+        if other.props.get("concept_type") != "ScopeBoundary":
+            continue
+        if str(other.props.get("account_id") or "") != account:
+            continue
+        return constraints_from_scope_props(other.props)
+    return None
+
+
+def _account_id_from_arn(arn: str) -> str:
+    # arn:aws:iam::123456789012:role/name
+    parts = arn.split(":")
+    if len(parts) >= 5 and parts[4].isdigit():
+        return parts[4]
+    return ""
+
+
+def _raw_principal_actions(graph: GraphSnapshot, node_id: str) -> set[str]:
     actions: set[str] = set()
     node = graph.nodes.get(node_id)
     if not node:
@@ -55,6 +133,9 @@ def collect_principal_actions(graph: GraphSnapshot, node_id: str) -> set[str]:
     for _dst, _rel, props in graph.adjacency.get(node_id, []):
         if props.get("action"):
             actions.add(str(props["action"]))
+        for extra in props.get("actions") or []:
+            if extra:
+                actions.add(str(extra))
         if props.get("operation"):
             actions.add(str(props["operation"]))
         if props.get("role"):
@@ -87,6 +168,23 @@ def collect_principal_actions(graph: GraphSnapshot, node_id: str) -> set[str]:
             actions.add("rbac:cluster-admin")
 
     return actions
+
+
+def _apply_permissions_boundary(identity: set[str], boundary: set[str]) -> set[str]:
+    """Approximate identity ∩ boundary without inventing new graph edges."""
+    if not boundary:
+        return identity
+    # Unrestricted ceiling (FullAWSAccess SCP / open boundary) — no clamp.
+    if boundary & {"*", "*:*"}:
+        return set(identity)
+    out: set[str] = set()
+    for action in identity:
+        if "*" not in action and any(action_matches(b, action) for b in boundary):
+            out.add(action)
+    for grant in boundary:
+        if any(action_matches(a, grant) for a in identity):
+            out.add(grant)
+    return out
 
 
 def _k8s_actions_from_edge(rel: str, props: dict[str, Any]) -> set[str]:
@@ -191,8 +289,9 @@ def analyze_attack_surface(
         actions = collect_principal_actions(graph, start_id)
         if not actions:
             continue
+        denies = collect_principal_scp_denies(graph, start_id)
         for pattern in patterns:
-            if not has_required_actions(actions, pattern.required_actions):
+            if not has_required_actions(actions, pattern.required_actions, denies=denies):
                 continue
             for dst_id in _resolve_targets(graph, start_id, pattern, provider):
                 key = (start_id, dst_id, pattern.id)
@@ -300,7 +399,8 @@ _PASSROLE_TRUST_SERVICE: dict[str, str] = {
     "aws-states-test-state": "states.amazonaws.com",
 }
 
-_RUNTIME_CONTROL_RELS = frozenset({"CONTROLS", "WRITES", "EXECUTES", "DELETES"})
+# Invoke-only must not count as "can hijack execution role" for UFC / code takeover.
+_RUNTIME_MUTATE_RELS = frozenset({"CONTROLS", "WRITES", "DELETES"})
 
 
 def _resolve_targets(
@@ -332,13 +432,11 @@ def _resolve_targets(
         return _prefer_privileged_targets(graph, roles, exclude=start_id)
 
     if pattern.target == "execution_roles":
-        # Only roles actually attached to inventored/controlled runtimes.
-        # Never fall back to every IAM role (SecretsManagerReadWrite UFC FP).
-        roles = execution_role_nodes(graph)
+        # Wise UFC / code takeover: only roles of runtimes this principal can *mutate*.
+        # Never union with every inventored EXECUTES_AS role in the account.
         via_control = _execution_roles_via_controlled_runtimes(graph, start_id, exclude=start_id)
-        combined = _dedupe_keep_order([*via_control, *roles])
-        preferred = _prefer_privileged_targets(graph, combined, exclude=start_id)
-        return preferred or combined
+        preferred = _prefer_privileged_targets(graph, via_control, exclude=start_id)
+        return preferred or via_control
 
     if pattern.target == "runtime_bindings":
         return _runtime_binding_nodes(graph)
@@ -455,21 +553,91 @@ def _execution_roles_via_controlled_runtimes(
     *,
     exclude: str,
 ) -> list[str]:
-    """Roles of runtimes this principal can mutate (CONTROLS/WRITES/… → EXECUTES_AS)."""
+    """Roles of runtimes this principal can mutate (CONTROLS/WRITES → EXECUTES_AS).
+
+    Follows inventored runtimes directly, and policy stubs (``Lambda:…SecretsManager*``)
+    onto inventored ``LambdaFunction`` nodes whose scopes intersect.
+    """
     out: list[str] = []
     seen: set[str] = set()
-    for dst, rel, _props in graph.adjacency.get(start_id, []):
-        if rel not in _RUNTIME_CONTROL_RELS:
+
+    def _add_role(role_id: str) -> None:
+        if role_id == exclude or role_id in seen:
+            return
+        node = graph.nodes.get(role_id)
+        if node and node.props.get("concept_type") == "Identity":
+            seen.add(role_id)
+            out.append(role_id)
+
+    def _roles_of_runtime(runtime_id: str) -> None:
+        for role_id, role_rel, _rp in graph.adjacency.get(runtime_id, []):
+            if role_rel == "EXECUTES_AS":
+                _add_role(role_id)
+
+    for dst, rel, props in graph.adjacency.get(start_id, []):
+        if rel not in _RUNTIME_MUTATE_RELS:
             continue
-        if not _is_runtime_like_node(dst, graph):
-            continue
-        for role_id, role_rel, _rp in graph.adjacency.get(dst, []):
-            if role_rel != "EXECUTES_AS" or role_id == exclude or role_id in seen:
-                continue
-            if graph.nodes.get(role_id) and graph.nodes[role_id].props.get("concept_type") == "Identity":
-                seen.add(role_id)
-                out.append(role_id)
+        if _is_runtime_like_node(dst, graph):
+            _roles_of_runtime(dst)
+            # Stub/pattern control → inventored runtimes with intersecting scope
+            for runtime_id in _inventored_runtimes_matching_control(graph, dst, props):
+                _roles_of_runtime(runtime_id)
     return out
+
+
+def _inventored_runtimes_matching_control(
+    graph: GraphSnapshot,
+    control_dst_id: str,
+    edge_props: dict,
+) -> list[str]:
+    """Map a capability target (often a Lambda:* stub) onto inventored runtimes."""
+    from samoyed.graph.resource_scope import intersect_scopes, scopes_from_edge_props
+
+    dst = graph.nodes.get(control_dst_id)
+    dst_native = (dst.props.get("native_id") if dst else None) or control_dst_id
+    dst_props = dst.props if dst else {}
+    # Already a concrete inventored runtime with no wildcard — covered by direct path.
+    native = str(dst_native)
+    if (
+        dst
+        and dst.props.get("concept_type") == "RuntimeBinding"
+        and "*" not in native
+        and not native.endswith(":*")
+    ):
+        return []
+
+    control_scope = scopes_from_edge_props(
+        rel_type="CONTROLS",
+        props=edge_props or {},
+        dst_native_id=native,
+        dst_props=dst_props,
+    )
+    if not control_scope:
+        return []
+
+    matched: list[str] = []
+    for node_id, node in graph.nodes.items():
+        if node_id == control_dst_id:
+            continue
+        if not _is_runtime_like_node(node_id, graph):
+            continue
+        inv_native = str(node.props.get("native_id") or node_id)
+        if "*" in inv_native or inv_native.endswith(":*"):
+            continue
+        # Must actually have an execution role to be a UFC pivot.
+        if not any(rel == "EXECUTES_AS" for _d, rel, _p in graph.adjacency.get(node_id, [])):
+            continue
+        inv_scope = scopes_from_edge_props(
+            rel_type="READS",
+            props={"resource_type": node.props.get("resource_type") or "LambdaFunction"},
+            dst_native_id=inv_native,
+            dst_props=node.props,
+        )
+        if not inv_scope:
+            continue
+        if intersect_scopes(control_scope, inv_scope):
+            matched.append(node_id)
+    return matched
 
 
 def _roles_assumable_by_service(

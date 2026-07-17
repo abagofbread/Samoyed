@@ -13,6 +13,14 @@ AWS_ACTION_MAP: list[tuple[re.Pattern[str], CapabilityType, str | None]] = [
     (re.compile(r"^sts:\*"), CapabilityType.EXECUTES, "Role"),
     (re.compile(r"^cloudformation:\*"), CapabilityType.CONTROLS, "CloudFormation"),
     (re.compile(r"^lambda:\*"), CapabilityType.CONTROLS, "LambdaFunction"),
+    (
+        re.compile(
+            r"^lambda:UpdateFunctionConfiguration|^lambda:UpdateFunctionCode|"
+            r"^lambda:PublishVersion|^lambda:PublishLayerVersion|^lambda:UpdateAlias"
+        ),
+        CapabilityType.CONTROLS,
+        "LambdaFunction",
+    ),
     (re.compile(r"^s3:GetObject|^s3:List"), CapabilityType.READS, "S3Bucket"),
     (re.compile(r"^s3:PutObject|^s3:DeleteObject"), CapabilityType.WRITES, "S3Bucket"),
     (re.compile(r"^s3:\*"), CapabilityType.CONTROLS, "S3Bucket"),
@@ -34,7 +42,6 @@ AWS_ACTION_MAP: list[tuple[re.Pattern[str], CapabilityType, str | None]] = [
     (re.compile(r"^datapipeline:CreatePipeline|^datapipeline:PutPipelineDefinition"), CapabilityType.EXECUTES, "DataPipeline"),
     (re.compile(r"^sagemaker:CreateNotebookInstance|^sagemaker:CreatePresignedNotebookInstanceUrl"), CapabilityType.EXECUTES, "SageMakerNotebook"),
     (re.compile(r"^codestar:CreateProject|^codestar:CreateProjectFromTemplate"), CapabilityType.EXECUTES, "CodeStarProject"),
-    (re.compile(r"^sts:AssumeRole"), CapabilityType.EXECUTES, "Role"),
     (re.compile(r"^sts:AssumeRole"), CapabilityType.EXECUTES, "Role"),
     (re.compile(r"^ec2:RunInstances|^ec2:StartInstances"), CapabilityType.EXECUTES, "EC2Instance"),
     (re.compile(r"^lambda:InvokeFunction"), CapabilityType.EXECUTES, "LambdaFunction"),

@@ -41,6 +41,7 @@ from samoyed.graph.persistence import (
     snapshot_to_dict,
     write_session_file,
 )
+from samoyed.graph.refs import resolve_node_ref
 from samoyed.attack.analyzer import apply_attack_analysis
 from samoyed.attack.surface import enrich_attack_surface
 from samoyed.ingest.concept_normalizer import ConceptNormalizer
@@ -438,9 +439,27 @@ class SessionStore:
     ) -> dict[str, Any]:
         from samoyed.graph.access import filter_graph_payload, graph_access_for_metadata
 
+        from samoyed.enrichment.impact import repair_credential_impact
+        from samoyed.enrichment.labels import relabel_pivot_materials
+        from samoyed.graph.builder import GraphBuilder
+
         session = self.get(session_id)
         if not session:
             raise KeyError(session_id)
+        dirty = False
+        if relabel_pivot_materials(session.snapshot):
+            dirty = True
+        # Re-wire password materials → RDS/secret impact (project stores if enum missed them).
+        builder = GraphBuilder(session.session_id)
+        builder.snapshot = session.snapshot
+        impact = repair_credential_impact(builder)
+        if impact.get("unlocks_applied") or impact.get("projected"):
+            dirty = True
+        if dirty:
+            try:
+                self._persist(session)
+            except Exception:
+                pass
         access = graph_access_for_metadata(session.metadata)
         if detail == "summary":
             access = "summary"
@@ -699,6 +718,7 @@ class SessionStore:
         rel_types: list[str] | None = None,
         max_depth: int = 6,
         max_paths: int = 20,
+        exclude_node_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         from samoyed.path_engine.custom_query import run_graph_query
 
@@ -719,6 +739,7 @@ class SessionStore:
             rel_types=rel_types,
             max_depth=max_depth,
             max_paths=max_paths,
+            exclude_node_ids=exclude_node_ids,
         )
 
     def analyze_proposed_changes(
@@ -778,6 +799,7 @@ class SessionStore:
         kind: str,
         max_depth: int = 6,
         max_paths: int = 30,
+        exclude_node_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         from samoyed.path_engine.custom_query import serialize_paths
         from samoyed.path_engine.search import (
@@ -795,18 +817,27 @@ class SessionStore:
         markings = summarize_markings(graph)
         compromised_ids = find_compromised_nodes(graph)
         high_value_ids = find_high_value_nodes(graph)
+        excluded = set(exclude_node_ids or ()) or None
 
         if kind == "compromised_to_high_value":
             paths = find_compromised_to_high_value_paths(
-                graph, max_depth=max_depth, max_paths=max_paths
+                graph, max_depth=max_depth, max_paths=max_paths, exclude_node_ids=excluded
             )
         elif kind == "blast_compromised":
             paths = get_blast_radius_multi(
-                graph, start_node_ids=compromised_ids, max_depth=max_depth, max_paths=max_paths
+                graph,
+                start_node_ids=compromised_ids,
+                max_depth=max_depth,
+                max_paths=max_paths,
+                exclude_node_ids=excluded,
             )
         elif kind == "to_high_value":
             paths = find_paths_to_high_value_nodes(
-                graph, start_node_ids=compromised_ids, max_depth=max_depth, max_paths=max_paths
+                graph,
+                start_node_ids=compromised_ids,
+                max_depth=max_depth,
+                max_paths=max_paths,
+                exclude_node_ids=excluded,
             )
         else:
             raise ValueError(
@@ -1074,37 +1105,8 @@ class SessionStore:
         if start in {"compromised", "compromised_start"}:
             return self._resolve_compromised_start(session)
 
-        needle = start.strip()
-        if needle in session.snapshot.nodes:
-            return needle
-
-        needle_lower = needle.lower()
-        matches: list[str] = []
-        for node_id, node in session.snapshot.nodes.items():
-            if node.label == "CollectionSession":
-                continue
-            fields = (
-                node_id,
-                str(node.props.get("arn") or ""),
-                str(node.props.get("native_id") or ""),
-                str(node.props.get("display_name") or ""),
-                str(node.props.get("name") or ""),
-            )
-            if any(f and f.lower() == needle_lower for f in fields):
-                matches.append(node_id)
-                continue
-            if any(
-                f
-                and (needle_lower in f.lower() or f.lower().endswith(needle_lower.split("/")[-1]))
-                for f in fields
-                if f
-            ):
-                matches.append(node_id)
-
-        unique = list(dict.fromkeys(matches))
-        if len(unique) == 1:
-            return unique[0]
-        return None
+        # Same fuzzy resolver as enrichment name_hints / mark refs.
+        return resolve_node_ref(session.snapshot, start)
 
     def resolve_end_node(self, session_id: str, end: str | None) -> str | None:
         session = self.get(session_id)
@@ -1117,7 +1119,9 @@ class SessionStore:
             if len(marked) == 1:
                 return marked[0]
             return None
-        return self.resolve_start_node(session_id, end)
+        if end in {"caller", "host", "compromised", "compromised_start"}:
+            return self.resolve_start_node(session_id, end)
+        return resolve_node_ref(session.snapshot, end)
 
     def _resolve_compromised_start(self, session: SessionRecord) -> str | None:
         marked = find_compromised_nodes(session.snapshot)

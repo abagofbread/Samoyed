@@ -139,6 +139,20 @@ def scope_from_native_id(native_id: str, *, image_uri: str | None = None) -> Res
         return _scope_from_typed("ECRRepository", native_id.split(":", 1)[1])[1]
     if native_id.startswith("SSMParameter:"):
         return _scope_from_typed("SSMParameter", native_id.split(":", 1)[1])[1]
+    if native_id.startswith("LambdaFunction:"):
+        rest = native_id.split(":", 1)[1]
+        return ResourceScope("lambda", "LambdaFunction", native_id, rest)
+    if native_id.startswith("Lambda:"):
+        # Policy stubs often use Lambda:… — normalize to LambdaFunction for UFC pivots.
+        rest = native_id.split(":", 1)[1]
+        return ResourceScope("lambda", "LambdaFunction", f"LambdaFunction:{rest}", rest)
+    if native_id.startswith("arn:aws:lambda:"):
+        return ResourceScope(
+            "lambda",
+            "LambdaFunction",
+            f"LambdaFunction:{native_id}",
+            native_id,
+        )
     if native_id.startswith("arn:aws:"):
         _nid, scope = resolve_policy_resource(native_id, None)
         return scope
@@ -167,10 +181,21 @@ def parse_ecr_image_uri(uri: str) -> ResourceScope | None:
 
 def intersect_scopes(producer: ResourceScope, consumer: ResourceScope) -> ScopeIntersection | None:
     """Return the narrowest overlapping scope, or None if disjoint."""
-    # Different resource types never overlap — except ECR repo ARN ↔ image URI.
-    # Wildcard must NOT cross types (Logs:* must not match Ec2:*).
+    # Different resource types never overlap — except ECR repo ARN ↔ image URI,
+    # and Lambda ↔ LambdaFunction (policy stubs vs inventored functions).
     if producer.resource_type != consumer.resource_type:
-        if not (producer.family == consumer.family == "ecr"):
+        lambda_aliases = {"Lambda", "LambdaFunction"}
+        if producer.family == consumer.family == "ecr":
+            pass
+        elif (
+            producer.family == consumer.family == "lambda"
+            or (
+                producer.resource_type in lambda_aliases
+                and consumer.resource_type in lambda_aliases
+            )
+        ):
+            pass
+        else:
             return None
 
     if producer.canonical_id.endswith(":*") or producer.pattern == "*":
@@ -252,6 +277,8 @@ def _family_for_type(rtype: str) -> str:
         "Secret": "secretsmanager",
         "ECRRepository": "ecr",
         "SSMParameter": "ssm",
+        "LambdaFunction": "lambda",
+        "Lambda": "lambda",
     }.get(rtype or "", "other")
 
 
@@ -259,8 +286,8 @@ def _type_from_native(native_id: str) -> str | None:
     if ":" not in native_id:
         return None
     prefix = native_id.split(":", 1)[0]
-    if prefix in {"S3Bucket", "Secret", "ECRRepository", "SSMParameter", "LambdaFunction"}:
-        return prefix
+    if prefix in {"S3Bucket", "Secret", "ECRRepository", "SSMParameter", "LambdaFunction", "Lambda"}:
+        return "LambdaFunction" if prefix == "Lambda" else prefix
     return None
 
 

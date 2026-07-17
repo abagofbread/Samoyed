@@ -38,10 +38,8 @@ from samoyed.cloud.concepts import CloudProvider
 app = typer.Typer(no_args_is_help=True, help="Samoyed — BloodHound for cloud")
 firing_range_app = typer.Typer(help="Emulated vulnerable clouds (LocalStack, no lab data in repo)")
 sessions_app = typer.Typer(help="Manage attack-graph sessions")
-collect_app = typer.Typer(help="Static collectors that produce enrichment reports")
 app.add_typer(firing_range_app, name="firing-range")
 app.add_typer(sessions_app, name="sessions")
-app.add_typer(collect_app, name="collect")
 
 
 @firing_range_app.command("status")
@@ -879,8 +877,17 @@ def enrich_cmd(
         "-s",
         help="Session id or short name (default: most recent)",
     ),
+    bind_ref: Optional[str] = typer.Option(
+        None,
+        "--bind-ref",
+        help="Override binding target (native_id / ARN / name) for unbound reports",
+    ),
 ) -> None:
-    """Apply a collector enrichment file to the attack graph."""
+    """Apply a collector enrichment file to the attack graph.
+
+    Hosts and unlock targets are fuzzy-matched automatically. ``--bind-ref``
+    overrides when you want a specific host.
+    """
     if not file.is_file():
         typer.echo(f"File not found: {file}", err=True)
         raise typer.Exit(1)
@@ -891,17 +898,36 @@ def enrich_cmd(
         raise typer.Exit(1)
 
     try:
-        stats = SESSION_STORE.apply_enrichment(record.session_id, file.read_bytes())
+        payload: Any = json.loads(file.read_text(encoding="utf-8"))
+        target_node_id = None
+        if bind_ref and isinstance(payload, dict):
+            # Prefer resolving bind_ref against the live session, then force that host.
+            from samoyed.graph.refs import resolve_node_ref
+
+            target_node_id = resolve_node_ref(record.snapshot, bind_ref)
+            for binding in payload.get("bindings") or []:
+                if not isinstance(binding, dict):
+                    continue
+                ref = binding.get("target_ref")
+                if not ref or ref == "unbound" or binding.get("bind_required"):
+                    binding["target_ref"] = bind_ref
+                    binding.pop("bind_required", None)
+        stats = SESSION_STORE.apply_enrichment(
+            record.session_id,
+            payload,
+            target_node_id=target_node_id,
+        )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)
 
-    if stats.get("unresolved_bindings"):
+    # Soft warning only when nothing landed at all.
+    if stats.get("unresolved_bindings") and not stats.get("materials_applied"):
         typer.echo(
             json.dumps(
                 {
                     "session_id": record.session_id,
-                    "warning": "Some bindings could not be matched to graph nodes",
+                    "warning": "Enrichment import matched no graph nodes",
                     **stats,
                 },
                 indent=2,
@@ -922,54 +948,120 @@ def enrich_cmd(
     )
 
 
-@collect_app.command("static")
-def collect_static_cmd(
-    path: Path = typer.Argument(..., help="Repo or config directory to scan"),
-    target_ref: str = typer.Option(
+@app.command("collect")
+def collect_cmd(
+    target: str = typer.Argument(
         ...,
-        "--bind-ref",
-        help="Graph node ref for findings (native_id, ARN, or name)",
+        help="Repo/path to scan, or 'host' for local on-host interview",
     ),
-    output: Path = typer.Option(
-        Path("enrichment.json"),
+    mode: Optional[str] = typer.Option(
+        None,
+        "--mode",
+        help="Force collector mode: static | on-host (default: detect)",
+    ),
+    bind_ref: Optional[str] = typer.Option(
+        None,
+        "--bind-ref",
+        help="Optional graph node ref (native_id / ARN / name). Can bind later via enrich --bind-ref",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Library filename stem (default: derived from target). Written under ~/.samoyed/enrichments/",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
         "--output",
         "-o",
-        help="Where to write enrichment report JSON",
+        help="Explicit output path (skips the enrichment library directory)",
     ),
     resolves_to: Optional[str] = typer.Option(
         None,
-        help="Optional identity native_id/ARN to attach when rules find credentials",
+        help="Optional identity native_id/ARN when rules find credentials",
     ),
-    collector: str = typer.Option(
-        "static-repo",
-        help="Collector label (static-repo, static-config, …)",
+    ingest: list[Path] = typer.Option(
+        [],
+        "--ingest",
+        help="External tool JSON to consolidate (trufflehog / gitleaks / generic findings). Repeatable.",
+    ),
+    collector: Optional[str] = typer.Option(
+        None,
+        help="Override collector label (default: detected)",
     ),
 ) -> None:
-    """Scan static files (configs, repos) and write an enrichment report."""
-    from samoyed.collectors.static import collect_static_source
+    """Interview a repo or host and write an enrichment report (no cloud API creds).
 
-    try:
-        report = collect_static_source(
-            path,
-            target_ref=target_ref,
-            collector_name=collector,
-            resolves_to=resolves_to,
+    Reports land in ``~/.samoyed/enrichments/<target>.json`` by default (override with
+    ``--name`` or ``--output``). Apply via UI right-click → Enrich, or ``samoyed enrich``.
+
+    Examples:
+      samoyed collect ./app
+      samoyed collect host --name bastion-01
+      samoyed collect ./infra --ingest trufflehog.json -o /tmp/custom.json
+    """
+    from samoyed.collectors.dispatch import collect_target
+    from samoyed.enrichment.library import (
+        default_enrichment_dir,
+        resolve_collect_output_path,
+        stem_from_collect_target,
+    )
+    mode_norm = mode.lower().strip() if mode else None
+    if target == "static":
+        typer.echo(
+            "Deprecated: use `samoyed collect <path>` (static is detected automatically).",
+            err=True,
         )
-    except FileNotFoundError:
-        typer.echo(f"Path not found: {path}", err=True)
+        raise typer.Exit(2)
+    if mode_norm and mode_norm not in {"static", "on-host"}:
+        typer.echo("--mode must be static or on-host", err=True)
         raise typer.Exit(1)
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    try:
+        report = collect_target(
+            target,
+            mode=mode_norm,  # type: ignore[arg-type]
+            target_ref=bind_ref,
+            resolves_to=resolves_to,
+            ingest_reports=ingest or None,
+            collector_name=collector,
+        )
+    except FileNotFoundError:
+        typer.echo(f"Path not found: {target}", err=True)
+        raise typer.Exit(1)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+    out_path = resolve_collect_output_path(target, output=output, name=name)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Name / stem is a fuzzy host hint on import — no manual --bind-ref required.
+    if name:
+        report["host_hint"] = name
+    elif not report.get("host_hint"):
+        report["host_hint"] = stem_from_collect_target(target)
+    # Prefer a resolvable target_ref over literal "unbound" when we have a hint.
+    for binding in report.get("bindings") or []:
+        if not isinstance(binding, dict):
+            continue
+        ref = binding.get("target_ref")
+        if (not ref or ref == "unbound") and report.get("host_hint"):
+            binding["target_ref"] = report["host_hint"]
+            binding.pop("bind_required", None)
+    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     typer.echo(
         json.dumps(
             {
-                "output": str(output),
+                "output": str(out_path),
+                "enrichment_dir": str(default_enrichment_dir()),
                 "source_root": report.get("source_root"),
                 "files_scanned": report.get("files_scanned"),
                 "material_count": report.get("material_count"),
-                "target_ref": target_ref,
-                "hint": f"samoyed enrich {output}",
+                "target_ref": (report.get("bindings") or [{}])[0].get("target_ref"),
+                "host_hint": report.get("host_hint"),
+                "detected": report.get("detected"),
+                "ingested_reports": report.get("ingested_reports"),
+                "hint": f"Import with: samoyed enrich {out_path}  (fuzzy-matches hosts/identities)",
             },
             indent=2,
         )

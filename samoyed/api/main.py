@@ -369,6 +369,7 @@ class PathQueryRequest(BaseModel):
     max_depth: int = 6
     max_paths: int = 20
     mode: str = "paths"  # paths | blast | neighbors
+    exclude_node_ids: list[str] | None = None
 
 
 class GraphQueryRequest(BaseModel):
@@ -381,6 +382,7 @@ class GraphQueryRequest(BaseModel):
     rel_types: list[str] | None = None
     max_depth: int = 6
     max_paths: int = 20
+    exclude_node_ids: list[str] | None = None
 
 
 class NodePropertiesRequest(BaseModel):
@@ -407,6 +409,7 @@ class MarkingPathsRequest(BaseModel):
     kind: str  # compromised_to_high_value | blast_compromised | to_high_value
     max_depth: int = 6
     max_paths: int = 30
+    exclude_node_ids: list[str] | None = None
 
 
 class DeclareRelationshipRequest(BaseModel):
@@ -473,6 +476,17 @@ def enrichment_catalog():
     return export_catalog()
 
 
+@app.get("/api/enrichment/library")
+def enrichment_library():
+    """List collector reports in the local enrichment library directory."""
+    from samoyed.enrichment.library import default_enrichment_dir, list_enrichment_library
+
+    return {
+        "directory": str(default_enrichment_dir()),
+        "files": list_enrichment_library(),
+    }
+
+
 @app.get("/api/enrichment/examples")
 def enrichment_examples():
     from samoyed.fixtures.enrichment_registry import list_enrichment_examples
@@ -480,8 +494,58 @@ def enrichment_examples():
     return list_enrichment_examples()
 
 
+@app.post("/api/sessions/{session_ref}/enrichment/library/{filename}")
+def apply_enrichment_library_file(
+    session_ref: str,
+    filename: str,
+    target_node_id: str | None = Query(None),
+):
+    """Apply an enrichment JSON from ~/.samoyed/enrichments by filename."""
+    from samoyed.enrichment.library import read_enrichment_library_file
+
+    session = _resolve_session_ref(session_ref)
+    try:
+        payload = read_enrichment_library_file(filename)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except FileNotFoundError:
+        raise HTTPException(404, f"Enrichment file not found: {filename}")
+    try:
+        stats = SESSION_STORE.apply_enrichment(
+            session.session_id,
+            payload,
+            target_node_id=target_node_id or None,
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid JSON: {exc}")
+    if stats.get("unresolved_bindings") and not stats.get("materials_applied") and not stats.get("unlocks_applied"):
+        raise HTTPException(
+            400,
+            {
+                "error": "Enrichment import matched no graph nodes",
+                "hint": "Enum/import a session first, or pass target_node_id to force a host",
+                "filename": filename,
+                "stats": stats,
+            },
+        )
+    return {
+        "session_id": session.session_id,
+        "filename": filename,
+        "stats": stats,
+        "target_node_id": target_node_id,
+    }
+
+
 @app.post("/api/sessions/{session_ref}/enrichment/examples/{example_id}")
-def apply_enrichment_example(session_ref: str, example_id: str):
+def apply_enrichment_example(
+    session_ref: str,
+    example_id: str,
+    target_node_id: str | None = Query(None),
+):
     from samoyed.fixtures.enrichment_registry import get_enrichment_example, read_enrichment_example_bytes
 
     session = _resolve_session_ref(session_ref)
@@ -493,16 +557,31 @@ def apply_enrichment_example(session_ref: str, example_id: str):
     except FileNotFoundError as exc:
         raise HTTPException(500, str(exc))
     try:
-        stats = SESSION_STORE.apply_enrichment(session.session_id, payload)
+        stats = SESSION_STORE.apply_enrichment(
+            session.session_id,
+            payload,
+            target_node_id=target_node_id or None,
+        )
     except KeyError:
         raise HTTPException(404, "Session not found")
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    if stats.get("unresolved_bindings") and not stats.get("materials_applied") and not stats.get("unlocks_applied"):
+        raise HTTPException(
+            400,
+            {
+                "error": "Enrichment import matched no graph nodes",
+                "hint": "Enum/import a session first, or pass target_node_id to force a host",
+                "lab_fixture": spec.lab_fixture,
+                "stats": stats,
+            },
+        )
     return {
         "session_id": session.session_id,
         "example_id": example_id,
         "lab_fixture": spec.lab_fixture,
         "stats": stats,
+        "target_node_id": target_node_id,
     }
 
 
@@ -623,6 +702,7 @@ def query_marking_paths(session_ref: str, req: MarkingPathsRequest):
             kind=req.kind,
             max_depth=req.max_depth,
             max_paths=req.max_paths,
+            exclude_node_ids=req.exclude_node_ids,
         )
         start = result["compromised_starts"][0] if result["compromised_starts"] else None
         if not start:
@@ -794,6 +874,7 @@ def _run_session_graph_query(
             rel_types=req.rel_types,
             max_depth=req.max_depth,
             max_paths=req.max_paths,
+            exclude_node_ids=getattr(req, "exclude_node_ids", None),
         )
         if req.mode == "neighbors" and result.get("nodes"):
             paths = [

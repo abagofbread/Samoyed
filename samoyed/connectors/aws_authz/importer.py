@@ -8,6 +8,11 @@ from samoyed.cloud.capabilities import map_aws_action
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.connectors._shared import aws_scope, build_session_from_artifacts, parse_json_payload
 from samoyed.graph.builder import GraphBuilder
+from samoyed.policy.boundary import (
+    boundary_arn_from_detail,
+    permissions_boundary_props,
+    resolve_boundary_actions_from_authz,
+)
 
 
 def import_aws_authz_details(
@@ -63,18 +68,20 @@ def _artifacts_from_authz(data: dict[str, Any], *, scope_id: str) -> Iterator[Co
         edges: list[ConceptEdge] = []
         edges.extend(_inline_policies(user.get("UserPolicyList") or [], arn))
         edges.extend(_managed_policies(user.get("AttachedManagedPolicies") or [], arn, data))
+        props: dict[str, Any] = {
+            "native_kind": "User",
+            "arn": arn,
+            "name": user.get("UserName"),
+            "display_name": user.get("UserName") or arn,
+            "source": "aws-authz-details",
+        }
+        props.update(_boundary_props_for_detail(user, data))
         yield ConceptArtifact(
             concept_type=ConceptType.IDENTITY,
             provider=CloudProvider.AWS,
             native_id=arn,
             scope_id=scope_id,
-            properties={
-                "native_kind": "User",
-                "arn": arn,
-                "name": user.get("UserName"),
-                "display_name": user.get("UserName") or arn,
-                "source": "aws-authz-details",
-            },
+            properties=props,
             evidence=Evidence("iam:GetAccountAuthorizationDetails.user", {"arn": arn}),
             edges=edges,
         )
@@ -86,21 +93,31 @@ def _artifacts_from_authz(data: dict[str, Any], *, scope_id: str) -> Iterator[Co
         edges = _trust_policy_edges(role.get("AssumeRolePolicyDocument") or {}, arn)
         edges.extend(_inline_policies(role.get("RolePolicyList") or [], arn))
         edges.extend(_managed_policies(role.get("AttachedManagedPolicies") or [], arn, data))
+        props = {
+            "native_kind": "Role",
+            "arn": arn,
+            "name": role.get("RoleName"),
+            "display_name": role.get("RoleName") or arn,
+            "source": "aws-authz-details",
+        }
+        props.update(_boundary_props_for_detail(role, data))
         yield ConceptArtifact(
             concept_type=ConceptType.IDENTITY,
             provider=CloudProvider.AWS,
             native_id=arn,
             scope_id=scope_id,
-            properties={
-                "native_kind": "Role",
-                "arn": arn,
-                "name": role.get("RoleName"),
-                "display_name": role.get("RoleName") or arn,
-                "source": "aws-authz-details",
-            },
+            properties=props,
             evidence=Evidence("iam:GetAccountAuthorizationDetails.role", {"arn": arn}),
             edges=edges,
         )
+
+
+def _boundary_props_for_detail(detail: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    arn = boundary_arn_from_detail(detail)
+    if not arn:
+        return {}
+    actions = resolve_boundary_actions_from_authz(data, arn)
+    return permissions_boundary_props(boundary_arn=arn, boundary_actions=actions or None)
 
 
 def _trust_policy_edges(trust: Any, role_arn: str) -> list[ConceptEdge]:

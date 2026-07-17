@@ -41,9 +41,10 @@ def _default_attack_paths(
     rel_filter: set[str] | None,
     max_depth: int,
     max_paths: int,
+    exclude_node_ids: set[str] | None = None,
 ) -> list[PathResult]:
     """Paths to analyst-marked high-value nodes, or crown-jewel concept types."""
-    marked = find_high_value_nodes(graph)
+    marked = [n for n in find_high_value_nodes(graph) if not exclude_node_ids or n not in exclude_node_ids]
     if marked:
         return find_attack_paths_from_sources(
             graph,
@@ -53,6 +54,7 @@ def _default_attack_paths(
             direction="both",
             max_depth=max_depth,
             max_paths=max_paths,
+            exclude_node_ids=exclude_node_ids,
         )
 
     seen: set[str] = set()
@@ -67,6 +69,7 @@ def _default_attack_paths(
             direction="both",
             max_depth=max_depth,
             max_paths=per_concept,
+            exclude_node_ids=exclude_node_ids,
         ):
             if path.path_id in seen:
                 continue
@@ -88,8 +91,10 @@ def run_graph_query(
     rel_types: list[str] | None = None,
     max_depth: int = 6,
     max_paths: int = 20,
+    exclude_node_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     rel_filter = set(rel_types) if rel_types else None
+    excluded = set(exclude_node_ids or ())
     target_concept = _normalize_path_targets(
         mode,
         target_concept=target_concept,
@@ -108,6 +113,8 @@ def run_graph_query(
         nodes = get_neighbors(graph, start_node_id, direction="both")
         if rel_filter:
             nodes = [n for n in nodes if n["rel_type"] in rel_filter]
+        if excluded:
+            nodes = [n for n in nodes if n["node_id"] not in excluded]
         return {"mode": mode, "start": start_node_id, "nodes": nodes, "paths": []}
 
     if mode == "blast":
@@ -117,6 +124,7 @@ def run_graph_query(
             max_depth=max_depth,
             max_paths=max_paths,
             rel_types=rel_filter,
+            exclude_node_ids=excluded or None,
         )
         return {"mode": mode, "start": start_node_id, "paths": [_serialize(p) for p in paths]}
 
@@ -127,6 +135,7 @@ def run_graph_query(
             rel_filter=rel_filter,
             max_depth=max_depth,
             max_paths=max_paths,
+            exclude_node_ids=excluded or None,
         )
         return {"mode": mode, "start": start_node_id, "paths": [_serialize(p) for p in paths]}
 
@@ -141,6 +150,7 @@ def run_graph_query(
         direction="both",
         max_depth=max_depth,
         max_paths=max_paths,
+        exclude_node_ids=excluded or None,
     )
     return {"mode": mode, "start": start_node_id, "paths": [_serialize(p) for p in paths]}
 

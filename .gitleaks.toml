@@ -10,6 +10,8 @@ useDefault = true
 description = "Known-fake lab materials (not real cloud credentials)"
 paths = [
   '''(^|/)(\.gitleaks\.toml)$''',
+  # Unit/integration tests use intentionally fake credential-shaped strings.
+  '''(^|/)tests/''',
 ]
 regexes = [
   # AWS documentation example access key id

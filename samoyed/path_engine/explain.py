@@ -58,9 +58,30 @@ def _narrative(step, src_name: str, dst_name: str, evidence: dict[str, Any]) -> 
     if step.rel_type == "CAN_STEAL_CREDS_FROM":
         return f"{src_name} can harvest credentials for {dst_name} from disk or memory"
     if step.rel_type == "HAS_MATERIAL":
-        return f"{src_name} stores pivot material ({evidence.get('material_kind') or 'credential'}) at {evidence.get('locator') or dst_name}"
+        dst_finding = ""
+        if dst:
+            dst_finding = str(
+                dst.props.get("summary")
+                or dst.props.get("display_name")
+                or dst.props.get("finding")
+                or ""
+            )
+        kind = (
+            evidence.get("finding")
+            or (dst.props.get("finding") if dst else None)
+            or evidence.get("material_kind")
+            or "credential"
+        )
+        where = dst_finding or evidence.get("summary") or evidence.get("locator") or dst_name
+        return f"{src_name} has pivot material ({kind}): {where}"
     if step.rel_type == "UNLOCKS":
-        return f"Harvested material on {src_name} unlocks access as {dst_name}"
+        src_label = src_name
+        if src and src.props.get("summary"):
+            src_label = str(src.props["summary"])
+        concept = _concept(dst) or ""
+        if concept in {"DataStore", "SecretStore"}:
+            return f"Harvested credentials ({src_label}) unlock access to {dst_name}"
+        return f"Harvested material ({src_label}) unlocks access as {dst_name}"
     if step.rel_type == "CAN_ASSUME_ROLE":
         return f"{src_name} can assume role {dst_name}"
     return f"{src_name} can reach {dst_name} via {step.rel_type}"

@@ -4,9 +4,10 @@ These principals hold ``service:*`` on ``Resource: *``. That is not account-root
 AdministratorAccess, but it is still a standing crown jewel (read/encrypt all
 data, mint cloud credentials via STS, spawn compute as any role via CFN/Lambda).
 
-SCPs (and permissions boundaries) can deny subsets of ``iam:*`` / ``s3:*`` even
-when the identity policy looks like FullIAMadmin / FullS3Admin — we model the
-*grant* here; effective-policy reduction is a follow-up.
+SCPs that apply to the account are clamped in ``collect_principal_actions``
+(identity ∩ permissions boundary ∩ SCP Allow − SCP Deny) when a ScopeBoundary
+node carries ``scp_allow_sets`` / ``scp_deny_actions``. Management accounts are
+marked ``scp_exempt``.
 """
 
 from __future__ import annotations
@@ -184,12 +185,19 @@ def _grants_service_star(
     action: str,
 ) -> bool:
     """True when principal can perform ``service:*`` against ``*`` (SkyArk Resource check)."""
+    from samoyed.attack.analyzer import action_matches, collect_principal_scp_denies
+
     service = action.split(":", 1)[0].lower()
+    denies = collect_principal_scp_denies(graph, node_id)
+    if any(action_matches(d, action) for d in denies):
+        return False
     has_action = action in actions or any(
         a.lower() == action or a.lower() == f"{service}:*" for a in actions
     )
-    # Action * already implies service:*
+    # Action * already implies service:* — unless SCP denies that service.
     if "*" in actions or "*:*" in actions:
+        if any(action_matches(d, action) for d in denies):
+            return False
         return True
     if not has_action:
         return False

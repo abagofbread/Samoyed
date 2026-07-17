@@ -20,6 +20,7 @@ const state = {
   sessionSelectionIds: null,
   markings: null,
   contextMenuNodeId: null,
+  ignoredNodeIds: new Set(),
 };
 
 const NODE_COLORS = {
@@ -69,7 +70,23 @@ async function fetchJSON(url, opts) {
   }
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    let message = text || res.statusText;
+    try {
+      const body = JSON.parse(text);
+      if (body?.detail) {
+        if (typeof body.detail === "string") message = body.detail;
+        else if (body.detail.error) {
+          message = body.detail.hint
+            ? `${body.detail.error} — ${body.detail.hint}`
+            : body.detail.error;
+        } else {
+          message = JSON.stringify(body.detail);
+        }
+      }
+    } catch {
+      /* keep text */
+    }
+    throw new Error(message);
   }
   return res.json();
 }
@@ -90,6 +107,9 @@ async function initAuth() {
 }
 
 function displayName(node) {
+  if (node.native_kind === "PivotMaterial" || node.material_kind) {
+    return materialDisplayName(node);
+  }
   const base = node.display_name || node.native_id || node.arn || node.name || node.id;
   if (node.instance_id && !String(base).includes(node.instance_id)) {
     return `${base} (${node.instance_id})`;
@@ -97,9 +117,74 @@ function displayName(node) {
   return base;
 }
 
+function isWeakMaterialLabel(text, node = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) return true;
+  const low = raw.toLowerCase();
+  const kind = String(node.material_kind || "");
+  if (/^material:[a-z0-9_]+:[a-f0-9]+$/i.test(raw)) return true;
+  if (low.includes("generic_credential_file")) return true;
+  if (low === "credential file" || raw.startsWith("Credential file")) return true;
+  if (/\(environment\):\s/.test(raw)) return true;
+  if (/:generic_credential_file|:aws_secret_key_env|:aws_access_key_env|:database_connection_string\b/.test(raw)) {
+    return true;
+  }
+  if (kind && (low === kind.toLowerCase() || low === kind.replace(/_/g, " ").toLowerCase())) {
+    return true;
+  }
+  if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(raw)) return true;
+  return false;
+}
+
+function materialDisplayName(node) {
+  const candidates = [node.summary, node.display_name, node.finding, node.name];
+  for (const c of candidates) {
+    if (c && !isWeakMaterialLabel(c, node)) return String(c);
+  }
+  const finding =
+    (node.finding && !isWeakMaterialLabel(node.finding, node) && node.finding)
+    || humanizeMaterialKind(node.material_kind);
+  const file = node.source_basename || (node.source_file ? String(node.source_file).split(/[/\\]/).pop() : "");
+  const where = file
+    ? (node.source_line != null ? `${file}:${node.source_line}` : file)
+    : "";
+  const hints = Array.isArray(node.name_hints) ? node.name_hints.filter(Boolean) : [];
+  const hint = hints.find((h) => /cred|secret|rds|db|pass|mysql|endpoint/i.test(h)) || hints[0];
+  const parts = [finding];
+  if (where) parts.push(`in ${where}`);
+  if (hint) parts.push(`→ ${hint}`);
+  const rebuilt = parts.join(" ");
+  return isWeakMaterialLabel(rebuilt, node) ? finding : rebuilt;
+}
+
+function humanizeMaterialKind(kind) {
+  const map = {
+    aws_access_key_env: "AWS access key",
+    aws_secret_key_env: "AWS secret access key",
+    aws_session_token_env: "AWS session token",
+    azure_client_secret_env: "Azure client secret",
+    gcp_service_account_json: "GCP service account key",
+    kubeconfig_file: "Kubeconfig",
+    k8s_service_account_token: "Kubernetes SA token",
+    k8s_client_cert: "Kubernetes client certificate",
+    database_connection_string: "Database credential",
+    generic_credential_file: "Hardcoded credential",
+    none_observed: "No credentials observed",
+  };
+  if (!kind) return "Credential material";
+  return map[kind] || String(kind).replace(/_/g, " ");
+}
+
 function shortId(id) {
   if (!id) return "";
   if (id.length <= 36) return id;
+  // Don't ARN-truncate human labels ("Hardcoded password in main.tf:42").
+  if (/\s/.test(id) || id.includes("/") || id.includes(" in ") || id.includes(" → ")) return id;
+  // Never surface material:kind:hash digests as labels.
+  if (/^material:[a-z0-9_]+:[a-f0-9]+$/i.test(id) || /generic_credential_file:[a-f0-9]+/i.test(id)) {
+    const parts = id.split(":");
+    return humanizeMaterialKind(parts[1] || parts[0]);
+  }
   const parts = id.split(":");
   return parts.length > 2 ? parts.slice(-2).join(":") : id.slice(0, 32) + "…";
 }
@@ -135,12 +220,98 @@ function nodeMarkingColor(node) {
   return nodeColor(node.label || "Unknown");
 }
 
+function ignoredStorageKey(sessionId) {
+  return `samoyed:ignoredNodes:${sessionId}`;
+}
+
+function loadIgnoredForSession(sessionId) {
+  state.ignoredNodeIds = new Set();
+  if (!sessionId) return;
+  try {
+    const raw = sessionStorage.getItem(ignoredStorageKey(sessionId));
+    if (!raw) return;
+    const ids = JSON.parse(raw);
+    if (Array.isArray(ids)) state.ignoredNodeIds = new Set(ids.filter(Boolean));
+  } catch (_) {
+    /* ignore corrupt storage */
+  }
+}
+
+function persistIgnoredNodes() {
+  if (!state.sessionId) return;
+  try {
+    sessionStorage.setItem(
+      ignoredStorageKey(state.sessionId),
+      JSON.stringify([...state.ignoredNodeIds]),
+    );
+  } catch (_) {
+    /* quota / private mode */
+  }
+}
+
+function excludedNodeIdsPayload() {
+  const ids = [...state.ignoredNodeIds];
+  return ids.length ? ids : null;
+}
+
+function renderIgnoredChips() {
+  const el = document.getElementById("ignoredSummary");
+  if (!el) return;
+  if (!state.ignoredNodeIds.size) {
+    el.innerHTML = `<span class="empty">Right-click a node → Ignore from queries</span>`;
+    return;
+  }
+  const chips = [...state.ignoredNodeIds]
+    .map((id) => {
+      const raw = state.graph.nodes.find((n) => n.id === id);
+      const label = escapeHtml(shortId(raw ? displayName(raw) : id));
+      return `<button type="button" class="marking-chip ignored" data-unignore="${escapeAttr(id)}" title="Click to stop ignoring">${label} ×</button>`;
+    })
+    .join("");
+  el.innerHTML =
+    chips +
+    `<button type="button" class="ghost" id="clearAllIgnored" style="margin-left:4px;font-size:11px">Clear all</button>`;
+  el.querySelectorAll("[data-unignore]").forEach((btn) => {
+    btn.onclick = () => setNodeIgnored(btn.getAttribute("data-unignore"), false);
+  });
+  document.getElementById("clearAllIgnored")?.addEventListener("click", () => {
+    state.ignoredNodeIds.clear();
+    persistIgnoredNodes();
+    refreshIgnoredVisuals();
+  });
+}
+
+function refreshIgnoredVisuals() {
+  if (state.nodesDS && state.graph?.nodes?.length) {
+    const { nodes: visibleNodes } = normalizeGraphForDisplay(state.graph);
+    state.nodesDS.update(visibleNodes.map((node) => toVisNode(node, state.nodePositions[node.id])));
+    if (state.selectedNodeId) refreshMainGraphSelection();
+  }
+  renderIgnoredChips();
+}
+
+function setNodeIgnored(nodeId, ignored) {
+  if (!nodeId) return;
+  if (ignored) state.ignoredNodeIds.add(nodeId);
+  else state.ignoredNodeIds.delete(nodeId);
+  persistIgnoredNodes();
+  refreshIgnoredVisuals();
+}
+
 function toVisNode(node, position) {
   const label = node.label || "Unknown";
   const colors = nodeMarkingColor(node);
   const titleParts = [
+    displayName(node),
     `Label: ${label}`,
     `Concept: ${node.concept_type || "—"}`,
+    node.finding ? `Finding: ${node.finding}` : null,
+    node.source_file
+      ? `File: ${node.source_file}${node.source_line != null ? `:${node.source_line}` : ""}`
+      : null,
+    node.match_preview ? `Match: ${node.match_preview}` : null,
+    node.description || null,
+    node.material_kind ? `Kind: ${node.material_kind}` : null,
     `ID: ${node.id}`,
     node.native_id ? `Native: ${node.native_id}` : null,
   ];
@@ -149,18 +320,25 @@ function toVisNode(node, position) {
   if (node.is_shadow_admin) {
     titleParts.push(`◉ Shadow admin — ${node.shadow_admin_reason || node.shadow_admin_mechanism || "can escalate to admin"}`);
   }
+  if (state.ignoredNodeIds.has(node.id)) titleParts.push("⊘ Ignored from queries");
   const title = titleParts.filter(Boolean).join("\n");
 
+  const labelText = (node.native_kind === "PivotMaterial" || node.material_kind)
+    ? wrapGraphLabel(displayName(node), 28)
+    : wrapGraphLabel(shortId(displayName(node)));
+
+  const ignored = state.ignoredNodeIds.has(node.id);
   const visNode = {
     id: node.id,
-    label: wrapGraphLabel(shortId(displayName(node))),
+    label: labelText,
     title,
     group: label,
     color: { ...colors },
-    font: { color: "#e6edf3", size: 12, multi: true, align: "center" },
+    font: { color: ignored ? "#8b949e" : "#e6edf3", size: 12, multi: true, align: "center" },
     shape: label === "Principal" ? "dot" : "box",
     size: label === "Principal" ? 18 : undefined,
     margin: 10,
+    opacity: ignored ? 0.35 : 1,
     _raw: node,
   };
 
@@ -325,8 +503,37 @@ const CAPABILITY_REL_STRENGTH = {
 function compactCapabilityEdges(edges) {
   const kept = [];
   const buckets = new Map();
+  const privescPairs = new Set();
 
   for (const edge of edges) {
+    if (edge.rel === "CAN_PRIVESC_TO") {
+      const blob = `${edge.pattern_id || ""} ${edge.pattern_name || ""}`.toLowerCase();
+      const assumeLike = ["passrole", "assume-role", "assumerole", "update-assume", "create-access-key"]
+        .some((tok) => blob.includes(tok));
+      if (assumeLike) privescPairs.add(`${edge.src}\0${edge.dst}`);
+    }
+  }
+
+  for (const edge of edges) {
+    // Assume is redundant when privesc already covers the same endpoints.
+    if (edge.rel === "CAN_ASSUME_ROLE" && privescPairs.has(`${edge.src}\0${edge.dst}`)) {
+      continue;
+    }
+    // PassRole CONTROLS → Identity is redundant with CAN_PRIVESC_TO → that Identity.
+    if (
+      (edge.rel === "CONTROLS" || edge.rel === "EXECUTES")
+      && privescPairs.has(`${edge.src}\0${edge.dst}`)
+      && !["iam:*", "*"].includes(String(edge.action || "").toLowerCase())
+    ) {
+      const dstConcept = edge._dstConcept || edge.dst_concept_type;
+      // Without concept on the edge, still drop CONTROLS when destination is a Principal id.
+      if (
+        dstConcept === "Identity"
+        || String(edge.dst || "").startsWith("Principal:")
+      ) {
+        continue;
+      }
+    }
     if (
       !COMPACTABLE_CAPABILITY_RELS.has(edge.rel)
       || edge.attack_outcome
@@ -1589,11 +1796,24 @@ function refreshMainGraphSelection() {
   if (!state.selectedNodeId) return;
   state.nodesDS.get().forEach((n) => {
     const raw = n._raw;
+    const ignored = state.ignoredNodeIds.has(n.id);
     if (n.id === state.selectedNodeId) {
-      state.nodesDS.update({ id: n.id, color: SELECTED_NODE_COLOR, borderWidth: 3 });
+      state.nodesDS.update({
+        id: n.id,
+        color: SELECTED_NODE_COLOR,
+        borderWidth: 3,
+        opacity: ignored ? 0.55 : 1,
+        font: { color: ignored ? "#8b949e" : "#e6edf3", size: 12, multi: true, align: "center" },
+      });
     } else {
       const colors = raw ? nodeMarkingColor(raw) : nodeColor(n.group);
-      state.nodesDS.update({ id: n.id, color: { ...colors }, borderWidth: 2 });
+      state.nodesDS.update({
+        id: n.id,
+        color: { ...colors },
+        borderWidth: 2,
+        opacity: ignored ? 0.35 : 1,
+        font: { color: ignored ? "#8b949e" : "#e6edf3", size: 12, multi: true, align: "center" },
+      });
     }
   });
 }
@@ -1659,9 +1879,10 @@ function renderPaths(paths, mode = "paths", opts = {}) {
     return;
   }
 
-  paths.forEach((p) => {
+    paths.forEach((p) => {
     const li = document.createElement("li");
-    const target = p.target_match?.outcome_display
+    const target = p.target_match?.blast_label
+      || p.target_match?.outcome_display
       || (p.target_match?.concept_type === "AttackOutcome" ? "👑 Administrator access" : null)
       || p.target_match?.concept_type
       || p.target_match?.resource_type
@@ -1729,6 +1950,8 @@ async function runPathQuery(query) {
     };
     if (!body.target_concept) delete body.target_concept;
     if (!body.target_resource_type) delete body.target_resource_type;
+    const ignored = excludedNodeIdsPayload();
+    if (ignored) body.exclude_node_ids = ignored;
 
     const data = await fetchJSON(`/api/sessions/${state.sessionId}/paths/query`, {
       method: "POST",
@@ -1797,6 +2020,7 @@ async function loadSession(sessionId) {
   if (!sessionId) return;
   try {
     state.sessionId = sessionId;
+    loadIgnoredForSession(sessionId);
     const [meta, graph] = await Promise.all([
       fetchJSON(`/api/sessions/${sessionId}`),
       fetchJSON(`/api/sessions/${sessionId}/graph`),
@@ -1810,6 +2034,7 @@ async function loadSession(sessionId) {
     if (state.pathEdgesDS) state.pathEdgesDS.clear();
     updateMiniGraphSectionVisibility();
     renderGraph(graph);
+    renderIgnoredChips();
     renderPaths([]);
     const defaultStart = state.callerNodeId || "caller";
     document.getElementById("startSearch").value = defaultStart;
@@ -1853,6 +2078,8 @@ async function runGraphQuery() {
     if (!body.end_node_id) delete body.end_node_id;
     if (!body.end_id_contains) delete body.end_id_contains;
     if (!body.rel_types?.length) delete body.rel_types;
+    const ignored = excludedNodeIdsPayload();
+    if (ignored) body.exclude_node_ids = ignored;
 
     const data = await fetchJSON(`/api/sessions/${state.sessionId}/graph/query`, {
       method: "POST",
@@ -2137,10 +2364,13 @@ async function runMarkingPathsQuery(kind, { silent = false } = {}) {
   if (!state.sessionId) return alert("Select a session first");
   const maxDepth = Number(document.getElementById("maxDepth")?.value) || 6;
   try {
+    const body = { kind, max_depth: maxDepth, max_paths: 30 };
+    const ignored = excludedNodeIdsPayload();
+    if (ignored) body.exclude_node_ids = ignored;
     const data = await fetchJSON(`/api/sessions/${state.sessionId}/paths/markings-query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, max_depth: maxDepth, max_paths: 30 }),
+      body: JSON.stringify(body),
     });
     state.markings = data.markings || state.markings;
     refreshMarkingsSummaryFromData(data.markings);
@@ -2244,17 +2474,21 @@ function showContextMenu(event, nodeId) {
   state.contextMenuNodeId = nodeId;
   const raw = state.graph.nodes.find((n) => n.id === nodeId);
   const name = raw ? displayName(raw) : shortId(nodeId);
-  const isCompromised = !!raw?.is_compromised;
-  const isHighValue = !!raw?.is_high_value;
+  const isIgnored = state.ignoredNodeIds.has(nodeId);
 
   contextMenuEl.innerHTML = `
-    <div class="context-menu-header">${shortId(name)}</div>
+    <div class="context-menu-header">${escapeHtml(shortId(name))}</div>
     <button type="button" data-action="mark-compromised">Mark compromised</button>
     <button type="button" data-action="mark-high-value" class="warn">Mark high-value</button>
     <button type="button" data-action="clear-markings">Clear markings</button>
     <hr />
+    <button type="button" data-action="toggle-ignore">${isIgnored ? "Un-ignore from queries" : "Ignore from queries"}</button>
+    <hr />
     <button type="button" data-action="blast-from-here">Blast radius from here</button>
     <button type="button" data-action="paths-from-here">Paths from here → secrets</button>
+    <hr />
+    <div class="context-menu-section-label">Enrich</div>
+    <div data-role="enrich-library"><div class="context-menu-empty">Loading…</div></div>
     <hr />
     <button type="button" data-action="query-compromised-hv">Query: all compromised → high value</button>
   `;
@@ -2273,6 +2507,10 @@ function showContextMenu(event, nodeId) {
     hideContextMenu();
     setPathSearchStart(nodeId);
     markNode(nodeId, { compromised: false, high_value: false, clear: true });
+  };
+  contextMenuEl.querySelector('[data-action="toggle-ignore"]').onclick = () => {
+    hideContextMenu();
+    setNodeIgnored(nodeId, !isIgnored);
   };
   contextMenuEl.querySelector('[data-action="blast-from-here"]').onclick = () => {
     hideContextMenu();
@@ -2302,6 +2540,146 @@ function showContextMenu(event, nodeId) {
   }
   if (rect.bottom > window.innerHeight - 8) {
     contextMenuEl.style.top = `${event.clientY - rect.height}px`;
+  }
+
+  populateContextEnrichMenu(nodeId);
+}
+
+async function populateContextEnrichMenu(nodeId) {
+  const slot = contextMenuEl?.querySelector('[data-role="enrich-library"]');
+  if (!slot) return;
+  const requestNodeId = nodeId;
+  try {
+    const data = await fetchJSON("/api/enrichment/library");
+    if (state.contextMenuNodeId !== requestNodeId) return;
+    const files = (data.files || []).filter((f) => f.valid !== false);
+    if (!files.length) {
+      slot.innerHTML = `<div class="context-menu-empty">No files in library<br/><span style="font-size:10px">${escapeHtml(data.directory || "")}</span></div>`;
+      return;
+    }
+    slot.innerHTML = files
+      .slice(0, 12)
+      .map((f) => {
+        const meta = [f.collector_mode || f.collector, f.material_count != null ? `${f.material_count} mats` : null]
+          .filter(Boolean)
+          .join(" · ");
+        return `<button type="button" class="enrich-file" data-enrich-file="${escapeAttr(f.filename)}">${escapeHtml(f.filename)}${
+          meta ? `<span class="enrich-file-meta">${escapeHtml(meta)}</span>` : ""
+        }</button>`;
+      })
+      .join("");
+    slot.querySelectorAll("[data-enrich-file]").forEach((btn) => {
+      btn.onclick = () => {
+        const filename = btn.getAttribute("data-enrich-file");
+        const bindTo = state.contextMenuNodeId || requestNodeId;
+        hideContextMenu();
+        applyEnrichmentLibraryFile(filename, bindTo);
+      };
+    });
+  } catch (err) {
+    if (state.contextMenuNodeId !== requestNodeId) return;
+    slot.innerHTML = `<div class="context-menu-empty">${escapeHtml(String(err.message || err))}</div>`;
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/'/g, "&#39;");
+}
+
+function formatEnrichmentStats(stats, label) {
+  const unresolved = stats.unresolved_bindings?.length || 0;
+  const pending = stats.pending_unlocks?.length || 0;
+  const skipped = stats.skipped_materials?.length || 0;
+  const hostless = stats.hostless_bindings || 0;
+  const parts = [
+    `${stats.materials_applied || 0} material(s)`,
+    `${stats.edges_added || 0} edge(s)`,
+  ];
+  if (stats.unlocks_applied) parts.push(`${stats.unlocks_applied} unlock(s)`);
+  if (stats.materials_removed) parts.push(`${stats.materials_removed} replaced`);
+  if (hostless) parts.push(`${hostless} hostless`);
+  if (pending) parts.push(`${pending} pending unlock(s)`);
+  if (unresolved) parts.push(`${unresolved} unmatched host ref(s)`);
+  if (skipped) parts.push(`${skipped} skipped`);
+  const prefix = label ? `${label}: ` : "";
+  if (!(stats.materials_applied || 0) && unresolved) {
+    return `${prefix}import matched no nodes — enum a session first`;
+  }
+  return `${prefix}${parts.join(", ")}`;
+}
+
+async function applyEnrichmentLibraryFile(filename, targetNodeId) {
+  const status = document.getElementById("enrichmentStatus");
+  if (!state.sessionId) {
+    if (status) status.textContent = "Load a session first";
+    return;
+  }
+  if (status) status.textContent = `Importing ${filename}…`;
+  try {
+    const qs = targetNodeId
+      ? `?target_node_id=${encodeURIComponent(targetNodeId)}`
+      : "";
+    const data = await fetchJSON(
+      `/api/sessions/${state.sessionId}/enrichment/library/${encodeURIComponent(filename)}${qs}`,
+      { method: "POST" },
+    );
+    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
+    renderGraph(graph);
+    refreshGraphViewports({ fit: false });
+    if (status) status.textContent = formatEnrichmentStats(data.stats || {}, filename);
+    const hostId = (data.stats && data.stats.hosts_updated && data.stats.hosts_updated[0]) || targetNodeId;
+    if (hostId) {
+      setPathSearchStart(hostId);
+      openNodeDetail(hostId);
+    }
+    refreshEnrichmentLibrary();
+  } catch (err) {
+    if (status) status.textContent = String(err.message || err);
+  }
+}
+
+async function refreshEnrichmentLibrary() {
+  const list = document.getElementById("enrichmentLibraryList");
+  const pathEl = document.getElementById("enrichmentLibraryPath");
+  if (!list) return;
+  try {
+    const data = await fetchJSON("/api/enrichment/library");
+    if (pathEl) pathEl.textContent = data.directory || "";
+    const files = data.files || [];
+    if (!files.length) {
+      list.innerHTML = `<button type="button" disabled>No enrichment files yet — run <code>samoyed collect</code></button>`;
+      return;
+    }
+    list.innerHTML = files
+      .map((f) => {
+        const meta = [
+          f.valid === false ? "invalid" : null,
+          f.collector_mode || f.collector,
+          f.material_count != null ? `${f.material_count} materials` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return `<button type="button" data-library-file="${escapeAttr(f.filename)}" ${
+          f.valid === false ? "disabled" : ""
+        }>${escapeHtml(f.filename)}${meta ? `<span class="meta">${escapeHtml(meta)}</span>` : ""}</button>`;
+      })
+      .join("");
+    list.querySelectorAll("[data-library-file]").forEach((btn) => {
+      btn.onclick = () => {
+        const filename = btn.getAttribute("data-library-file");
+        applyEnrichmentLibraryFile(filename, state.selectedNodeId || null);
+      };
+    });
+  } catch (err) {
+    list.innerHTML = `<button type="button" disabled>${escapeHtml(String(err.message || err))}</button>`;
   }
 }
 
@@ -2374,22 +2752,25 @@ async function applyEnrichmentExample(exampleId) {
     if (status) status.textContent = "Choose a lab enrichment example";
     return;
   }
-  if (status) status.textContent = "Applying lab example…";
+  const bindTo = state.selectedNodeId || state.contextMenuNodeId || null;
+  if (status) status.textContent = "Importing lab example…";
   try {
-    const data = await fetchJSON(`/api/sessions/${state.sessionId}/enrichment/examples/${id}`, {
-      method: "POST",
-    });
+    const qs = bindTo ? `?target_node_id=${encodeURIComponent(bindTo)}` : "";
+    const data = await fetchJSON(
+      `/api/sessions/${state.sessionId}/enrichment/examples/${id}${qs}`,
+      { method: "POST" },
+    );
     const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
     renderGraph(graph);
     refreshGraphViewports({ fit: false });
-    const stats = data.stats || {};
-    const unresolved = stats.unresolved_bindings?.length || 0;
     if (status) {
-      status.textContent = unresolved
-        ? `Applied example; ${unresolved} binding(s) unmatched — load the ${data.lab_fixture || "matching"} demo first`
-        : `Applied ${stats.materials_applied || 0} material(s), ${stats.edges_added || 0} edge(s) from lab example`;
+      status.textContent = formatEnrichmentStats(data.stats || {}, data.example_id || "lab example");
     }
-    if (state.selectedNodeId) openNodeDetail(state.selectedNodeId);
+    const hostId = (data.stats && data.stats.hosts_updated && data.stats.hosts_updated[0]) || bindTo;
+    if (hostId) {
+      setPathSearchStart(hostId);
+      openNodeDetail(hostId);
+    }
   } catch (err) {
     if (status) status.textContent = String(err.message || err);
   }
@@ -2419,9 +2800,12 @@ async function applyEnrichmentFile(file) {
     if (status) status.textContent = "Choose an enrichment JSON file";
     return;
   }
-  if (status) status.textContent = "Applying enrichment…";
+  if (status) status.textContent = "Importing enrichment…";
   const form = new FormData();
   form.append("file", file);
+  if (state.selectedNodeId) {
+    form.append("target_node_id", state.selectedNodeId);
+  }
   try {
     const res = await fetch(`/api/sessions/${state.sessionId}/enrichment`, {
       method: "POST",
@@ -2433,14 +2817,13 @@ async function applyEnrichmentFile(file) {
     const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
     renderGraph(graph);
     refreshGraphViewports({ fit: false });
-    const stats = data.stats || {};
-    const unresolved = stats.unresolved_bindings?.length || 0;
-    if (status) {
-      status.textContent = unresolved
-        ? `Applied ${stats.materials_applied || 0} material(s); ${unresolved} binding(s) unmatched — check target_ref`
-        : `Applied ${stats.materials_applied || 0} material(s), ${stats.edges_added || 0} edge(s)`;
+    if (status) status.textContent = formatEnrichmentStats(data.stats || {}, file.name);
+    const hostId = (data.stats && data.stats.hosts_updated && data.stats.hosts_updated[0]) || state.selectedNodeId;
+    if (hostId) {
+      setPathSearchStart(hostId);
+      openNodeDetail(hostId);
     }
-    if (state.selectedNodeId) openNodeDetail(state.selectedNodeId);
+    refreshEnrichmentLibrary();
   } catch (err) {
     if (status) status.textContent = String(err.message || err);
   }
@@ -2449,10 +2832,12 @@ async function applyEnrichmentFile(file) {
 function initEnrichmentUpload() {
   const applyBtn = document.getElementById("applyEnrichment");
   const applyExampleBtn = document.getElementById("applyEnrichmentExample");
+  const refreshLibBtn = document.getElementById("refreshEnrichmentLibrary");
   const fileInput = document.getElementById("enrichmentFile");
   const dropZone = document.getElementById("enrichmentDropZone");
 
   applyExampleBtn?.addEventListener("click", () => applyEnrichmentExample());
+  refreshLibBtn?.addEventListener("click", () => refreshEnrichmentLibrary());
 
   applyBtn?.addEventListener("click", () => {
     applyEnrichmentFile(fileInput?.files?.[0]);
@@ -2535,5 +2920,5 @@ document.getElementById("sessions").addEventListener("keydown", (event) => {
 initNetwork();
 updateTargetFieldsVisibility();
 initAuth()
-  .then(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
-  .catch(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));
+  .then(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshEnrichmentLibrary(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
+  .catch(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshEnrichmentLibrary(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));

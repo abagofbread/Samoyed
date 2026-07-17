@@ -9,6 +9,114 @@ from samoyed.graph.builder import GraphBuilder
 from samoyed.path_engine.search import get_blast_radius
 
 
+def test_blast_ranks_control_star_above_reads_on_inventored_buckets():
+    """Influence story: CONTROLS Secret:* beats READS on random inventored S3."""
+    builder = GraphBuilder("blast-influence")
+    task = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/ecs-task-role",
+        props={"native_kind": "Role", "name": "ecs-task-role"},
+    )
+    secret_star = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="Secret:*",
+        props={"resource_type": "Secret", "native_id": "Secret:*"},
+    )
+    bucket = builder.add_concept_node(
+        concept_type=ConceptType.DATA_STORE,
+        native_id="S3Bucket:awsserverlessrepo-changesets",
+        props={"resource_type": "S3Bucket", "bucket_name": "awsserverlessrepo-changesets"},
+    )
+    outcome = builder.add_concept_node(
+        concept_type=ConceptType.ATTACK_OUTCOME,
+        native_id="AttackOutcome:aws:administrator-access",
+        props={
+            "concept_type": "AttackOutcome",
+            "display_name": "Administrator access",
+            "is_high_value": True,
+        },
+    )
+    builder.add_edge(src_id=task, rel_type="CONTROLS", dst_id=secret_star, props={"action": "secretsmanager:*"})
+    builder.add_edge(src_id=task, rel_type="READS", dst_id=bucket, props={"action": "s3:GetObject"})
+    builder.add_edge(
+        src_id=task,
+        rel_type="CAN_PRIVESC_TO",
+        dst_id=outcome,
+        props={"pattern_id": "aws-admin", "attack_outcome": "administrator-access"},
+    )
+    # Noise READ stubs that used to fill the blast list
+    for noise in ("Ecr:*", "Tag:*", "Docdb-Elastic:*", "Rds:*"):
+        nid = builder.add_concept_node(
+            concept_type=ConceptType.DATA_STORE,
+            native_id=noise,
+            props={"resource_type": noise.split(":")[0], "native_id": noise},
+        )
+        builder.add_edge(src_id=task, rel_type="READS", dst_id=nid, props={"action": "ignored"})
+
+    paths = get_blast_radius(builder.snapshot, start_node_id=task, max_depth=2, max_paths=10)
+    ends = [p.target_match.get("node_id") for p in paths]
+    assert secret_star in ends
+    assert ends.index(secret_star) < ends.index(bucket)
+    assert ends.index(secret_star) < ends.index(outcome)
+    assert paths[0].target_match.get("blast_label", "").startswith("CONTROLS")
+
+
+def test_blast_ranks_feeds_poison_high():
+    builder = GraphBuilder("blast-feeds")
+    writer = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/ci",
+        props={"native_kind": "Role"},
+    )
+    consumer = builder.add_concept_node(
+        concept_type=ConceptType.RUNTIME_BINDING,
+        native_id="LambdaFunction:arn:aws:lambda:us-east-1:1:function:prod",
+        props={"native_kind": "LambdaFunction", "resource_type": "LambdaFunction"},
+    )
+    stub = builder.add_concept_node(
+        concept_type=ConceptType.DATA_STORE,
+        native_id="Ecr:*",
+        props={"native_id": "Ecr:*"},
+    )
+    builder.add_edge(
+        src_id=writer,
+        rel_type="FEEDS",
+        dst_id=consumer,
+        props={"scope_intersection": "S3Bucket:artifacts", "match_kind": "exact"},
+    )
+    builder.add_edge(src_id=writer, rel_type="READS", dst_id=stub, props={})
+    paths = get_blast_radius(builder.snapshot, start_node_id=writer, max_depth=2, max_paths=5)
+    assert paths[0].target_match.get("node_id") == consumer
+    assert paths[0].steps[-1].rel_type == "FEEDS"
+
+
+def test_blast_prefers_writes_over_reads_to_same_resource():
+    """Same inventored/stub node: WRITES must win over READS (BFS first-edge trap)."""
+    builder = GraphBuilder("blast-write-upgrade")
+    role = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/task",
+        props={"native_kind": "Role"},
+    )
+    lam = builder.add_concept_node(
+        concept_type=ConceptType.DATA_STORE,
+        native_id="Lambda:arn:aws:lambda:*:*:function:SecretsManager*",
+        props={"native_id": "Lambda:arn:aws:lambda:*:*:function:SecretsManager*", "resource_type": "Lambda"},
+    )
+    # Adjacency order often lists READS first — blast must still surface WRITES.
+    builder.add_edge(src_id=role, rel_type="READS", dst_id=lam, props={"action": "lambda:GetFunction"})
+    builder.add_edge(
+        src_id=role,
+        rel_type="WRITES",
+        dst_id=lam,
+        props={"action": "lambda:UpdateFunctionConfiguration"},
+    )
+    paths = get_blast_radius(builder.snapshot, start_node_id=role, max_depth=2, max_paths=5)
+    hit = next(p for p in paths if p.target_match.get("node_id") == lam)
+    assert hit.steps[-1].rel_type == "WRITES"
+    assert hit.target_match.get("impact_tier", 0) >= 70
+
+
 def test_blast_includes_capability_resources_not_crowded_out_by_privesc():
     builder = GraphBuilder("blast-resources")
     task = builder.add_concept_node(

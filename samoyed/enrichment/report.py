@@ -24,8 +24,20 @@ def parse_enrichment_report(payload: bytes | str | dict[str, Any]) -> dict[str, 
     return data
 
 
-def material_native_id(host_native_id: str, kind: str, locator: str) -> str:
-    digest = hashlib.sha256(f"{host_native_id}|{kind}|{locator}".encode()).hexdigest()[:16]
+def material_native_id(
+    kind: str,
+    locator: str,
+    *,
+    fingerprint: str | None = None,
+    host_native_id: str | None = None,
+) -> str:
+    """Stable material id — host-independent so re-imports upsert the same node.
+
+    ``host_native_id`` is accepted for backward compatibility but ignored.
+    """
+    _ = host_native_id
+    key = f"{kind}|{locator.strip()}|{fingerprint or ''}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     return f"material:{kind}:{digest}"
 
 

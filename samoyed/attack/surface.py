@@ -11,6 +11,7 @@ from samoyed.attack.shared_env import enrich_shared_environments
 from samoyed.attack.shadow_admin import enrich_shadow_admins
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.graph.builder import GraphBuilder, stable_id
+from samoyed.graph.dedupe import dedupe_redundant_edges
 from samoyed.graph.enrichment import mark_enrichment_edges
 from samoyed.graph.markings import COMPROMISE_MECHANISM
 from samoyed.graph.model import GraphSnapshot
@@ -94,6 +95,8 @@ def enrich_attack_surface(
     stats.update(enrich_service_admins(builder, provider=provider))
     # After standing admins are marked, detect principals that can reach them.
     stats.update(enrich_shadow_admins(builder, provider=provider))
+    # After privesc + trust are both present, drop weaker duplicate pivots.
+    stats.update(dedupe_redundant_edges(builder))
     stats["enrichment_edges_marked"] = mark_enrichment_edges(builder.snapshot)
     return stats
 

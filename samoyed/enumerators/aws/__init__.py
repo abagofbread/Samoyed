@@ -10,6 +10,7 @@ from samoyed.credentials.protocol import EnumContext
 from samoyed.enumerators.contracts import ConceptEnumerator
 from samoyed.enumerators.runner import paginate_call
 from samoyed.graph.resource_scope import resolve_policy_resource
+from samoyed.policy.boundary import actions_from_policy_document, permissions_boundary_props
 
 
 def _iter_statements(doc: dict[str, Any]) -> list[dict[str, Any]]:
@@ -73,14 +74,66 @@ class AwsIdentityEnumerator:
             key = "Roles" if kind == "Role" else "Users"
             for item in resp.get(key, []):
                 item_arn = item["Arn"]
+                name = item["RoleName"] if kind == "Role" else item["UserName"]
+                props: dict[str, Any] = {"native_kind": kind, "name": name, "arn": item_arn}
+                props.update(_identity_boundary_props(ctx, iam, item, kind=kind, name=name))
                 yield ConceptArtifact(
                     concept_type=ConceptType.IDENTITY,
                     provider=CloudProvider.AWS,
                     native_id=item_arn,
                     scope_id=ctx.scope.scope_id,
-                    properties={"native_kind": kind, "name": item["RoleName"] if kind == "Role" else item["UserName"], "arn": item_arn},
+                    properties=props,
                     evidence=Evidence(op, {"arn": item_arn}),
                 )
+
+
+def _identity_boundary_props(
+    ctx: EnumContext,
+    iam: Any,
+    item: dict[str, Any],
+    *,
+    kind: str,
+    name: str,
+) -> dict[str, Any]:
+    """Capture permissions boundary on Identity props (no extra edge types)."""
+    pb = item.get("PermissionsBoundary") or {}
+    pb_arn = pb.get("PermissionsBoundaryArn") if isinstance(pb, dict) else None
+    if not pb_arn and kind == "User":
+        # list_users often omits boundary; get_user includes it when readable
+        detail = paginate_call(
+            ctx,
+            operation="iam:GetUser",
+            call=lambda n=name: iam.get_user(UserName=n),
+        )
+        if detail:
+            pb = (detail.get("User") or {}).get("PermissionsBoundary") or {}
+            pb_arn = pb.get("PermissionsBoundaryArn") if isinstance(pb, dict) else None
+    if not pb_arn:
+        return {}
+    actions = _fetch_boundary_actions(ctx, iam, str(pb_arn))
+    return permissions_boundary_props(boundary_arn=str(pb_arn), boundary_actions=actions or None)
+
+
+def _fetch_boundary_actions(ctx: EnumContext, iam: Any, policy_arn: str) -> list[str]:
+    pol_meta = paginate_call(
+        ctx,
+        operation="iam:GetPolicy",
+        call=lambda: iam.get_policy(PolicyArn=policy_arn),
+    )
+    if not pol_meta:
+        return []
+    version = (pol_meta.get("Policy") or {}).get("DefaultVersionId")
+    if not version:
+        return []
+    doc_resp = paginate_call(
+        ctx,
+        operation="iam:GetPolicyVersion",
+        call=lambda: iam.get_policy_version(PolicyArn=policy_arn, VersionId=version),
+    )
+    if not doc_resp:
+        return []
+    doc = (doc_resp.get("PolicyVersion") or {}).get("Document")
+    return actions_from_policy_document(doc)
 
 
 def _principal_kind(arn: str) -> str:
@@ -387,8 +440,15 @@ def _static_hosting_enumerator() -> ConceptEnumerator:
     return AwsStaticHostingEnumerator()
 
 
+def _organizations_scp_enumerator() -> ConceptEnumerator:
+    from samoyed.enumerators.aws.organizations_scp import AwsOrganizationsScpEnumerator
+
+    return AwsOrganizationsScpEnumerator()
+
+
 AWS_ENUMERATORS: list[ConceptEnumerator] = [
     AwsIdentityEnumerator(),
+    _organizations_scp_enumerator(),
     AwsTrustEnumerator(),
     AwsEntitlementEnumerator(),
     AwsComputeEnumerator(),
