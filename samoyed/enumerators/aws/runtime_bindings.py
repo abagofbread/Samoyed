@@ -149,6 +149,15 @@ def enumerate_lambda_functions(ctx: EnumContext) -> Iterator[ConceptArtifact]:
             extra["function_urls"] = [u.get("FunctionUrl") for u in urls["FunctionUrlConfigs"]]
             extra["has_public_url"] = True
 
+        vpc = (cfg or {}).get("VpcConfig") or fn.get("VpcConfig") or {}
+        if vpc.get("SubnetIds") or vpc.get("SecurityGroupIds") or vpc.get("VpcId"):
+            extra["vpc_id"] = vpc.get("VpcId")
+            extra["subnet_ids"] = list(vpc.get("SubnetIds") or [])
+            extra["sg_ids"] = list(vpc.get("SecurityGroupIds") or [])
+            extra["account_id"] = ctx.scope.properties.get("account_id") or (
+                ctx.scope.scope_id.split(":")[-1] if ctx.scope.scope_id else None
+            )
+
         yield lambda_function_artifact(
             ctx,
             fn_arn=fn_arn,
@@ -181,6 +190,11 @@ def enumerate_ec2_instances(ctx: EnumContext) -> Iterator[ConceptArtifact]:
                 edges.append(
                     executes_as_edge(role_arn, resource_type="EC2Instance", instance_id=iid)
                 )
+            sgs = [
+                str(g.get("GroupId"))
+                for g in (inst.get("SecurityGroups") or [])
+                if g.get("GroupId")
+            ]
             yield ConceptArtifact(
                 concept_type=ConceptType.RUNTIME_BINDING,
                 provider=CloudProvider.AWS,
@@ -191,6 +205,13 @@ def enumerate_ec2_instances(ctx: EnumContext) -> Iterator[ConceptArtifact]:
                     "instance_id": iid,
                     "state": inst.get("State", {}).get("Name"),
                     "execution_role_arn": edges[0].target_native_id if edges else None,
+                    "vpc_id": inst.get("VpcId"),
+                    "subnet_ids": [inst["SubnetId"]] if inst.get("SubnetId") else [],
+                    "private_ips": [inst["PrivateIpAddress"]] if inst.get("PrivateIpAddress") else [],
+                    "public_ip": inst.get("PublicIpAddress"),
+                    "sg_ids": sgs,
+                    "account_id": ctx.scope.properties.get("account_id")
+                    or (ctx.scope.scope_id.split(":")[-1] if ctx.scope.scope_id else None),
                 },
                 evidence=Evidence("ec2:DescribeInstances", {"instance_id": iid}),
                 edges=edges,

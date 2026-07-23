@@ -500,6 +500,72 @@ def import_fixture_cmd(
     typer.echo(f"Source: {record.metadata.get('source')} ({record.metadata.get('collected_via', 'file')})")
 
 
+@app.command("import-path")
+def import_path_cmd(
+    path: Path = typer.Argument(..., help="tfstate file, network-inventory JSON, or directory of Terraform files"),
+    connector: str | None = typer.Option(
+        None,
+        "--connector",
+        help="Force connector (terraform|network-inventory); auto-detect by default",
+    ),
+    session_id: str | None = typer.Option(None, help="Optional session id override"),
+    attach_to: str | None = typer.Option(
+        None,
+        "--attach-to",
+        help="Existing session id/short name to merge network facts into",
+    ),
+) -> None:
+    """Import Terraform state / network inventory from a file or repo path (offline)."""
+    from samoyed.connectors.terraform.importer import detect_terraform_path, load_terraform_from_path
+
+    if not path.exists():
+        typer.echo(f"Path not found: {path}", err=True)
+        raise typer.Exit(1)
+
+    resolved_connector = connector
+    if not resolved_connector:
+        if detect_terraform_path(path):
+            resolved_connector = "terraform"
+        else:
+            resolved_connector = "network-inventory"
+
+    if resolved_connector == "terraform":
+        payload_obj = load_terraform_from_path(path)
+        payload = json.dumps(payload_obj)
+    else:
+        if path.is_dir():
+            typer.echo("network-inventory requires a JSON file (or use --connector terraform)", err=True)
+            raise typer.Exit(1)
+        payload = path.read_bytes()
+
+    if attach_to:
+        session = SESSION_STORE.resolve_session_ref(attach_to)
+        if not session:
+            typer.echo(f"Session not found: {attach_to}", err=True)
+            raise typer.Exit(1)
+        result = SESSION_STORE.attach_network_inventory(
+            session.session_id,
+            payload if isinstance(payload, (bytes, str)) else json.dumps(payload),
+            connector_id=resolved_connector,
+        )
+        typer.echo(f"Attached {resolved_connector} network facts to {session.session_id}")
+        typer.echo(json.dumps(result.get("network_enrichment") or {}, indent=2, default=str))
+        return
+
+    record = SESSION_STORE.create_import_session(
+        resolved_connector,
+        payload if isinstance(payload, (bytes, str)) else json.dumps(payload),
+        session_id=session_id,
+    )
+    typer.echo(f"Session {record.session_id}")
+    typer.echo(f"Connector: {resolved_connector}")
+    typer.echo(f"Caller: {record.caller_arn}")
+    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
+    net = record.metadata.get("network_enrichment") or {}
+    if net:
+        typer.echo(f"Network edges: {net.get('network_edges', 0)}")
+
+
 @app.command("import-cartography")
 def import_cartography_cmd(
     caller_arn: Optional[str] = typer.Option(None, help="Principal ARN to treat as blast-radius start"),

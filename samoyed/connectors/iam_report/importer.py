@@ -6,6 +6,7 @@ from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge, Evidence
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.connectors._shared import aws_scope, build_session_from_artifacts, parse_json_payload
 from samoyed.graph.builder import GraphBuilder
+from samoyed.network.model import NetworkInventory, NetworkPlacement
 
 CONCEPT_MAP = {
     "Identity": ConceptType.IDENTITY,
@@ -29,6 +30,7 @@ def import_iam_report(
     *,
     session_id: str,
     caller_arn: str | None = None,
+    session_store: Any | None = None,
 ) -> tuple[GraphBuilder, dict[str, Any]]:
     data = parse_json_payload(payload)
     if not isinstance(data, dict):
@@ -48,6 +50,7 @@ def import_iam_report(
 
     artifacts = list(_artifacts_from_report(data, scope_id=scope_id, account_id=account_id, provider=provider))
     resolved_caller = caller_arn or data.get("caller_arn")
+    network = _network_from_report(data, account_id=account_id)
     builder, meta = build_session_from_artifacts(
         artifacts,
         session_id=session_id,
@@ -57,6 +60,8 @@ def import_iam_report(
         caller_arn=resolved_caller,
         provider=provider,
         account_id=account_id if provider == CloudProvider.AWS else None,
+        network=network,
+        session_store=session_store,
     )
     if data.get("scenario"):
         meta["scenario"] = data["scenario"]
@@ -146,6 +151,15 @@ def _artifacts_from_report(
             "instance_type",
             "compute_class",
             "gpu_accelerated",
+            "vpc_id",
+            "sg_ids",
+            "security_group_ids",
+            "subnet_ids",
+            "private_ips",
+            "private_ip",
+            "public_ip",
+            "account_id",
+            "exposed_internet",
         ):
             if resource.get(key) is not None:
                 props[key] = resource[key]
@@ -205,3 +219,34 @@ def _kind_from_arn(arn: str) -> str:
     if ":user/" in arn:
         return "User"
     return "Identity"
+
+
+def _network_from_report(data: dict[str, Any], *, account_id: str) -> NetworkInventory:
+    inventory = NetworkInventory.from_dict(data.get("network") if isinstance(data.get("network"), dict) else None)
+    if inventory.source == "":
+        inventory.source = "iam-report"
+    for resource in data.get("resources") or []:
+        native_id = resource.get("id") or resource.get("native_id")
+        vpc_id = resource.get("vpc_id")
+        sg_ids = resource.get("sg_ids") or resource.get("security_group_ids") or []
+        if not native_id or (not vpc_id and not sg_ids):
+            continue
+        if isinstance(sg_ids, str):
+            sg_ids = [sg_ids]
+        private_ips = list(resource.get("private_ips") or [])
+        if resource.get("private_ip") and resource["private_ip"] not in private_ips:
+            private_ips.append(resource["private_ip"])
+        inventory.placements.append(
+            NetworkPlacement(
+                native_id=str(native_id),
+                account_id=str(resource.get("account_id") or account_id),
+                vpc_id=str(vpc_id or ""),
+                subnet_ids=[str(x) for x in (resource.get("subnet_ids") or [])],
+                private_ips=[str(x) for x in private_ips],
+                public_ip=resource.get("public_ip"),
+                sg_ids=[str(x) for x in sg_ids],
+                exposed_internet=bool(resource.get("exposed_internet")),
+                resource_type=str(resource.get("type") or resource.get("resource_type") or ""),
+            )
+        )
+    return inventory

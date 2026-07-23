@@ -162,6 +162,18 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 #graphToolbar button { width: auto; padding: 6px 12px; font-size: 12px; }
 
+.graph-toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--muted, #8b949e);
+  cursor: pointer;
+  user-select: none;
+}
+.graph-toolbar-toggle input {
+  margin: 0;
+}
 .graph-toolbar-label {
   font-size: 11px;
   text-transform: uppercase;

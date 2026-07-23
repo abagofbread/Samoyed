@@ -135,6 +135,16 @@ def _has_azure(session: SessionRecord) -> bool:
     )
 
 
+def _has_network_peering(session: SessionRecord) -> bool:
+    inv = session.metadata.get("network_inventory") or {}
+    if inv.get("peerings"):
+        return True
+    for edge in session.snapshot.edges:
+        if edge.rel_type in {"VPC_PEERS", "BRIDGES_TO"}:
+            return True
+    return False
+
+
 def suggest_searches(store: SessionStore, session_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
     session = store.get(session_id)
     if not session:
@@ -185,6 +195,18 @@ def suggest_searches(store: SessionStore, session_id: str, *, limit: int = 10) -
                 "session_id": session_id,
             },
         )
+        if _has_network_peering(session):
+            ranked.insert(
+                0,
+                {
+                    "id": "aws-cross-account-peering",
+                    "title": "Can reach other accounts",
+                    "description": "VPC peering paths into peer AWS accounts",
+                    "mode": "scenario",
+                    "scenario": "can-reach-other-accounts",
+                    "session_id": session_id,
+                },
+            )
         if session.metadata.get("scenario") == "enterprise-mock":
             ranked.insert(
                 0,

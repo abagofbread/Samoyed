@@ -20,6 +20,8 @@ CAPABILITY_WEIGHT = {
     "DEPENDS_ON": 0.75,
     "FEEDS": 0.8,
     "CAN_REACH": 0.4,
+    "VPC_PEERS": 0.5,
+    "BRIDGES_TO": 0.15,
     "HAS_ESCAPE_SURFACE": 0.3,
     "RUNS_ON": 0.7,
     "HAS_MATERIAL": 0.82,

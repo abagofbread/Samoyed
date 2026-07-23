@@ -43,6 +43,8 @@ _SKIP_IMDS_RESOURCE_TYPES = frozenset(
 
 IMDS_NATIVE_ID = "aws:imds:instance-metadata"
 INTERNET_EXPOSURE_NATIVE_ID = "network:internet"
+# Display name for the shared internet exposure node (also used by network enrichment).
+INTERNET_DISPLAY_NAME = "The Internet"
 
 
 def _imds_native_id(compute_id: str, node: Any) -> str:
@@ -252,11 +254,19 @@ def _wire_ssrf_chains(builder: GraphBuilder, graph: GraphSnapshot) -> int:
 
 
 def _wire_network_exposure(builder: GraphBuilder, graph: GraphSnapshot) -> int:
+    """Connect internet-exposed resources to a single shared 'The Internet' node.
+
+    Lightweight model: 'The Internet -CAN_REACH-> resource' directly. We do NOT
+    create per-resource intermediate exposure nodes, and we never treat the
+    Internet node (or any NetworkExposure node) as an exposable resource — doing
+    so previously produced 'internet exposure for The Internet' and an unbounded
+    'internet exposure for internet exposure for ...' feedback loop on re-enrichment.
+    """
     internet_id = builder.add_concept_node(
         concept_type=ConceptType.NETWORK_EXPOSURE,
         native_id=INTERNET_EXPOSURE_NATIVE_ID,
         props={
-            "display_name": "Public internet",
+            "display_name": INTERNET_DISPLAY_NAME,
             "exposure_level": "internet",
             "resource_type": "NetworkExposure",
             "source": "surface-enrichment",
@@ -264,50 +274,38 @@ def _wire_network_exposure(builder: GraphBuilder, graph: GraphSnapshot) -> int:
     )
     added = 0
     for node_id, node in list(graph.nodes.items()):
-        exposure = _resource_exposure(node.props)
-        if not exposure:
+        if node_id == internet_id:
             continue
-        exposure_id = _ensure_exposure_node(builder, graph, exposure, node)
-        if not _has_edge(graph, internet_id, "CAN_REACH", exposure_id):
-            builder.add_edge(
-                src_id=internet_id,
-                rel_type="CAN_REACH",
-                dst_id=exposure_id,
-                props={
-                    "source": "surface-enrichment",
-                    "exposure_level": exposure,
-                    "confidence": "explicit",
-                },
-            )
-            added += 1
-        if not _has_edge(graph, exposure_id, "CAN_REACH", node_id):
-            builder.add_edge(
-                src_id=exposure_id,
-                rel_type="CAN_REACH",
-                dst_id=node_id,
-                props={
-                    "source": "surface-enrichment",
-                    "exposure_level": exposure,
-                    "confidence": "explicit",
-                },
-            )
-            added += 1
-        if exposure == "internet" and node.props.get("public_write"):
-            if not _has_edge(graph, internet_id, "CAN_REACH", node_id):
-                builder.add_edge(
-                    src_id=internet_id,
-                    rel_type="CAN_REACH",
-                    dst_id=node_id,
-                    props={
-                        "source": "surface-enrichment",
-                        "exposure_level": "internet",
-                        "write_exposed": True,
-                        "severity": "critical",
-                        "confidence": "explicit",
-                    },
-                )
-                added += 1
+        if _is_network_exposure_node(node):
+            continue
+        if _resource_exposure(node.props) != "internet":
+            continue
+        if _has_edge(graph, internet_id, "CAN_REACH", node_id):
+            continue
+        write_exposed = bool(node.props.get("public_write") or node.props.get("internet_write"))
+        props = {
+            "source": "surface-enrichment",
+            "exposure_level": "internet",
+            "confidence": "explicit",
+        }
+        if write_exposed:
+            props["write_exposed"] = True
+            props["severity"] = "critical"
+        builder.add_edge(
+            src_id=internet_id,
+            rel_type="CAN_REACH",
+            dst_id=node_id,
+            props=props,
+        )
+        added += 1
     return added
+
+
+def _is_network_exposure_node(node: Any) -> bool:
+    return (
+        node.props.get("resource_type") == "NetworkExposure"
+        or node.props.get("concept_type") == ConceptType.NETWORK_EXPOSURE.value
+    )
 
 
 def _wire_scope_hosting(builder: GraphBuilder, graph: GraphSnapshot) -> int:
@@ -355,29 +353,6 @@ def _wire_scope_hosting(builder: GraphBuilder, graph: GraphSnapshot) -> int:
             )
             added += 1
     return added
-
-
-def _ensure_exposure_node(
-    builder: GraphBuilder,
-    graph: GraphSnapshot,
-    exposure: str,
-    resource_node: Any,
-) -> str:
-    native_id = f"network:exposure:{exposure}:{resource_node.node_id}"
-    existing = stable_id("Resource", native_id)
-    if existing in graph.nodes:
-        return existing
-    return builder.add_concept_node(
-        concept_type=ConceptType.NETWORK_EXPOSURE,
-        native_id=native_id,
-        props={
-            "display_name": f"{exposure} exposure for {resource_node.props.get('display_name') or resource_node.node_id}",
-            "exposure_level": exposure,
-            "resource_type": "NetworkExposure",
-            "target_resource": resource_node.node_id,
-            "source": "surface-enrichment",
-        },
-    )
 
 
 def _resource_exposure(props: dict[str, Any]) -> str | None:

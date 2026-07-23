@@ -89,6 +89,23 @@ FIXTURES: tuple[FixtureSpec, ...] = (
         description="Leaked CI service principal → dev secrets + web app → managed identity → prod Key Vault PII",
         tags=("azure", "rbac", "multi-hop", "keyvault"),
     ),
+    FixtureSpec(
+        id="vpc-peering-aws",
+        connector="terraform",
+        filename="vpc_peering_cross_account.tfstate",
+        description="Dev EC2 (internet + IMDSv1 role) VPC-peered into prod PCI instance (cross-account)",
+        tags=("aws", "terraform", "vpc-peering", "network", "cross-account"),
+    ),
+    FixtureSpec(
+        id="corp-mesh-aws",
+        connector="terraform",
+        filename="corp_mesh_peering.tfstate",
+        description=(
+            "Multi-tier Terraform mesh: DMZ/App/PCI + shared/staging accounts, "
+            "17 instances, 2 ALBs, 7 buckets, 4 VPC peerings"
+        ),
+        tags=("aws", "terraform", "vpc-peering", "network", "cross-account", "alb", "s3"),
+    ),
 )
 
 

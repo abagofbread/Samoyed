@@ -10,6 +10,8 @@ from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.cloud.providers import make_scope_id
 from samoyed.graph.builder import GraphBuilder
 from samoyed.ingest.concept_normalizer import ConceptNormalizer
+from samoyed.network.enrich import enrich_network_reachability
+from samoyed.network.model import NetworkInventory
 
 
 def parse_json_payload(payload: bytes | str) -> Any:
@@ -30,6 +32,8 @@ def build_session_from_artifacts(
     caller_arn: str | None,
     provider: CloudProvider = CloudProvider.AWS,
     account_id: str | None = None,
+    network: NetworkInventory | dict[str, Any] | None = None,
+    session_store: Any | None = None,
 ) -> tuple[GraphBuilder, dict[str, Any]]:
     if not artifacts:
         raise ValueError("No artifacts produced from import")
@@ -56,6 +60,17 @@ def build_session_from_artifacts(
 
     attack_edges = apply_attack_analysis(builder, provider=provider)
     enrich_attack_surface(builder)
+    inventory = (
+        network
+        if isinstance(network, NetworkInventory)
+        else NetworkInventory.from_dict(network if isinstance(network, dict) else None)
+    )
+    network_stats = enrich_network_reachability(
+        builder,
+        inventory,
+        session_store=session_store,
+        inventory_source=inventory.source or source,
+    )
     meta = {
         "source": source,
         "artifact_count": len(artifacts),
@@ -63,6 +78,8 @@ def build_session_from_artifacts(
         "attack_patterns_matched": len(attack_edges),
         "caller_arn": resolved_caller,
         "account_id": account_id,
+        "network_enrichment": network_stats,
+        "network_inventory": inventory.to_dict() if not inventory.is_empty() else None,
     }
     return builder, meta
 

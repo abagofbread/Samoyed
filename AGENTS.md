@@ -14,6 +14,26 @@ samoyed init-extension enumerator my_internal_api
 samoyed init-extension connector my_graph_source
 ```
 
+## Network reachability (VPC peering / SG-lite)
+
+Samoyed models **network attack paths** without VPC/SG graph nodes. Collectors feed a portable **`NetworkInventory`** (placements, peerings, SG ingress, VPC CIDRs); enrichment emits:
+
+- `The Internet -CAN_REACH->` internet-exposed compute
+- compute `-CAN_REACH->` compute (same VPC / peered, SG-lite)
+- compute `-VPC_PEERS-> Account:{id}` then unlabeled `BRIDGES_TO` into peer-account resources (best-effort graft from other sessions)
+
+Sources: live AWS enum, Cartography, **Terraform tfstate** (primary offline path), `network-inventory` JSON, optional iam-report `"network"` block.
+
+```bash
+samoyed import-fixture vpc-peering-aws   # small cross-account peer demo
+samoyed import-fixture corp-mesh-aws     # DMZ/App/PCI + shared/staging mesh (ALBs, buckets)
+samoyed import-path ./infra/terraform.tfstate
+samoyed import-path ./network.json --attach-to <session>
+samoyed scenario can-reach-other-accounts
+```
+
+UI: **Network edges** toolbar toggle (on by default).
+
 ## Cartography connector
 
 Import an existing [Cartography](https://github.com/cartography-cncf/cartography) Neo4j graph (AWS IAM, S3, Lambda, Secrets Manager, GCP SAs, K8s) into a Samoyed session:
@@ -87,7 +107,7 @@ class MyInternalApiEnumerator:
 - `list_sessions`, `get_session_summary`
 - `list_markings`, `mark_nodes`, `mark_from_alert` — declare compromised starts and crown-jewel targets
 - `find_attack_paths`, `get_blast_radius`
-- `search_nodes`, `run_scenario`
+- `search_nodes`, `run_scenario` (incl. `can-reach-other-accounts` for VPC peering)
 - Resource: `samoyed://ontology`
 
 Mark nodes over MCP (session_id optional — defaults to most recent):

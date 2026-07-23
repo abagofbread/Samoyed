@@ -32,6 +32,10 @@ def _empty_k8s_gcp() -> dict[str, list[dict]]:
         cq.GCP_SERVICE_ACCOUNTS: [],
         cq.EC2_INSTANCE_PROFILE_ROLE: [],
         cq.DYNAMODB_ACCESS: [],
+        cq.EC2_NETWORK_PLACEMENT: [],
+        cq.AWS_VPC_CIDRS: [],
+        cq.AWS_PEERING_CONNECTIONS: [],
+        cq.EC2_SG_INGRESS: [],
     }
 
 

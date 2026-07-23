@@ -72,6 +72,8 @@ TRAVERSABLE_REL_TYPES = frozenset(
         "CONTROLS",
         "EXECUTES",
         "CAN_REACH",
+        "VPC_PEERS",
+        "BRIDGES_TO",
         "HAS_ESCAPE_SURFACE",
         "CAN_ESCAPE_TO",
         "USES_IMAGE",

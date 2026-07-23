@@ -23,6 +23,8 @@ const state = {
   ignoredNodeIds: new Set(),
   lastPathQuery: null,
   enrichBusy: false,
+  showNetworkEdges: true,
+  showAllResourceAccess: false,
 };
 
 const NODE_COLORS = {
@@ -431,6 +433,7 @@ const ENRICHMENT_EDGE_SOURCES = new Set([
   "enrichment",
   "host-pivot",
   "collector-enrichment",
+  "network-enrichment",
 ]);
 
 const ENRICHMENT_EDGE_RELS = new Set([
@@ -457,7 +460,18 @@ function isEnrichmentEdge(edge) {
     return true;
   }
   if (edge.rel === "CAN_REACH" && ENRICHMENT_EDGE_SOURCES.has(edge.source)) return true;
+  if (edge.rel === "VPC_PEERS" || edge.rel === "BRIDGES_TO") return true;
   if (edge.harvest_method || edge.store_type) return true;
+  return false;
+}
+
+function isNetworkEdge(edge) {
+  if (!edge) return false;
+  if (edge.rel === "VPC_PEERS" || edge.rel === "BRIDGES_TO") return true;
+  if (edge.source === "network-enrichment") return true;
+  if (edge.rel === "CAN_REACH" && (edge.mechanism === "sg-lite" || edge.mechanism === "internet-ingress" || edge.mechanism === "vpc-peering")) {
+    return true;
+  }
   return false;
 }
 
@@ -579,15 +593,85 @@ function compactCapabilityEdges(edges) {
   return kept;
 }
 
+const RESOURCE_ACCESS_RELS = new Set([
+  "READS",
+  "WRITES",
+  "DELETES",
+  "CONTROLS",
+  "EXECUTES",
+  "CAN_ACCESS",
+]);
+
+function isPrivescOutcomeEdge(edge, outcomeIds) {
+  return (
+    edge?.rel === "CAN_PRIVESC_TO"
+    && (Boolean(edge.attack_outcome) || outcomeIds.has(edge.dst))
+  );
+}
+
+function leafResourceAccessNodeIds(nodes, edges, outcomeIds) {
+  const visibleIds = new Set(nodes.map((node) => node.id));
+  const incoming = new Map(nodes.map((node) => [node.id, []]));
+  const hasChildren = new Set();
+  const hasPrivescOutcome = new Set();
+
+  for (const edge of edges) {
+    if (edge.rel === "DISCOVERED") continue;
+    if (!visibleIds.has(edge.src) || !visibleIds.has(edge.dst)) continue;
+    incoming.get(edge.dst)?.push(edge);
+    if (edge.src !== edge.dst) hasChildren.add(edge.src);
+    if (isPrivescOutcomeEdge(edge, outcomeIds)) hasPrivescOutcome.add(edge.src);
+  }
+
+  return new Set(
+    nodes
+      .filter((node) => {
+        if (node.label !== "Resource") return false;
+        if (node.is_caller || node.compromised || node.high_value) return false;
+        if (hasChildren.has(node.id) || hasPrivescOutcome.has(node.id)) return false;
+        const accessEdges = incoming.get(node.id) || [];
+        return (
+          accessEdges.length > 0
+          && accessEdges.every((edge) => RESOURCE_ACCESS_RELS.has(edge.rel))
+        );
+      })
+      .map((node) => node.id),
+  );
+}
+
 function normalizeGraphForDisplay(graph) {
-  const nodes = (graph.nodes || []).filter((n) => !isHiddenDisplayNode(n));
+  const outcomeIds = new Set(
+    (graph.nodes || []).filter(isAttackOutcomeNode).map((n) => n.id),
+  );
+  let nodes = (graph.nodes || []).filter((n) => !isHiddenDisplayNode(n));
+  if (!state.showAllResourceAccess) {
+    const hiddenLeafIds = leafResourceAccessNodeIds(
+      nodes,
+      graph.edges || [],
+      outcomeIds,
+    );
+    nodes = nodes.filter((node) => !hiddenLeafIds.has(node.id));
+  }
   const nodeIds = new Set(nodes.map((n) => n.id));
   const edges = [];
 
   for (const edge of graph.edges || []) {
     if (edge.rel === "DISCOVERED") continue;
-    // Drop legacy self-loops (old admin_outcome modelling); real edges target AttackOutcome.
-    if (edge.rel === "CAN_PRIVESC_TO" && edge.src === edge.dst) continue;
+    if (!state.showNetworkEdges && isNetworkEdge(edge)) continue;
+    // Both historical outcome-node edges and current direct self-outcome edges
+    // must render as a self-loop. Key off attack_outcome as well as destination
+    // shape so this does not regress when the persistence representation changes.
+    if (isPrivescOutcomeEdge(edge, outcomeIds)) {
+      if (!nodeIds.has(edge.src)) continue;
+      edges.push({
+        ...edge,
+        dst: edge.src,
+        attack_outcome: edge.attack_outcome || "administrator-access",
+        outcome_display: edge.outcome_display || "Administrator access",
+        _collapsedOutcome: true,
+      });
+      continue;
+    }
     if (nodeIds.has(edge.src) && nodeIds.has(edge.dst)) {
       edges.push(edge);
     }
@@ -598,6 +682,9 @@ function normalizeGraphForDisplay(graph) {
 
 function edgeDisplayLabel(edge) {
   if (edge._compactLabel) return edge._compactLabel;
+  if (edge.rel === "BRIDGES_TO" || edge.ui_label === "" || edge.boundary_crossing) {
+    return "";
+  }
   if (edge.attack_outcome) {
     return `👑 ${edge.rel}`;
   }
@@ -1156,8 +1243,8 @@ function buildVisEdges(edges, nodeById) {
 
     if (edge.src === edge.dst) {
       visEdge.selfReference = {
-        size: 24,
-        angle: 270,
+        size: 28 + pairIndex * 8,
+        angle: 250 + pairIndex * 24,
         renderBehindTheNode: false,
       };
     }
@@ -2840,6 +2927,25 @@ function updateTargetFieldsVisibility() {
   document.getElementById("targetFields").style.display = mode === "paths" ? "block" : "none";
 }
 
+// Small pure display contract used by regression tests. Keeping this callable
+// outside the browser prevents CAN_PRIVESC_TO self-loop rendering from silently
+// regressing again.
+globalThis.SamoyedGraphDisplay = {
+  normalize(graph, options = {}) {
+    if (options.showNetworkEdges != null) {
+      state.showNetworkEdges = Boolean(options.showNetworkEdges);
+    }
+    if (options.showAllResourceAccess != null) {
+      state.showAllResourceAccess = Boolean(options.showAllResourceAccess);
+    }
+    return normalizeGraphForDisplay(graph);
+  },
+  buildEdges(edges, nodes) {
+    return buildVisEdges(edges, graphNodeMap(nodes));
+  },
+};
+
+if (typeof document !== "undefined" && typeof vis !== "undefined") {
 // Event wiring
 document.getElementById("refreshSessions").onclick = () => {
   if (state.sessionListScope === "all") {
@@ -2981,6 +3087,14 @@ function initEnrichmentUpload() {
 
 document.getElementById("importReport").onclick = importReport;
 document.getElementById("fitGraph").onclick = fitGraphView;
+document.getElementById("toggleNetworkEdges")?.addEventListener("change", (event) => {
+  state.showNetworkEdges = !!event.target.checked;
+  if (state.graph) renderGraph(state.graph);
+});
+document.getElementById("toggleAllResourceAccess")?.addEventListener("change", (event) => {
+  state.showAllResourceAccess = !!event.target.checked;
+  if (state.graph) renderGraph(state.graph);
+});
 document.getElementById("exportMainGraph").onclick = () => {
   const onMain = isGraphOnMain();
   exportNetworkPng(
@@ -3039,3 +3153,4 @@ updateTargetFieldsVisibility();
 initAuth()
   .then(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshEnrichmentLibrary(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
   .catch(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshEnrichmentLibrary(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));
+}

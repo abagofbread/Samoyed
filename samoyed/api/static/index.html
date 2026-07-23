@@ -89,6 +89,14 @@
         <button id="focusCaller" class="ghost">Focus caller</button>
         <button id="exportMainGraph" class="ghost">Export PNG</button>
         <button id="swapGraphViews" class="ghost">Swap views</button>
+        <label class="graph-toolbar-toggle" title="Show VPC peering / SG-lite network edges">
+          <input type="checkbox" id="toggleNetworkEdges" checked />
+          Network edges
+        </label>
+        <label class="graph-toolbar-toggle" title="Show leaf resources reached only by access edges">
+          <input type="checkbox" id="toggleAllResourceAccess" />
+          Render all resource access
+        </label>
         <span class="graph-legend" aria-label="Edge colors">
           <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--iam"></i> IAM / enum</span>
           <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--enrichment"></i> Enrichment / pivot</span>

@@ -290,6 +290,31 @@ async def import_session_report(
     }
 
 
+@app.post("/api/sessions/{session_id}/network")
+async def attach_network_inventory(
+    session_id: str,
+    connector: str = Form("network-inventory"),
+    file: UploadFile = File(...),
+):
+    """Merge Terraform/network-inventory facts into an existing session."""
+    if connector not in {"network-inventory", "terraform"}:
+        raise HTTPException(400, "connector must be network-inventory or terraform")
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(400, "Empty file")
+    try:
+        result = SESSION_STORE.attach_network_inventory(
+            session_id, payload, connector_id=connector
+        )
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid JSON: {exc}")
+    return result
+
+
 @app.get("/api/sessions")
 def list_sessions(
     scope: str = Query("recent", pattern="^(recent|all|ids)$"),

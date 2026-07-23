@@ -43,6 +43,7 @@ from samoyed.graph.persistence import (
     write_session_file,
 )
 from samoyed.graph.refs import resolve_node_ref
+from samoyed.graph.repair import repair_legacy_internet_exposure
 from samoyed.attack.analyzer import apply_attack_analysis
 from samoyed.attack.surface import enrich_attack_surface
 from samoyed.ingest.concept_normalizer import ConceptNormalizer
@@ -54,6 +55,7 @@ from samoyed.probes.scope import resolve_scope_best_effort
 from samoyed.scenarios.k8s import CompromisedSaScenario, PodEscapeScenario
 from samoyed.scenarios.host_compromise import HostCompromiseScenario
 from samoyed.scenarios.leaked_credential import LeakedCredentialScenario
+from samoyed.scenarios.cross_account import CanReachOtherAccountsScenario
 from samoyed.session_naming import (
     build_session_id,
     derive_short_name,
@@ -181,12 +183,30 @@ class SessionStore:
         attack_edges = apply_attack_analysis(builder, provider=credentials.provider)
         enrich_attack_surface(builder, provider=credentials.provider)
 
+        network_stats = None
+        network_inventory = None
+        if credentials.provider == CloudProvider.AWS:
+            from samoyed.enumerators.aws.network import collect_aws_network_inventory
+            from samoyed.network.enrich import enrich_network_reachability
+
+            network_inventory = collect_aws_network_inventory(ctx)
+            network_stats = enrich_network_reachability(
+                builder,
+                network_inventory,
+                session_store=self,
+                inventory_source="aws-enum",
+            )
+
         metadata = {
             "artifact_count": len(artifacts),
             "node_count": len(builder.snapshot.nodes),
             "attack_patterns_matched": len(attack_edges),
             "short_name": short_name,
             "scope_key": scope_key,
+            "network_enrichment": network_stats,
+            "network_inventory": network_inventory.to_dict()
+            if network_inventory and not network_inventory.is_empty()
+            else None,
         }
         record = SessionRecord(
             session_id=session_id,
@@ -307,6 +327,7 @@ class SessionStore:
                 account_id=account_id,
                 project_id=project_id,
                 provider=provider,
+                session_store=self,
             )
 
         resolved_caller = meta.get("caller_arn") or caller_arn or "cartography:import"
@@ -360,6 +381,7 @@ class SessionStore:
             payload,
             session_id="import-pending",
             caller_arn=caller_arn,
+            session_store=self,
         )
         resolved_caller = meta.get("caller_arn") or caller_arn or f"{connector_id}:import"
         scope_id = next(
@@ -425,6 +447,51 @@ class SessionStore:
             "graph_role": session.metadata.get("graph_role"),
             "graph_access": session.metadata.get("graph_access"),
         }
+
+    def attach_network_inventory(
+        self,
+        session_id: str,
+        payload: bytes | str | dict[str, Any],
+        *,
+        connector_id: str = "network-inventory",
+    ) -> dict[str, Any]:
+        """Merge NetworkInventory (or terraform tfstate) into an existing session graph."""
+        from samoyed.connectors.network_inventory.importer import attach_network_inventory_to_builder
+        from samoyed.connectors.terraform.importer import parse_tfstate_to_inventory
+        from samoyed.connectors._shared import parse_json_payload
+        from samoyed.network.enrich import enrich_network_reachability
+        from samoyed.network.model import NetworkInventory
+
+        session = self.get(session_id)
+        if not session:
+            raise KeyError(session_id)
+        builder = GraphBuilder(session_id)
+        builder.snapshot = session.snapshot
+
+        if connector_id == "terraform":
+            data = payload if isinstance(payload, dict) else parse_json_payload(payload)
+            inventory = parse_tfstate_to_inventory(data if isinstance(data, dict) else {})
+            stats = enrich_network_reachability(
+                builder,
+                inventory,
+                session_store=self,
+                inventory_source="terraform",
+            )
+            result = {"network_enrichment": stats, "network_inventory": inventory.to_dict()}
+        else:
+            result = attach_network_inventory_to_builder(builder, payload, session_store=self)
+
+        session.metadata["network_enrichment"] = result.get("network_enrichment")
+        if result.get("network_inventory"):
+            prev = session.metadata.get("network_inventory")
+            merged = NetworkInventory.from_dict(prev).merge(
+                NetworkInventory.from_dict(result["network_inventory"])
+            )
+            session.metadata["network_inventory"] = merged.to_dict()
+        session.metadata["node_count"] = len(session.snapshot.nodes)
+        self._persist(session)
+        write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
+        return {"session_id": session_id, **result}
 
     def graph_payload(
         self,
@@ -515,25 +582,46 @@ class SessionStore:
     def get(self, session_id: str) -> SessionRecord | None:
         cached = self._sessions.get(session_id)
         if cached:
+            self._repair_loaded_session(cached)
             return cached
         # When Neo4j is configured it is the durable source of truth; JSON is a cache.
         if neo4j_configured():
             record = self._load_from_neo4j(session_id)
             if record:
+                self._repair_loaded_session(record)
                 self._sessions[session_id] = record
                 return record
             record = self._load_from_disk(session_id)
             if record:
                 # Hydrate Neo4j from legacy JSON sessions.
+                self._repair_loaded_session(record)
                 write_snapshot(record.snapshot, session_meta=self._neo4j_meta(record))
                 self._sessions[session_id] = record
                 return record
             return None
         record = self._load_from_disk(session_id)
         if record:
+            self._repair_loaded_session(record)
             self._sessions[session_id] = record
             return record
         return None
+
+    def _repair_loaded_session(self, record: SessionRecord) -> None:
+        stats = repair_legacy_internet_exposure(record.snapshot)
+        repaired = bool(stats["removed_nodes"])
+        if repaired:
+            record.metadata["node_count"] = len(record.snapshot.nodes)
+            record.metadata["legacy_network_exposure_repair"] = stats
+            self._persist(record)
+
+        needs_neo4j_sync = bool(record.metadata.get("legacy_network_exposure_repair")) and not (
+            record.metadata.get("legacy_network_exposure_repair_synced_neo4j")
+        )
+        if neo4j_configured() and (repaired or needs_neo4j_sync):
+            neo4j_delete_snapshot(record.session_id)
+            write_snapshot(record.snapshot, session_meta=self._neo4j_meta(record))
+            record.metadata["legacy_network_exposure_repair_synced_neo4j"] = True
+            self._persist(record)
 
     def list_sessions(self) -> list[SessionRecord]:
         seen = set(self._sessions.keys())
@@ -977,6 +1065,9 @@ class SessionStore:
         if name == "pod-escape":
             workload = self.find_workload_node(session, name="evil-pod") or start
             return PodEscapeScenario().run(session.snapshot, workload)
+        if name == "can-reach-other-accounts":
+            start = self.find_caller_node(session) or self._resolve_compromised_start(session) or start
+            return CanReachOtherAccountsScenario().run(session.snapshot, start)
         raise ValueError(f"Unknown scenario: {name}")
 
     def query_paths(

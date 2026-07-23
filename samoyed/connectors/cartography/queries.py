@@ -88,3 +88,65 @@ MATCH (p:GCPProject)-[:RESOURCE]->(sa:GCPServiceAccount)
 WHERE $project_id IS NULL OR p.id = $project_id
 RETURN DISTINCT sa.email AS email, p.id AS project_id
 """
+
+EC2_NETWORK_PLACEMENT = """
+MATCH (i:EC2Instance)
+WHERE $account_id IS NULL OR coalesce(i.arn, '') CONTAINS $account_id
+OPTIONAL MATCH (i)-[:PART_OF_SUBNET]->(sn:EC2Subnet)-[:MEMBER_OF_AWS_VPC]->(v:AWSVpc)
+OPTIONAL MATCH (i)-[:MEMBER_OF_EC2_SECURITY_GROUP]->(sg:EC2SecurityGroup)
+WITH i, v,
+  collect(DISTINCT sn.id) AS subnet_ids,
+  collect(DISTINCT sg.id) AS sg_ids
+RETURN DISTINCT
+  coalesce(i.instanceid, i.id) AS instance_id,
+  i.arn AS instance_arn,
+  coalesce(v.id, i.vpcid) AS vpc_id,
+  subnet_ids,
+  sg_ids,
+  coalesce(i.privateipaddress, i.private_ip_address) AS private_ip,
+  coalesce(i.publicipaddress, i.public_ip_address) AS public_ip,
+  coalesce(i.exposed_internet, false) AS exposed_internet
+"""
+
+AWS_VPC_CIDRS = """
+MATCH (v:AWSVpc)
+OPTIONAL MATCH (v)-[:BLOCK_ASSOCIATION]->(c:AWSCidrBlock)
+WITH v, collect(DISTINCT coalesce(c.cidr_block, c.id)) AS cidrs
+RETURN DISTINCT v.id AS vpc_id, cidrs, v.cidr_block_association_set AS assoc
+"""
+
+AWS_PEERING_CONNECTIONS = """
+MATCH (pcx:AWSPeeringConnection)
+OPTIONAL MATCH (pcx)-[:REQUESTER_VPC]->(req:AWSVpc)
+OPTIONAL MATCH (pcx)-[:ACCEPTER_VPC]->(acc:AWSVpc)
+OPTIONAL MATCH (pcx)-[:REQUESTER_CIDR]->(rc:AWSCidrBlock)
+OPTIONAL MATCH (pcx)-[:ACCEPTER_CIDR]->(ac:AWSCidrBlock)
+OPTIONAL MATCH (req_acct:AWSAccount)-[:RESOURCE]->(req)
+OPTIONAL MATCH (acc_acct:AWSAccount)-[:RESOURCE]->(acc)
+RETURN DISTINCT
+  coalesce(pcx.id, pcx.arn) AS peering_id,
+  coalesce(pcx.status_code, pcx.status, 'active') AS status,
+  coalesce(req.id, pcx.requestervpcid) AS local_vpc_id,
+  coalesce(acc.id, pcx.acceptervpcid) AS remote_vpc_id,
+  coalesce(req_acct.id, pcx.requesterownerid) AS local_account_id,
+  coalesce(acc_acct.id, pcx.accepterownerid) AS remote_account_id,
+  collect(DISTINCT coalesce(rc.cidr_block, rc.id)) AS local_cidrs,
+  collect(DISTINCT coalesce(ac.cidr_block, ac.id)) AS remote_cidrs
+"""
+
+EC2_SG_INGRESS = """
+MATCH (sg:EC2SecurityGroup)
+OPTIONAL MATCH (r:IpRange)-[:MEMBER_OF_IP_RULE]->(rule:IpPermissionInbound)-[:MEMBER_OF_EC2_SECURITY_GROUP]->(sg)
+OPTIONAL MATCH (src_sg:EC2SecurityGroup)-[:MEMBER_OF_EC2_SECURITY_GROUP]->(rule)
+WITH sg, rule,
+  collect(DISTINCT r.id) AS cidrs,
+  collect(DISTINCT src_sg.id) AS referenced_sg_ids
+WHERE rule IS NOT NULL OR size(cidrs) > 0
+RETURN DISTINCT
+  sg.id AS sg_id,
+  cidrs,
+  referenced_sg_ids,
+  rule.fromport AS from_port,
+  rule.toport AS to_port,
+  rule.protocol AS protocol
+"""

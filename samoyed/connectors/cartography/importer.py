@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from samoyed.attack.analyzer import apply_attack_analysis
+from samoyed.attack.surface import enrich_attack_surface
 from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge, Evidence
 from samoyed.cloud.concepts import CloudProvider, ConceptType, ConfidenceType
 from samoyed.cloud.providers import make_scope_id
@@ -11,6 +12,8 @@ from samoyed.connectors.cartography import queries as cq
 from samoyed.credentials.gcp import sa_native_id
 from samoyed.graph.builder import GraphBuilder
 from samoyed.ingest.concept_normalizer import ConceptNormalizer
+from samoyed.network.enrich import enrich_network_reachability
+from samoyed.network.model import NetworkInventory, NetworkPlacement, PeeringLink, SgIngressRule
 
 
 def import_cartography_graph(
@@ -21,11 +24,15 @@ def import_cartography_graph(
     account_id: str | None = None,
     project_id: str | None = None,
     provider: CloudProvider = CloudProvider.AWS,
+    session_store: Any | None = None,
 ) -> tuple[GraphBuilder, dict[str, Any]]:
     """Import a Cartography Neo4j graph into a Samoyed GraphBuilder."""
     artifacts = list(_collect_artifacts(client, account_id=account_id, project_id=project_id, caller_arn=caller_arn))
     if not artifacts:
         raise ValueError("No Cartography data found for the given filters")
+
+    inventory = _collect_network_inventory(client, account_id=account_id)
+    _apply_inventory_to_artifacts(artifacts, inventory)
 
     scope_id, scope_display = _resolve_scope(artifacts, account_id=account_id, project_id=project_id)
     builder = GraphBuilder(session_id)
@@ -49,6 +56,13 @@ def import_cartography_graph(
                 node.props["is_caller"] = True
 
     attack_edges = apply_attack_analysis(builder, provider=provider)
+    enrich_attack_surface(builder)
+    network_stats = enrich_network_reachability(
+        builder,
+        inventory,
+        session_store=session_store,
+        inventory_source="cartography",
+    )
     meta = {
         "source": "cartography",
         "artifact_count": len(artifacts),
@@ -57,8 +71,100 @@ def import_cartography_graph(
         "cartography_account_id": account_id,
         "cartography_project_id": project_id,
         "caller_arn": resolved_caller,
+        "network_enrichment": network_stats,
+        "network_inventory": inventory.to_dict() if not inventory.is_empty() else None,
     }
     return builder, meta
+
+
+def _collect_network_inventory(
+    client: CartographyClient, *, account_id: str | None
+) -> NetworkInventory:
+    inventory = NetworkInventory(provider="aws", source="cartography")
+    for row in client.run(cq.AWS_VPC_CIDRS):
+        vpc_id = row.get("vpc_id")
+        if not vpc_id:
+            continue
+        cidrs = [str(c) for c in (row.get("cidrs") or []) if c]
+        inventory.vpc_cidrs[str(vpc_id)] = sorted(set(cidrs))
+
+    for row in client.run(cq.EC2_NETWORK_PLACEMENT, account_id=account_id):
+        iid = row.get("instance_id")
+        if not iid:
+            continue
+        sg_ids = [str(x) for x in (row.get("sg_ids") or []) if x]
+        subnet_ids = [str(x) for x in (row.get("subnet_ids") or []) if x]
+        inventory.placements.append(
+            NetworkPlacement(
+                native_id=f"EC2Instance:{iid}",
+                account_id=str(account_id or _account_from_arn(row.get("instance_arn")) or ""),
+                vpc_id=str(row.get("vpc_id") or ""),
+                subnet_ids=subnet_ids,
+                private_ips=[str(row["private_ip"])] if row.get("private_ip") else [],
+                public_ip=str(row["public_ip"]) if row.get("public_ip") else None,
+                sg_ids=sg_ids,
+                exposed_internet=bool(row.get("exposed_internet")),
+                resource_type="EC2Instance",
+            )
+        )
+
+    for row in client.run(cq.AWS_PEERING_CONNECTIONS):
+        peering_id = row.get("peering_id")
+        if not peering_id:
+            continue
+        inventory.peerings.append(
+            PeeringLink(
+                id=str(peering_id),
+                status=str(row.get("status") or "active"),
+                local_vpc_id=str(row.get("local_vpc_id") or ""),
+                local_account_id=str(row.get("local_account_id") or ""),
+                remote_vpc_id=str(row.get("remote_vpc_id") or ""),
+                remote_account_id=str(row.get("remote_account_id") or ""),
+                local_cidrs=[str(c) for c in (row.get("local_cidrs") or []) if c],
+                remote_cidrs=[str(c) for c in (row.get("remote_cidrs") or []) if c],
+            )
+        )
+
+    for row in client.run(cq.EC2_SG_INGRESS):
+        sg_id = row.get("sg_id")
+        if not sg_id:
+            continue
+        inventory.sg_rules.append(
+            SgIngressRule(
+                sg_id=str(sg_id),
+                direction="ingress",
+                cidrs=[str(c) for c in (row.get("cidrs") or []) if c],
+                referenced_sg_ids=[str(c) for c in (row.get("referenced_sg_ids") or []) if c],
+                from_port=row.get("from_port"),
+                to_port=row.get("to_port"),
+                protocol=str(row.get("protocol") or "-1"),
+            )
+        )
+    return inventory
+
+
+def _apply_inventory_to_artifacts(
+    artifacts: list[ConceptArtifact], inventory: NetworkInventory
+) -> None:
+    by_native = {p.native_id: p for p in inventory.placements}
+    for art in artifacts:
+        placement = by_native.get(art.native_id)
+        if not placement:
+            continue
+        if placement.vpc_id:
+            art.properties["vpc_id"] = placement.vpc_id
+        if placement.sg_ids:
+            art.properties["sg_ids"] = list(placement.sg_ids)
+        if placement.subnet_ids:
+            art.properties["subnet_ids"] = list(placement.subnet_ids)
+        if placement.private_ips:
+            art.properties["private_ips"] = list(placement.private_ips)
+        if placement.public_ip:
+            art.properties["public_ip"] = placement.public_ip
+        if placement.exposed_internet:
+            art.properties["exposed_internet"] = True
+        if placement.account_id:
+            art.properties.setdefault("account_id", placement.account_id)
 
 
 def _collect_artifacts(

@@ -21,6 +21,7 @@ ENRICHMENT_EDGE_SOURCES = frozenset(
         "resource-pivot",
         "shared-across-envs",
         "capability-bindings",
+        "network-enrichment",
     }
 )
 
@@ -66,6 +67,8 @@ def is_enrichment_edge(rel_type: str, props: dict[str, Any] | None) -> bool:
     ):
         return True
     if rel_type == "CAN_REACH" and source in ENRICHMENT_EDGE_SOURCES:
+        return True
+    if rel_type in {"VPC_PEERS", "BRIDGES_TO"}:
         return True
     return False
 
