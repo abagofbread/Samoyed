@@ -418,6 +418,42 @@ label {
   color: var(--muted);
 }
 
+.enrich-busy-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: #161b22;
+  border: 1px solid #3fb9b0;
+  color: #e6edf3;
+  font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.enrich-busy-banner[hidden] {
+  display: none !important;
+}
+
+.enrich-busy-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3fb9b0;
+  animation: enrich-pulse 1s ease-in-out infinite;
+}
+
+@keyframes enrich-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
 .enrichment-library-list {
   max-height: 160px;
   overflow: auto;

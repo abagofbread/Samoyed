@@ -90,7 +90,8 @@ def _artifacts_from_authz(data: dict[str, Any], *, scope_id: str) -> Iterator[Co
         arn = role.get("Arn")
         if not arn:
             continue
-        edges = _trust_policy_edges(role.get("AssumeRolePolicyDocument") or {}, arn)
+        trust_doc = role.get("AssumeRolePolicyDocument") or {}
+        edges = _trust_policy_edges(trust_doc, arn)
         edges.extend(_inline_policies(role.get("RolePolicyList") or [], arn))
         edges.extend(_managed_policies(role.get("AttachedManagedPolicies") or [], arn, data))
         props = {
@@ -99,6 +100,7 @@ def _artifacts_from_authz(data: dict[str, Any], *, scope_id: str) -> Iterator[Co
             "name": role.get("RoleName"),
             "display_name": role.get("RoleName") or arn,
             "source": "aws-authz-details",
+            "assume_role_policy": trust_doc,
         }
         props.update(_boundary_props_for_detail(role, data))
         yield ConceptArtifact(
@@ -123,20 +125,26 @@ def _boundary_props_for_detail(detail: dict[str, Any], data: dict[str, Any]) -> 
 def _trust_policy_edges(trust: Any, role_arn: str) -> list[ConceptEdge]:
     if isinstance(trust, str):
         trust = json.loads(trust)
+    from samoyed.policy.irsa import is_oidc_provider_arn
+
     edges: list[ConceptEdge] = []
     for stmt in _statements(trust):
         if stmt.get("Effect") != "Allow":
             continue
         for principal in _principals(stmt.get("Principal")):
-            if principal.startswith("arn:"):
-                edges.append(
-                    ConceptEdge(
-                        rel_type="CAN_ASSUME_ROLE",
-                        src_native_id=principal,
-                        target_native_id=role_arn,
-                        props={"source": "aws-authz-details", "confidence": "explicit"},
-                    )
+            if not principal.startswith("arn:"):
+                continue
+            # OIDC providers are not assume sources; IRSA repair uses Conditions.
+            if is_oidc_provider_arn(principal):
+                continue
+            edges.append(
+                ConceptEdge(
+                    rel_type="CAN_ASSUME_ROLE",
+                    src_native_id=principal,
+                    target_native_id=role_arn,
+                    props={"source": "aws-authz-details", "confidence": "explicit"},
                 )
+            )
     return edges
 
 

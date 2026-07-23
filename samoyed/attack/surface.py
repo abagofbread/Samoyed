@@ -5,6 +5,7 @@ from typing import Any
 from samoyed.attack.capability_bindings import enrich_capability_bindings
 from samoyed.attack.k8s_pivot import enrich_k8s_deploy_pivot
 from samoyed.attack.high_value import enrich_high_value_targets
+from samoyed.attack.passrole_ec2 import enrich_passrole_ec2_bindings
 from samoyed.attack.resource_pivot import enrich_resource_pivots
 from samoyed.attack.service_admin import enrich_service_admins
 from samoyed.attack.shared_env import enrich_shared_environments
@@ -87,8 +88,22 @@ def enrich_attack_surface(
         "scope_hosting": _wire_scope_hosting(builder, graph),
     }
     stats.update(enrich_k8s_deploy_pivot(builder))
+    # OIDC trust Conditions → SA PROJECTS_TO (before token UNLOCKS / capability-glob).
+    from samoyed.attack.irsa_trust import enrich_irsa_trust
+
+    stats.update(enrich_irsa_trust(builder))
+    # Materials + Secret:* UNLOCKS before capability-glob so vaults that yield
+    # credentials (RDS_CREDS → aws-goat-db) are eligible for CONTROLS expansion.
+    from samoyed.enrichment.impact import repair_credential_impact
+
+    impact = repair_credential_impact(builder)
+    stats["credential_unlocks"] = int(impact.get("unlocks_applied") or 0)
+    stats["credential_projected"] = int(impact.get("projected") or 0)
+    stats["secret_scope_unlocks"] = int(impact.get("secret_scope_unlocks") or 0)
     # Bind policy Resource globs to inventored assets before FEEDS intersection.
     stats.update(enrich_capability_bindings(builder))
+    # PassRole+RunInstances → inventored EC2s that already EXECUTES_AS the passed role.
+    stats.update(enrich_passrole_ec2_bindings(builder))
     stats.update(enrich_resource_pivots(builder))
     stats.update(enrich_shared_environments(builder))
     stats.update(enrich_high_value_targets(builder, provider=provider))
@@ -99,6 +114,48 @@ def enrich_attack_surface(
     stats.update(dedupe_redundant_edges(builder))
     stats["enrichment_edges_marked"] = mark_enrichment_edges(builder.snapshot)
     return stats
+
+
+def repair_blast_graph(builder: GraphBuilder) -> dict[str, int]:
+    """Lazy influence wiring before blast: capability-glob, UNLOCKS, FEEDS.
+
+    No new edge types — ensures CONTROLS/WRITES globs, credential UNLOCKS, and
+    FEEDS exist so blast can reach named nodes without a separate enrich click.
+    """
+    from samoyed.attack.irsa_trust import enrich_irsa_trust
+    from samoyed.enrichment.impact import repair_credential_impact
+
+    stats: dict[str, int] = {}
+    stats.update(enrich_irsa_trust(builder))
+    # Materials + Secret:* → named targets first so capability-glob can bind
+    # inventored vaults that UNLOCKS impact (e.g. RDS_CREDS → aws-goat-db).
+    impact = repair_credential_impact(builder)
+    stats["credential_unlocks"] = int(impact.get("unlocks_applied") or 0)
+    stats["credential_projected"] = int(impact.get("projected") or 0)
+    stats["junk_projected_removed"] = int(impact.get("junk_projected_removed") or 0)
+    stats["secret_scope_unlocks"] = int(impact.get("secret_scope_unlocks") or 0)
+    stats.update(enrich_capability_bindings(builder))
+    stats.update(enrich_resource_pivots(builder))
+    return stats
+
+
+def blast_graph_changed(stats: dict[str, int]) -> bool:
+    """True when lazy blast repair mutated the graph enough to persist."""
+    return any(
+        int(stats.get(key) or 0) > 0
+        for key in (
+            "capability_bindings",
+            "unused_secret_bindings_pruned",
+            "credential_unlocks",
+            "credential_projected",
+            "junk_projected_removed",
+            "secret_scope_unlocks",
+            "feeds_edges",
+            "irsa_projects_to",
+            "irsa_validated_stamped",
+            "irsa_sa_projected",
+        )
+    )
 
 
 def _wire_imds_surfaces(builder: GraphBuilder, graph: GraphSnapshot) -> int:

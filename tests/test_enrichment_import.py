@@ -144,3 +144,13 @@ def test_library_import_without_selected_node(tmp_path, monkeypatch):
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["stats"]["materials_applied"] >= 1
+
+
+def test_enrich_session_surface_endpoint():
+    record = SESSION_STORE.load_fixture("host-pivot", session_id="enrich-surface-api")
+    res = client.post(f"/api/sessions/{record.session_id}/enrich-surface")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["session_id"] == record.session_id
+    assert "stats" in body
+    assert isinstance(body["stats"], dict)

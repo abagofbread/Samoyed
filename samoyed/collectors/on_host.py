@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from samoyed.collectors.assess import assess_file, assess_text
+from samoyed.collectors.sa_token import enrich_sa_token_material
 from samoyed.enrichment.report import default_report
 
 # Host paths commonly holding cloud / cluster pivot material. No cloud APIs.
@@ -64,18 +65,17 @@ def collect_on_host(
 
         # Known kube SA token path without matching assess heuristics
         if path.name == "token" and "serviceaccount" in str(path):
-            materials.append(
-                _stamp(
-                    {
-                        "kind": "k8s_service_account_token",
-                        "locator": str(path),
-                        "confidence": "explicit",
-                        "evidence": {"file": str(path), "source": "on-host"},
-                    },
-                    resolves_to=resolves_to,
-                    source="on-host-file",
-                )
+            token_mat = _stamp(
+                {
+                    "kind": "k8s_service_account_token",
+                    "locator": str(path),
+                    "confidence": "explicit",
+                    "evidence": {"file": str(path), "source": "on-host"},
+                },
+                resolves_to=resolves_to,
+                source="on-host-file",
             )
+            materials.append(enrich_sa_token_material(token_mat))
 
     if include_environ:
         materials.extend(_environ_materials(resolves_to=resolves_to))
@@ -87,7 +87,7 @@ def collect_on_host(
             for item in assess_file(env_path, display_path=str(env_path)):
                 materials.append(_stamp(item, resolves_to=resolves_to, source="on-host-file"))
 
-    materials = _dedupe_materials(materials)
+    materials = [enrich_sa_token_material(m) for m in _dedupe_materials(materials)]
     if not materials:
         materials = [
             {

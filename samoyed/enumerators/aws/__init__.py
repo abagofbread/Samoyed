@@ -11,6 +11,7 @@ from samoyed.enumerators.contracts import ConceptEnumerator
 from samoyed.enumerators.runner import paginate_call
 from samoyed.graph.resource_scope import resolve_policy_resource
 from samoyed.policy.boundary import actions_from_policy_document, permissions_boundary_props
+from samoyed.policy.irsa import is_oidc_provider_arn
 
 
 def _iter_statements(doc: dict[str, Any]) -> list[dict[str, Any]]:
@@ -166,14 +167,11 @@ class AwsTrustEnumerator:
                     continue
                 principals = _extract_principals(stmt.get("Principal"))
                 for p in principals:
-                    yield ConceptArtifact(
-                        concept_type=ConceptType.TRUST,
-                        provider=CloudProvider.AWS,
-                        native_id=f"{p}->{role_arn}",
-                        scope_id=ctx.scope.scope_id,
-                        properties={"trust_doc": stmt, "role_arn": role_arn, "principal": p},
-                        evidence=Evidence("iam:GetRole.trust", {"role": role_arn, "principal": p}),
-                        edges=[
+                    edges: list[ConceptEdge] = []
+                    # OIDC provider ARNs are not STS principals — IRSA repair wires
+                    # SA → PROJECTS_TO from trust Conditions instead.
+                    if not is_oidc_provider_arn(p):
+                        edges.append(
                             ConceptEdge(
                                 rel_type="CAN_ASSUME_ROLE",
                                 src_native_id=p,
@@ -181,7 +179,20 @@ class AwsTrustEnumerator:
                                 target_concept_type=ConceptType.IDENTITY,
                                 props={"role_arn": role_arn},
                             )
-                        ],
+                        )
+                    yield ConceptArtifact(
+                        concept_type=ConceptType.TRUST,
+                        provider=CloudProvider.AWS,
+                        native_id=f"{p}->{role_arn}",
+                        scope_id=ctx.scope.scope_id,
+                        properties={
+                            "trust_doc": stmt,
+                            "role_arn": role_arn,
+                            "principal": p,
+                            "assume_role_policy": trust,
+                        },
+                        evidence=Evidence("iam:GetRole.trust", {"role": role_arn, "principal": p}),
+                        edges=edges,
                     )
 
 
@@ -192,11 +203,20 @@ def _extract_principals(principal: Any) -> list[str]:
         return [principal]
     if isinstance(principal, dict):
         out: list[str] = []
+        for key in ("AWS", "Service", "Federated"):
+            val = principal.get(key)
+            if isinstance(val, str):
+                out.append(val)
+            elif isinstance(val, list):
+                out.extend(str(v) for v in val)
+        # Preserve any other principal shapes (rare).
         for key, val in principal.items():
+            if key in {"AWS", "Service", "Federated"}:
+                continue
             if isinstance(val, list):
                 out.extend(str(v) for v in val)
-            else:
-                out.append(f"{key}:{val}")
+            elif val is not None:
+                out.append(str(val))
         return out
     return [str(principal)]
 

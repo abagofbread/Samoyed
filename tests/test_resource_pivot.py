@@ -24,6 +24,19 @@ def test_service_wildcard_does_not_cross_types():
     assert intersect_scopes(logs, ec2) is None
 
 
+def test_rds_star_intersects_inventored_instance():
+    _, star = resolve_policy_resource("*", "Rds")
+    _, invent = resolve_policy_resource("RDSInstance:aws-goat-db", "RDSInstance")
+    # Typed native form
+    from samoyed.graph.resource_scope import scope_from_native_id
+
+    invent2 = scope_from_native_id("RDSInstance:aws-goat-db")
+    assert invent2 is not None
+    hit = intersect_scopes(star, invent2)
+    assert hit is not None
+    assert hit.match_kind == "type_wildcard"
+    assert hit.scope.canonical_id == "RDSInstance:aws-goat-db"
+
 def test_same_type_wildcard_still_matches():
     _, star = resolve_policy_resource("*", "Secret")
     _, named = resolve_policy_resource(
@@ -303,3 +316,105 @@ def test_feeds_pivot_ecr_image_poison():
     )
     assert paths
     assert "FEEDS" in [s.rel_type for s in paths[0].steps]
+
+
+def test_rds_control_feeds_workload_that_depends_on_db():
+    """Principal CONTROLS inventored RDS + workload DEPENDS_ON same DB → FEEDS."""
+    from samoyed.attack.resource_pivot import enrich_resource_pivots
+
+    builder = GraphBuilder("feeds-rds")
+    dba = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/dba",
+        props={"native_kind": "Role", "concept_type": "Identity"},
+    )
+    rds = builder.add_concept_node(
+        concept_type=ConceptType.DATA_STORE,
+        native_id="RDSInstance:aws-goat-db",
+        props={
+            "resource_type": "RDSInstance",
+            "db_instance_identifier": "aws-goat-db",
+            "name": "aws-goat-db",
+        },
+    )
+    app = builder.add_concept_node(
+        concept_type=ConceptType.WORKLOAD,
+        native_id="ECSTask:app",
+        props={"resource_type": "ECSTask", "concept_type": "Workload", "name": "app"},
+    )
+    builder.add_edge(
+        src_id=dba,
+        rel_type="CONTROLS",
+        dst_id=rds,
+        props={"action": "rds:ModifyDBInstance", "resource_type": "RDSInstance"},
+    )
+    builder.add_edge(
+        src_id=app,
+        rel_type="DEPENDS_ON",
+        dst_id=rds,
+        props={"resource_type": "RDSInstance", "resource": "RDSInstance:aws-goat-db"},
+    )
+    stats = enrich_resource_pivots(builder)
+    assert stats["feeds_edges"] >= 1
+    feeds = [
+        e
+        for e in builder.snapshot.edges
+        if e.rel_type == "FEEDS" and e.src_id == dba and e.dst_id == app
+    ]
+    assert feeds
+    assert feeds[0].props.get("family") == "rds"
+
+
+def test_secret_star_controls_feeds_workload_reading_concrete_secret():
+    """Identity CONTROLS Secret:* + Workload READS inventored secret → FEEDS."""
+    from samoyed.attack.resource_pivot import enrich_resource_pivots
+
+    builder = GraphBuilder("feeds-secret-star")
+    role = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/ecs-task-role",
+        props={"native_kind": "Role", "concept_type": "Identity"},
+    )
+    stub = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="Secret:*",
+        props={"resource_type": "Secret", "native_id": "Secret:*"},
+    )
+    secret = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="Secret:arn:aws:secretsmanager:us-east-1:1:secret:RDS_CREDS",
+        props={
+            "resource_type": "Secret",
+            "name": "RDS_CREDS",
+            "arn": "arn:aws:secretsmanager:us-east-1:1:secret:RDS_CREDS",
+        },
+    )
+    task = builder.add_concept_node(
+        concept_type=ConceptType.WORKLOAD,
+        native_id="ECSTask:app",
+        props={"resource_type": "ECSTask", "concept_type": "Workload", "name": "app"},
+    )
+    builder.add_edge(
+        src_id=role,
+        rel_type="CONTROLS",
+        dst_id=stub,
+        props={"action": "secretsmanager:*", "resource": "*", "resource_type": "Secret"},
+    )
+    builder.add_edge(
+        src_id=task,
+        rel_type="READS",
+        dst_id=secret,
+        props={
+            "resource_type": "Secret",
+            "resource": "arn:aws:secretsmanager:us-east-1:1:secret:RDS_CREDS",
+        },
+    )
+    stats = enrich_resource_pivots(builder)
+    assert stats["feeds_edges"] >= 1
+    feeds = [
+        e
+        for e in builder.snapshot.edges
+        if e.rel_type == "FEEDS" and e.src_id == role and e.dst_id == task
+    ]
+    assert feeds
+    assert feeds[0].props.get("family") == "secretsmanager"

@@ -26,7 +26,7 @@ from samoyed.graph.resource_scope import (
 
 # Only resource families where write→consume is a meaningful poison pivot.
 # IAM service wildcards (Logs:*, Ec2:*, …) live in family "other" and must not FEEDS.
-FEEDS_FAMILIES = frozenset({"s3", "secretsmanager", "ecr", "ssm"})
+FEEDS_FAMILIES = frozenset({"s3", "secretsmanager", "ecr", "ssm", "rds"})
 
 # IAM Identity READS of a resource are authorization shape, not "uses this for work".
 # FEEDS only to use-side consumers — otherwise every shared Secret:*/S3:* becomes a

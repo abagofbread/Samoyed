@@ -101,11 +101,13 @@ def _iter_traversal_steps(
     steps: list[tuple[str, str, str, str, dict]] = []
     if direction in {"out", "both"}:
         for dst_id, rel_type, props in graph.adjacency.get(node_id, []):
-            if rel_type in allowed_rels:
+            if rel_type in allowed_rels and not props.get("non_traversable"):
                 steps.append((dst_id, node_id, rel_type, dst_id, props))
     if direction in {"in", "both"}:
         for edge in graph.edges:
             if edge.dst_id != node_id or edge.rel_type not in allowed_rels:
+                continue
+            if edge.props.get("non_traversable"):
                 continue
             steps.append((edge.src_id, edge.src_id, edge.rel_type, edge.dst_id, edge.props))
     key = _blast_traversal_step_priority if priority == "blast" else _path_traversal_step_priority
@@ -326,10 +328,21 @@ def _blast_impact_tier(graph: GraphSnapshot, path: PathResult) -> int:
         last_rel == "CAN_PRIVESC_TO"
         and "PassRole" in str(last_props.get("pattern_name") or last_props.get("pattern_id") or "")
     )
+    superseded = stub and _stub_superseded_by_concrete(graph, node_id)
 
     if last_rel == "FEEDS":
         return 95
+    if last_rel == "UNLOCKS":
+        # Credential → named RDS / inventored store is the concrete impact story.
+        if not stub and (concept in _RESOURCEISH_CONCEPTS or hvt or props.get("db_instance_identifier")):
+            return 92
+        return 70
+    if last_rel == "HAS_MATERIAL":
+        # Intermediate hop; prefer continuing to UNLOCKS targets in ranking.
+        return 58
     if last_rel in {"CONTROLS", "WRITES", "DELETES"}:
+        if superseded:
+            return 8
         if noise:
             return 25
         # CONTROLS on an IAM principal is usually the PassRole resource grant, not the
@@ -339,6 +352,8 @@ def _blast_impact_tier(graph: GraphSnapshot, path: PathResult) -> int:
         # Inventored write/control first; type-wildcard control still = "can create/poison any X".
         return 90 if not stub else 82
     if last_rel == "EXECUTES":
+        if superseded:
+            return 8
         return 78 if not stub else 72
     if last_rel == "CAN_PRIVESC_TO":
         if passrole or (hvt and not is_outcome):
@@ -347,11 +362,11 @@ def _blast_impact_tier(graph: GraphSnapshot, path: PathResult) -> int:
             # Outcomes matter, but must not bury resource influence.
             return 58
         return 55
-    if last_rel in {"HAS_MATERIAL", "UNLOCKS", "CAN_ESCAPE_TO", "EXECUTES_AS", "PROJECTS_TO"}:
+    if last_rel in {"CAN_ESCAPE_TO", "EXECUTES_AS", "PROJECTS_TO"}:
         return 65
     if last_rel == "READS":
-        if noise or stub:
-            return 12
+        if superseded or noise or stub:
+            return 12 if not superseded else 5
         if concept in _RESOURCEISH_CONCEPTS or node_id.startswith("Resource:"):
             return 42
         return 30
@@ -360,6 +375,61 @@ def _blast_impact_tier(graph: GraphSnapshot, path: PathResult) -> int:
     if is_outcome:
         return 50
     return 28
+
+
+def _stub_superseded_by_concrete(graph: GraphSnapshot, stub_node_id: str) -> bool:
+    """True when capability-glob / passrole inventory already bound concretes via this stub."""
+    if not stub_node_id:
+        return False
+    via_markers = frozenset({"capability-glob", "passrole-ec2-inventory"})
+    for edge in graph.edges:
+        if edge.props.get("discovered_via") not in via_markers:
+            continue
+        if edge.props.get("via_policy_resource") == stub_node_id:
+            dst = graph.nodes.get(edge.dst_id)
+            native = str((dst.props.get("native_id") if dst else None) or edge.dst_id)
+            if not _is_stub_native(native):
+                return True
+    # Fallback: principal that hits this stub also has inventored same-type binding.
+    stub = graph.nodes.get(stub_node_id)
+    stub_native = str((stub.props.get("native_id") if stub else None) or stub_node_id)
+    stub_rtype = str(
+        (stub.props.get("resource_type") if stub else None)
+        or (stub_native.split(":", 1)[0] if ":" in stub_native else "")
+    )
+    principals = {e.src_id for e in graph.edges if e.dst_id == stub_node_id}
+    for principal in principals:
+        for dst, _rel, props in graph.adjacency.get(principal, []):
+            if props.get("discovered_via") not in via_markers:
+                continue
+            dst_node = graph.nodes.get(dst)
+            native = str((dst_node.props.get("native_id") if dst_node else None) or dst)
+            if _is_stub_native(native):
+                continue
+            dst_rtype = str(
+                (dst_node.props.get("resource_type") if dst_node else None)
+                or (native.split(":", 1)[0] if ":" in native else "")
+            )
+            if stub_rtype and dst_rtype and stub_rtype == dst_rtype:
+                return True
+            if stub_native.split(":")[0] == native.split(":")[0]:
+                return True
+    return False
+
+
+def _filter_superseded_stub_paths(
+    graph: GraphSnapshot, paths: list[PathResult]
+) -> list[PathResult]:
+    """Drop * stub endpoints when concrete capability-glob siblings exist."""
+    kept: list[PathResult] = []
+    for path in paths:
+        node_id = path.target_match.get("node_id") or ""
+        node = graph.nodes.get(node_id)
+        native = str((node.props.get("native_id") if node else None) or node_id)
+        if _is_stub_native(native) and _stub_superseded_by_concrete(graph, node_id):
+            continue
+        kept.append(path)
+    return kept
 
 
 def _blast_label(graph: GraphSnapshot, path: PathResult) -> str:
@@ -519,6 +589,7 @@ def find_forward_reachability(
                 queue.append((next_id, next_depth, next_nodes, next_edges))
 
     results = list(best_by_node.values()) + outcome_results
+    results = _filter_superseded_stub_paths(graph, results)
     results.sort(key=lambda p: _blast_rank_key(graph, p), reverse=True)
     return [_annotate_blast_path(graph, p) for p in results[:max_paths]]
 

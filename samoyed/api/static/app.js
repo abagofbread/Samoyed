@@ -21,6 +21,8 @@ const state = {
   markings: null,
   contextMenuNodeId: null,
   ignoredNodeIds: new Set(),
+  lastPathQuery: null,
+  enrichBusy: false,
 };
 
 const NODE_COLORS = {
@@ -1844,13 +1846,27 @@ function openNodeDetail(nodeId) {
   if (!raw) return;
 
   document.getElementById("nodeHint").style.display = "none";
-  document.getElementById("nodeDetail").style.display = "block";
+  const detail = document.getElementById("nodeDetail");
+  detail.style.display = "block";
+  detail.dataset.nodeId = nodeId;
   document.getElementById("nodeTitle").textContent = `${raw.label} — ${displayName(raw)}`;
   const { id, label, ...props } = raw;
   document.getElementById("nodeProps").textContent = JSON.stringify(props, null, 2);
 
   refreshMainGraphSelection();
   switchTab("node");
+}
+
+function refreshOpenNodeDetail() {
+  const detail = document.getElementById("nodeDetail");
+  const nodeId = detail?.dataset?.nodeId || state.selectedNodeId;
+  if (!nodeId || detail?.style.display === "none") return;
+  const visNode = state.nodesDS?.get(nodeId);
+  const raw = visNode?._raw || state.graph.nodes.find((n) => n.id === nodeId);
+  if (!raw) return;
+  document.getElementById("nodeTitle").textContent = `${raw.label} — ${displayName(raw)}`;
+  const { id, label, ...props } = raw;
+  document.getElementById("nodeProps").textContent = JSON.stringify(props, null, 2);
 }
 
 function selectNode(nodeId) {
@@ -1952,6 +1968,14 @@ async function runPathQuery(query) {
     if (!body.target_resource_type) delete body.target_resource_type;
     const ignored = excludedNodeIdsPayload();
     if (ignored) body.exclude_node_ids = ignored;
+
+    state.lastPathQuery = {
+      mode: body.mode,
+      start: body.start,
+      target_concept: body.target_concept || null,
+      target_resource_type: body.target_resource_type || null,
+      max_depth: body.max_depth,
+    };
 
     const data = await fetchJSON(`/api/sessions/${state.sessionId}/paths/query`, {
       method: "POST",
@@ -2432,9 +2456,8 @@ function handleGraphHostContextMenu(event, network) {
   event.preventDefault();
   event.stopPropagation();
   hideContextMenu();
-  if (!nodeId) return;
-  setPathSearchStart(nodeId);
-  showContextMenu(event, nodeId);
+  if (nodeId) setPathSearchStart(nodeId);
+  showContextMenu(event, nodeId || null);
 }
 
 function initGraphContextMenus() {
@@ -2462,6 +2485,7 @@ function initContextMenu() {
   });
   document.addEventListener("scroll", hideContextMenu, true);
   initGraphContextMenus();
+  ensureEnrichBusyIndicator();
 }
 
 function hideContextMenu() {
@@ -2472,64 +2496,83 @@ function hideContextMenu() {
 function showContextMenu(event, nodeId) {
   if (!contextMenuEl) return;
   state.contextMenuNodeId = nodeId;
-  const raw = state.graph.nodes.find((n) => n.id === nodeId);
-  const name = raw ? displayName(raw) : shortId(nodeId);
-  const isIgnored = state.ignoredNodeIds.has(nodeId);
+  const raw = nodeId ? state.graph.nodes.find((n) => n.id === nodeId) : null;
+  const name = raw ? displayName(raw) : "Session";
+  const isIgnored = nodeId ? state.ignoredNodeIds.has(nodeId) : false;
 
-  contextMenuEl.innerHTML = `
-    <div class="context-menu-header">${escapeHtml(shortId(name))}</div>
-    <button type="button" data-action="mark-compromised">Mark compromised</button>
-    <button type="button" data-action="mark-high-value" class="warn">Mark high-value</button>
-    <button type="button" data-action="clear-markings">Clear markings</button>
-    <hr />
-    <button type="button" data-action="toggle-ignore">${isIgnored ? "Un-ignore from queries" : "Ignore from queries"}</button>
-    <hr />
-    <button type="button" data-action="blast-from-here">Blast radius from here</button>
-    <button type="button" data-action="paths-from-here">Paths from here → secrets</button>
-    <hr />
-    <div class="context-menu-section-label">Enrich</div>
-    <div data-role="enrich-library"><div class="context-menu-empty">Loading…</div></div>
-    <hr />
-    <button type="button" data-action="query-compromised-hv">Query: all compromised → high value</button>
-  `;
+  if (!nodeId) {
+    contextMenuEl.innerHTML = `
+      <div class="context-menu-header">Graph</div>
+      <button type="button" data-action="enrich-session">Enrich session (attack surface)</button>
+      <hr />
+      <div class="context-menu-section-label">Apply library file</div>
+      <div data-role="enrich-library"><div class="context-menu-empty">Loading…</div></div>
+    `;
+    contextMenuEl.querySelector('[data-action="enrich-session"]').onclick = () => {
+      hideContextMenu();
+      enrichSessionSurface();
+    };
+  } else {
+    contextMenuEl.innerHTML = `
+      <div class="context-menu-header">${escapeHtml(shortId(name))}</div>
+      <button type="button" data-action="mark-compromised">Mark compromised</button>
+      <button type="button" data-action="mark-high-value" class="warn">Mark high-value</button>
+      <button type="button" data-action="clear-markings">Clear markings</button>
+      <hr />
+      <button type="button" data-action="toggle-ignore">${isIgnored ? "Un-ignore from queries" : "Ignore from queries"}</button>
+      <hr />
+      <button type="button" data-action="blast-from-here">Blast radius from here</button>
+      <button type="button" data-action="paths-from-here">Paths from here → secrets</button>
+      <hr />
+      <button type="button" data-action="enrich-session">Enrich session (attack surface)</button>
+      <div class="context-menu-section-label">Enrich this node</div>
+      <div data-role="enrich-library"><div class="context-menu-empty">Loading…</div></div>
+      <hr />
+      <button type="button" data-action="query-compromised-hv">Query: all compromised → high value</button>
+    `;
 
-  contextMenuEl.querySelector('[data-action="mark-compromised"]').onclick = () => {
-    hideContextMenu();
-    setPathSearchStart(nodeId);
-    markNode(nodeId, { compromised: true });
-  };
-  contextMenuEl.querySelector('[data-action="mark-high-value"]').onclick = () => {
-    hideContextMenu();
-    setPathSearchStart(nodeId);
-    markNode(nodeId, { high_value: true });
-  };
-  contextMenuEl.querySelector('[data-action="clear-markings"]').onclick = () => {
-    hideContextMenu();
-    setPathSearchStart(nodeId);
-    markNode(nodeId, { compromised: false, high_value: false, clear: true });
-  };
-  contextMenuEl.querySelector('[data-action="toggle-ignore"]').onclick = () => {
-    hideContextMenu();
-    setNodeIgnored(nodeId, !isIgnored);
-  };
-  contextMenuEl.querySelector('[data-action="blast-from-here"]').onclick = () => {
-    hideContextMenu();
-    document.getElementById("startSearch").value = nodeId;
-    runPathQuery({ start: nodeId, mode: "blast" });
-    switchTab("search");
-  };
-  contextMenuEl.querySelector('[data-action="paths-from-here"]').onclick = () => {
-    hideContextMenu();
-    document.getElementById("startSearch").value = nodeId;
-    document.getElementById("searchMode").value = "paths";
-    document.getElementById("targetConcept").value = "SecretStore";
-    runPathQuery({ start: nodeId, mode: "paths", target_concept: "SecretStore" });
-    switchTab("search");
-  };
-  contextMenuEl.querySelector('[data-action="query-compromised-hv"]').onclick = () => {
-    hideContextMenu();
-    runMarkingPathsQuery("compromised_to_high_value");
-  };
+    contextMenuEl.querySelector('[data-action="mark-compromised"]').onclick = () => {
+      hideContextMenu();
+      setPathSearchStart(nodeId);
+      markNode(nodeId, { compromised: true });
+    };
+    contextMenuEl.querySelector('[data-action="mark-high-value"]').onclick = () => {
+      hideContextMenu();
+      setPathSearchStart(nodeId);
+      markNode(nodeId, { high_value: true });
+    };
+    contextMenuEl.querySelector('[data-action="clear-markings"]').onclick = () => {
+      hideContextMenu();
+      setPathSearchStart(nodeId);
+      markNode(nodeId, { compromised: false, high_value: false, clear: true });
+    };
+    contextMenuEl.querySelector('[data-action="toggle-ignore"]').onclick = () => {
+      hideContextMenu();
+      setNodeIgnored(nodeId, !isIgnored);
+    };
+    contextMenuEl.querySelector('[data-action="blast-from-here"]').onclick = () => {
+      hideContextMenu();
+      document.getElementById("startSearch").value = nodeId;
+      runPathQuery({ start: nodeId, mode: "blast" });
+      switchTab("search");
+    };
+    contextMenuEl.querySelector('[data-action="paths-from-here"]').onclick = () => {
+      hideContextMenu();
+      document.getElementById("startSearch").value = nodeId;
+      document.getElementById("searchMode").value = "paths";
+      document.getElementById("targetConcept").value = "SecretStore";
+      runPathQuery({ start: nodeId, mode: "paths", target_concept: "SecretStore" });
+      switchTab("search");
+    };
+    contextMenuEl.querySelector('[data-action="enrich-session"]').onclick = () => {
+      hideContextMenu();
+      enrichSessionSurface();
+    };
+    contextMenuEl.querySelector('[data-action="query-compromised-hv"]').onclick = () => {
+      hideContextMenu();
+      runMarkingPathsQuery("compromised_to_high_value");
+    };
+  }
 
   contextMenuEl.style.display = "block";
   contextMenuEl.style.left = `${event.clientX}px`;
@@ -2571,7 +2614,7 @@ async function populateContextEnrichMenu(nodeId) {
     slot.querySelectorAll("[data-enrich-file]").forEach((btn) => {
       btn.onclick = () => {
         const filename = btn.getAttribute("data-enrich-file");
-        const bindTo = state.contextMenuNodeId || requestNodeId;
+        const bindTo = state.contextMenuNodeId || requestNodeId || null;
         hideContextMenu();
         applyEnrichmentLibraryFile(filename, bindTo);
       };
@@ -2594,6 +2637,43 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/'/g, "&#39;");
 }
 
+function ensureEnrichBusyIndicator() {
+  if (document.getElementById("enrichBusyBanner")) return;
+  const el = document.createElement("div");
+  el.id = "enrichBusyBanner";
+  el.className = "enrich-busy-banner";
+  el.hidden = true;
+  el.innerHTML = `<span class="enrich-busy-dot"></span><span data-role="enrich-busy-text">Enriching…</span>`;
+  document.body.appendChild(el);
+}
+
+function setEnrichBusy(active, message) {
+  state.enrichBusy = Boolean(active);
+  ensureEnrichBusyIndicator();
+  const el = document.getElementById("enrichBusyBanner");
+  const text = el?.querySelector('[data-role="enrich-busy-text"]');
+  if (!el) return;
+  if (active) {
+    if (text) text.textContent = message || "Enriching session…";
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+  const status = document.getElementById("enrichmentStatus");
+  if (status && active) status.textContent = message || "Enriching…";
+}
+
+function formatSurfaceEnrichStats(stats) {
+  const parts = [];
+  if (stats.capability_bindings) parts.push(`${stats.capability_bindings} capability bind(s)`);
+  if (stats.feeds_edges) parts.push(`${stats.feeds_edges} FEEDS`);
+  if (stats.passrole_ec2_bindings) parts.push(`${stats.passrole_ec2_bindings} PassRole→EC2`);
+  if (stats.credential_unlocks) parts.push(`${stats.credential_unlocks} unlock(s)`);
+  if (stats.materials_relabeled) parts.push(`${stats.materials_relabeled} relabel(s)`);
+  if (stats.imds_surfaces) parts.push(`${stats.imds_surfaces} IMDS`);
+  return parts.length ? parts.join(", ") : "surface enrichment complete";
+}
+
 function formatEnrichmentStats(stats, label) {
   const unresolved = stats.unresolved_bindings?.length || 0;
   const pending = stats.pending_unlocks?.length || 0;
@@ -2609,11 +2689,62 @@ function formatEnrichmentStats(stats, label) {
   if (pending) parts.push(`${pending} pending unlock(s)`);
   if (unresolved) parts.push(`${unresolved} unmatched host ref(s)`);
   if (skipped) parts.push(`${skipped} skipped`);
+  if (stats.surface) {
+    const surfaceBits = formatSurfaceEnrichStats(stats.surface);
+    if (surfaceBits) parts.push(surfaceBits);
+  }
   const prefix = label ? `${label}: ` : "";
   if (!(stats.materials_applied || 0) && unresolved) {
     return `${prefix}import matched no nodes — enum a session first`;
   }
   return `${prefix}${parts.join(", ")}`;
+}
+
+/** Reload graph + re-run the active query without stealing focus/selection. */
+async function afterEnrichmentRefresh(statusMessage) {
+  const keepSelected = state.selectedNodeId;
+  const keepStart =
+    document.getElementById("startSearch")?.value ||
+    state.lastPathQuery?.start ||
+    "";
+  const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
+  syncGraphFromServer(graph);
+  refreshGraphViewports({ fit: false });
+  if (keepSelected && (state.graph.nodes || []).some((n) => n.id === keepSelected)) {
+    state.selectedNodeId = keepSelected;
+    refreshMainGraphSelection();
+    refreshOpenNodeDetail();
+  }
+  const startEl = document.getElementById("startSearch");
+  if (startEl && keepStart) startEl.value = keepStart;
+
+  if (state.lastPathQuery && state.generatedPaths?.length) {
+    const q = { ...state.lastPathQuery };
+    await runPathQuery(q);
+  }
+  const status = document.getElementById("enrichmentStatus");
+  if (status && statusMessage) status.textContent = statusMessage;
+}
+
+async function enrichSessionSurface() {
+  const status = document.getElementById("enrichmentStatus");
+  if (!state.sessionId) {
+    if (status) status.textContent = "Load a session first";
+    return;
+  }
+  if (state.enrichBusy) return;
+  setEnrichBusy(true, "Enriching session…");
+  try {
+    const data = await fetchJSON(`/api/sessions/${state.sessionId}/enrich-surface`, {
+      method: "POST",
+    });
+    const msg = `Session: ${formatSurfaceEnrichStats(data.stats || {})}`;
+    await afterEnrichmentRefresh(msg);
+  } catch (err) {
+    if (status) status.textContent = String(err.message || err);
+  } finally {
+    setEnrichBusy(false);
+  }
 }
 
 async function applyEnrichmentLibraryFile(filename, targetNodeId) {
@@ -2622,7 +2753,8 @@ async function applyEnrichmentLibraryFile(filename, targetNodeId) {
     if (status) status.textContent = "Load a session first";
     return;
   }
-  if (status) status.textContent = `Importing ${filename}…`;
+  if (state.enrichBusy) return;
+  setEnrichBusy(true, `Importing ${filename}…`);
   try {
     const qs = targetNodeId
       ? `?target_node_id=${encodeURIComponent(targetNodeId)}`
@@ -2631,18 +2763,12 @@ async function applyEnrichmentLibraryFile(filename, targetNodeId) {
       `/api/sessions/${state.sessionId}/enrichment/library/${encodeURIComponent(filename)}${qs}`,
       { method: "POST" },
     );
-    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
-    renderGraph(graph);
-    refreshGraphViewports({ fit: false });
-    if (status) status.textContent = formatEnrichmentStats(data.stats || {}, filename);
-    const hostId = (data.stats && data.stats.hosts_updated && data.stats.hosts_updated[0]) || targetNodeId;
-    if (hostId) {
-      setPathSearchStart(hostId);
-      openNodeDetail(hostId);
-    }
+    await afterEnrichmentRefresh(formatEnrichmentStats(data.stats || {}, filename));
     refreshEnrichmentLibrary();
   } catch (err) {
     if (status) status.textContent = String(err.message || err);
+  } finally {
+    setEnrichBusy(false);
   }
 }
 
@@ -2752,27 +2878,22 @@ async function applyEnrichmentExample(exampleId) {
     if (status) status.textContent = "Choose a lab enrichment example";
     return;
   }
+  if (state.enrichBusy) return;
   const bindTo = state.selectedNodeId || state.contextMenuNodeId || null;
-  if (status) status.textContent = "Importing lab example…";
+  setEnrichBusy(true, "Importing lab example…");
   try {
     const qs = bindTo ? `?target_node_id=${encodeURIComponent(bindTo)}` : "";
     const data = await fetchJSON(
       `/api/sessions/${state.sessionId}/enrichment/examples/${id}${qs}`,
       { method: "POST" },
     );
-    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
-    renderGraph(graph);
-    refreshGraphViewports({ fit: false });
-    if (status) {
-      status.textContent = formatEnrichmentStats(data.stats || {}, data.example_id || "lab example");
-    }
-    const hostId = (data.stats && data.stats.hosts_updated && data.stats.hosts_updated[0]) || bindTo;
-    if (hostId) {
-      setPathSearchStart(hostId);
-      openNodeDetail(hostId);
-    }
+    await afterEnrichmentRefresh(
+      formatEnrichmentStats(data.stats || {}, data.example_id || "lab example"),
+    );
   } catch (err) {
     if (status) status.textContent = String(err.message || err);
+  } finally {
+    setEnrichBusy(false);
   }
 }
 
@@ -2800,7 +2921,8 @@ async function applyEnrichmentFile(file) {
     if (status) status.textContent = "Choose an enrichment JSON file";
     return;
   }
-  if (status) status.textContent = "Importing enrichment…";
+  if (state.enrichBusy) return;
+  setEnrichBusy(true, "Importing enrichment…");
   const form = new FormData();
   form.append("file", file);
   if (state.selectedNodeId) {
@@ -2814,18 +2936,12 @@ async function applyEnrichmentFile(file) {
     });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
-    renderGraph(graph);
-    refreshGraphViewports({ fit: false });
-    if (status) status.textContent = formatEnrichmentStats(data.stats || {}, file.name);
-    const hostId = (data.stats && data.stats.hosts_updated && data.stats.hosts_updated[0]) || state.selectedNodeId;
-    if (hostId) {
-      setPathSearchStart(hostId);
-      openNodeDetail(hostId);
-    }
+    await afterEnrichmentRefresh(formatEnrichmentStats(data.stats || {}, file.name));
     refreshEnrichmentLibrary();
   } catch (err) {
     if (status) status.textContent = String(err.message || err);
+  } finally {
+    setEnrichBusy(false);
   }
 }
 
@@ -2838,6 +2954,7 @@ function initEnrichmentUpload() {
 
   applyExampleBtn?.addEventListener("click", () => applyEnrichmentExample());
   refreshLibBtn?.addEventListener("click", () => refreshEnrichmentLibrary());
+  document.getElementById("enrichSessionSurface")?.addEventListener("click", () => enrichSessionSurface());
 
   applyBtn?.addEventListener("click", () => {
     applyEnrichmentFile(fileInput?.files?.[0]);

@@ -90,7 +90,7 @@ def _artifacts_from_report(
             props["is_caller"] = True
         if identity.get("is_scenario_start"):
             props["is_scenario_start"] = True
-        for key in ("ou", "namespace", "provider", "notes"):
+        for key in ("ou", "namespace", "provider", "notes", "assume_role_policy"):
             if identity.get(key) is not None:
                 props[key] = identity[key]
         yield ConceptArtifact(

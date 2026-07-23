@@ -241,3 +241,252 @@ def test_passrole_runinstances_targets_ec2_trusting_deployer():
     # Prefer PassRole-labeled hop when present
     to_dep = next(p for p in paths if p.target_match.get("node_id") == deployer)
     assert "PassRole" in str(to_dep.steps[-1].evidence.get("pattern_name") or "")
+
+
+def test_blast_omits_star_stub_when_capability_glob_concrete_exists():
+    from samoyed.attack.capability_bindings import enrich_capability_bindings
+
+    builder = GraphBuilder("blast-omit-stub")
+    role = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/writer",
+        props={"native_kind": "Role", "concept_type": "Identity"},
+    )
+    stub = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="Secret:*",
+        props={"resource_type": "Secret", "native_id": "Secret:*"},
+    )
+    concrete = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="Secret:arn:aws:secretsmanager:us-east-1:1:secret:app-config",
+        props={
+            "resource_type": "Secret",
+            "name": "app-config",
+            "arn": "arn:aws:secretsmanager:us-east-1:1:secret:app-config",
+        },
+    )
+    # Secrets only expand when a workload/runtime actually consumes them.
+    workload = builder.add_concept_node(
+        concept_type=ConceptType.WORKLOAD,
+        native_id="ecs:task/app",
+        props={"concept_type": "Workload"},
+    )
+    builder.add_edge(src_id=workload, rel_type="READS", dst_id=concrete, props={})
+    builder.add_edge(
+        src_id=role,
+        rel_type="CONTROLS",
+        dst_id=stub,
+        props={"action": "secretsmanager:*", "resource": "*", "resource_type": "Secret"},
+    )
+    enrich_capability_bindings(builder)
+
+    paths = get_blast_radius(builder.snapshot, start_node_id=role, max_depth=2, max_paths=10)
+    ends = [p.target_match.get("node_id") for p in paths]
+    assert concrete in ends
+    assert stub not in ends, "Secret:* must be omitted once capability-glob concrete exists"
+
+
+def test_capability_glob_only_binds_consumed_secrets():
+    """Secret:* expands onto inventored secrets with use-side consumers — not unused vaults."""
+    from samoyed.attack.capability_bindings import enrich_capability_bindings
+
+    builder = GraphBuilder("skip-unused-secret")
+    role = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/ecs-task-role",
+        props={"native_kind": "Role", "concept_type": "Identity"},
+    )
+    stub = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="Secret:*",
+        props={"resource_type": "Secret"},
+    )
+    unused = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="Secret:arn:aws:secretsmanager:us-east-1:1:secret:RDS_CREDS",
+        props={
+            "resource_type": "Secret",
+            "name": "RDS_CREDS",
+            "arn": "arn:aws:secretsmanager:us-east-1:1:secret:RDS_CREDS",
+        },
+    )
+    useful = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="Secret:arn:aws:secretsmanager:us-east-1:1:secret:app-config",
+        props={"resource_type": "Secret", "name": "app-config"},
+    )
+    workload = builder.add_concept_node(
+        concept_type=ConceptType.WORKLOAD,
+        native_id="ecs:task/app",
+        props={"concept_type": "Workload"},
+    )
+    builder.add_edge(src_id=workload, rel_type="READS", dst_id=useful, props={})
+    builder.add_edge(
+        src_id=role,
+        rel_type="CONTROLS",
+        dst_id=stub,
+        props={"action": "secretsmanager:*", "resource": "*", "resource_type": "Secret"},
+    )
+    # Stale capability-glob onto unused vault — must be pruned on re-enrich.
+    builder.add_edge(
+        src_id=role,
+        rel_type="CONTROLS",
+        dst_id=unused,
+        props={"discovered_via": "capability-glob", "action": "secretsmanager:*"},
+    )
+    stats = enrich_capability_bindings(builder)
+    assert stats.get("unused_secret_bindings_pruned", 0) >= 1
+    assert not any(
+        e.dst_id == unused and e.props.get("discovered_via") == "capability-glob"
+        for e in builder.snapshot.edges
+    )
+    assert any(
+        e.dst_id == useful and e.props.get("discovered_via") == "capability-glob"
+        for e in builder.snapshot.edges
+        if e.src_id == role and e.rel_type == "CONTROLS"
+    )
+
+
+def test_blast_reaches_inventored_ec2_via_passrole_runinstances():
+    """PassRole+RunInstances privesc expands onto inventored EC2 EXECUTES_AS deployer."""
+    from samoyed.attack.passrole_ec2 import enrich_passrole_ec2_bindings
+    from samoyed.attack.surface import enrich_attack_surface
+
+    builder = GraphBuilder("blast-passrole-ec2")
+    instance = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/ecs-instance-role",
+        props={
+            "native_kind": "Role",
+            "arn": "arn:aws:iam::1:role/ecs-instance-role",
+            "name": "ecs-instance-role",
+            "is_caller": True,
+        },
+    )
+    deployer = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/ec2Deployer-role",
+        props={
+            "native_kind": "Role",
+            "arn": "arn:aws:iam::1:role/ec2Deployer-role",
+            "name": "ec2Deployer-role",
+            "is_high_value": True,
+            "high_value_kind": "administrator-policy",
+        },
+    )
+    service = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="Service:ec2.amazonaws.com",
+        props={"native_kind": "Service", "arn": "ec2.amazonaws.com"},
+    )
+    stub = builder.add_concept_node(
+        concept_type=ConceptType.RUNTIME_BINDING,
+        native_id="EC2Instance:*",
+        props={"resource_type": "EC2Instance"},
+    )
+    ec2 = builder.add_concept_node(
+        concept_type=ConceptType.RUNTIME_BINDING,
+        native_id="EC2Instance:i-goat01",
+        props={"resource_type": "EC2Instance", "instance_id": "i-goat01", "name": "goat-box"},
+    )
+    builder.add_edge(src_id=service, rel_type="CAN_ASSUME_ROLE", dst_id=deployer, props={})
+    builder.add_edge(src_id=ec2, rel_type="EXECUTES_AS", dst_id=deployer, props={})
+    builder.add_edge(
+        src_id=instance,
+        rel_type="CONTROLS",
+        dst_id=deployer,
+        props={"action": "iam:PassRole", "resource_type": "Role"},
+    )
+    builder.add_edge(
+        src_id=instance,
+        rel_type="EXECUTES",
+        dst_id=stub,
+        props={"action": "ec2:RunInstances", "resource": "*", "resource_type": "EC2Instance"},
+    )
+    builder.add_edge(
+        src_id=instance,
+        rel_type="CONTROLS",
+        dst_id=instance,
+        props={"action": "iam:AttachRolePolicy"},
+    )
+    builder.add_concept_node(
+        concept_type=ConceptType.ENTITLEMENT,
+        native_id="pol:instance",
+        props={
+            "principal_arn": "arn:aws:iam::1:role/ecs-instance-role",
+            "actions": ["iam:PassRole", "ec2:RunInstances", "iam:AttachRolePolicy", "iam:*"],
+        },
+    )
+
+    apply_attack_analysis(builder, provider=CloudProvider.AWS)
+    enrich_passrole_ec2_bindings(builder)
+    enrich_attack_surface(builder, provider=CloudProvider.AWS)
+
+    assert any(
+        e.src_id == instance
+        and e.dst_id == ec2
+        and e.rel_type == "EXECUTES"
+        and e.props.get("discovered_via") == "passrole-ec2-inventory"
+        for e in builder.snapshot.edges
+    )
+
+    paths = get_blast_radius(builder.snapshot, start_node_id=instance, max_depth=4, max_paths=30)
+    ends = {p.target_match.get("node_id") for p in paths}
+    assert deployer in ends
+    assert ec2 in ends
+    assert stub not in ends
+
+
+def test_blast_lazy_repair_wires_s3_glob_feeds_to_consumer():
+    """Without prior enrich-surface, repair_blast_graph makes S3:* → bucket → FEEDS → app."""
+    from samoyed.attack.surface import repair_blast_graph
+
+    builder = GraphBuilder("blast-lazy-feeds")
+    role = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/writer",
+        props={"native_kind": "Role", "concept_type": "Identity"},
+    )
+    stub = builder.add_concept_node(
+        concept_type=ConceptType.DATA_STORE,
+        native_id="S3Bucket:*",
+        props={"resource_type": "S3Bucket", "native_id": "S3Bucket:*"},
+    )
+    bucket = builder.add_concept_node(
+        concept_type=ConceptType.DATA_STORE,
+        native_id="S3Bucket:prod_bucket",
+        props={"resource_type": "S3Bucket", "bucket_name": "prod_bucket", "name": "prod_bucket"},
+    )
+    app = builder.add_concept_node(
+        concept_type=ConceptType.WORKLOAD,
+        native_id="ecs:task/internal_app",
+        props={"concept_type": "Workload", "name": "internal_app"},
+    )
+    builder.add_edge(
+        src_id=role,
+        rel_type="CONTROLS",
+        dst_id=stub,
+        props={"action": "s3:*", "resource": "*", "resource_type": "S3Bucket"},
+    )
+    builder.add_edge(src_id=app, rel_type="READS", dst_id=bucket, props={})
+
+    # No enrich_attack_surface — only lazy blast repair.
+    stats = repair_blast_graph(builder)
+    assert stats.get("capability_bindings", 0) >= 1
+    assert stats.get("feeds_edges", 0) >= 1
+    assert any(
+        e.src_id == role and e.dst_id == bucket and e.rel_type == "CONTROLS"
+        for e in builder.snapshot.edges
+    )
+    assert any(
+        e.src_id == role and e.dst_id == app and e.rel_type == "FEEDS"
+        for e in builder.snapshot.edges
+    )
+
+    paths = get_blast_radius(builder.snapshot, start_node_id=role, max_depth=3, max_paths=20)
+    ends = {p.target_match.get("node_id") for p in paths}
+    assert app in ends
+    feeds_paths = [p for p in paths if p.steps and p.steps[-1].rel_type == "FEEDS"]
+    assert feeds_paths
+    assert any(p.node_ids[-1] == app for p in feeds_paths)

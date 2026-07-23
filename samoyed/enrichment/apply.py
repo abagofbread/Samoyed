@@ -12,11 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from samoyed.cloud.concepts import ConceptType
+from samoyed.collectors.sa_token import enrich_sa_token_material
 from samoyed.enrichment.catalog import get_material_kind
-from samoyed.enrichment.impact import (
-    is_db_credential_kind,
-    wire_credential_impact,
-)
+from samoyed.enrichment.impact import wire_credential_impact
+from samoyed.enrichment.inventory import preferred_enrichment_host, project_declared_inventory
 from samoyed.enrichment.labels import (
     enrich_assess_item,
     is_weak_label,
@@ -73,11 +72,26 @@ def apply_enrichment_report(
         "credential_reuse_linked": 0,
         "unlocks_applied": 0,
         "stores_projected": 0,
+        "declared_projected": 0,
+        "ecs_workloads": 0,
+        "ecs_hosts": 0,
+        "escape_surfaces": 0,
     }
 
     import_scope = _import_scope_key(report)
     prepared_by_binding: list[tuple[dict[str, Any], list[tuple[dict[str, Any], Any]]]] = []
     all_prepared: list[tuple[dict[str, Any], Any]] = []
+
+    # Project TF-declared ECS/ASG/RDS topology before host fuzzy-resolve so
+    # folder-style host_hint (e.g. module-2) can bind onto the goat workload.
+    inv = project_declared_inventory(
+        builder,
+        declared_resources=report.get("declared_resources"),
+        report=report,
+    )
+    for key in ("declared_projected", "ecs_workloads", "ecs_hosts", "escape_surfaces"):
+        stats[key] = inv.get(key, 0)
+    stats["edges_added"] += inv.get("edges_added", 0)
 
     for binding in report.get("bindings") or []:
         if not isinstance(binding, dict):
@@ -141,13 +155,31 @@ def apply_enrichment_report(
             material = enrich_assess_item(dict(material))
             if material.get("summary") and is_weak_label(str(material["summary"]), kind=kind):
                 material = enrich_assess_item(material)
+            if kind == "k8s_service_account_token":
+                material = enrich_sa_token_material(material)
 
             resolves_to = material.get("resolves_to")
             name_hints = [str(h) for h in (material.get("name_hints") or []) if h]
-            # DB passwords map to stores (RDS / secrets) — not every TF role name.
-            if is_db_credential_kind(kind):
+            typed_targets = list(material.get("impact_targets") or [])
+            # Attach declared Secrets Manager vault names so Secret:* can UNLOCKS
+            # typed targets with where=<vault> even if correlate omitted them.
+            if typed_targets:
+                target_names = {
+                    str(t.get("name") or "").strip().lower()
+                    for t in typed_targets
+                    if isinstance(t, dict)
+                }
+                for row in report.get("declared_resources") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("kind") or "") != "secretsmanager_secret":
+                        continue
+                    vault = str(row.get("name") or "").strip()
+                    if vault and vault.lower() not in target_names and vault not in name_hints:
+                        name_hints.append(vault)
+            # Typed impact_targets skip fuzzy unlocks; otherwise resolve name hints.
+            if typed_targets:
                 matched_refs = []
-                resolves_to = resolves_to  # identity resolves_to only if explicitly set
             else:
                 matched_refs = _resolve_name_hints(graph, name_hints, material_kind=kind)
                 if not resolves_to:
@@ -157,17 +189,32 @@ def apply_enrichment_report(
                 kind,
                 locator,
                 fingerprint=material.get("secret_fingerprint"),
+                impact_key=material.get("impact_key") or _impact_key_from_material(material),
             )
             evidence = redact_evidence(material.get("evidence") or {})
+            seen_at = _normalize_seen_at(
+                locator,
+                material.get("seen_at"),
+                material.get("also_seen_in"),
+            )
+            # Locations live on HAS_MATERIAL edges when the secret is multi-site
+            # or keyed by shared impact / fingerprint.
+            location_on_edge = bool(
+                len(seen_at) > 1
+                or material.get("secret_fingerprint")
+                or material.get("impact_key")
+                or typed_targets
+            )
             # Always derive labels from evidence — never keep catalog/kind-slug titles.
             label_props = material_detail_props(
                 kind=kind,
                 locator=locator,
                 evidence=evidence,
                 name_hints=name_hints or None,
+                include_location=not location_on_edge,
             )
             stamped = material.get("summary")
-            if stamped and not is_weak_label(str(stamped), kind=kind):
+            if stamped and not is_weak_label(str(stamped), kind=kind) and not location_on_edge:
                 label_props["summary"] = str(stamped)
                 label_props["display_name"] = str(stamped)
                 label_props["name"] = str(stamped)
@@ -175,11 +222,26 @@ def apply_enrichment_report(
                     str(material["finding"]), kind=kind
                 ):
                     label_props["finding"] = str(material["finding"])
+            elif location_on_edge and material.get("finding"):
+                # Rebuild a location-free title even if the report stamped a pathful summary.
+                finding = str(material.get("finding") or label_props.get("finding") or "")
+                if finding and not is_weak_label(finding, kind=kind):
+                    label_props["finding"] = finding
+                label_props["summary"] = material_detail_props(
+                    kind=kind,
+                    locator=locator,
+                    evidence={**evidence, "finding": label_props.get("finding") or finding},
+                    name_hints=name_hints or None,
+                    include_location=False,
+                )["summary"]
+                label_props["display_name"] = label_props["summary"]
+                label_props["name"] = label_props["summary"]
 
             mat_props: dict[str, Any] = {
                 "native_kind": "PivotMaterial",
                 "material_kind": kind,
                 "locator": locator,
+                "seen_at": seen_at,
                 "extends_blast_to": spec.extends_blast_to,
                 "collector": report.get("collector"),
                 "collector_mode": report.get("collector_mode"),
@@ -190,18 +252,29 @@ def apply_enrichment_report(
                 "unlock_pending": bool(spec.requires_target and not resolves_to),
                 **label_props,
             }
+            impact_key = material.get("impact_key") or _impact_key_from_material(material)
+            if impact_key:
+                mat_props["impact_key"] = impact_key
             if material.get("secret_fingerprint"):
                 mat_props["secret_fingerprint"] = material["secret_fingerprint"]
-            if material.get("reuse_count"):
-                mat_props["reuse_count"] = material["reuse_count"]
-                mat_props["also_seen_in"] = material.get("also_seen_in") or []
+            if material.get("material_kinds"):
+                mat_props["material_kinds"] = list(material["material_kinds"])
+            if len(seen_at) > 1 or material.get("reuse_count"):
+                mat_props["reuse_count"] = max(len(seen_at), int(material.get("reuse_count") or 0))
+                mat_props["also_seen_in"] = [s for s in seen_at if s != locator]
                 stats["credential_reuse_linked"] += 1
             if name_hints:
                 mat_props["name_hints"] = name_hints
+            if typed_targets:
+                mat_props["impact_targets"] = typed_targets
             if matched_refs:
                 mat_props["matched_names"] = [
                     {"hint": hint, "node_id": nid} for hint, nid in matched_refs
                 ]
+
+            prior = _find_node_by_native_id(graph, mat_native)
+            if prior:
+                mat_props = _collapse_material_node_props(prior.props, mat_props)
 
             mat_id = builder.add_concept_node(
                 concept_type=ConceptType.SECRET_STORE,
@@ -214,6 +287,19 @@ def apply_enrichment_report(
                 node.props.update(mat_props)
 
             if host_id:
+                edge_props = enrichment_edge_props(
+                    source="collector",
+                    material_kind=kind,
+                    locator=locator,
+                    seen_at=seen_at,
+                    collector=report.get("collector"),
+                    confidence=material.get("confidence") or "explicit",
+                    import_scope=import_scope,
+                )
+                if material.get("secret_fingerprint"):
+                    edge_props["secret_fingerprint"] = material["secret_fingerprint"]
+                if impact_key:
+                    edge_props["impact_key"] = impact_key
                 stats["edges_added"] += int(
                     _upsert_edge(
                         builder,
@@ -221,14 +307,8 @@ def apply_enrichment_report(
                         host_id,
                         spec.host_rel,
                         mat_id,
-                        enrichment_edge_props(
-                            source="collector",
-                            material_kind=kind,
-                            locator=locator,
-                            collector=report.get("collector"),
-                            confidence=material.get("confidence") or "explicit",
-                            import_scope=import_scope,
-                        ),
+                        edge_props,
+                        merge_seen_at=True,
                     )
                 )
                 if host_id not in stats["hosts_updated"]:
@@ -236,7 +316,7 @@ def apply_enrichment_report(
 
             unlocked_ids: set[str] = set()
 
-            # Credential impact: password/DSN → RDS + Secrets Manager (project if missing).
+            # Typed impact: material -[UNLOCKS]-> named concrete target(s).
             impact = wire_credential_impact(
                 builder,
                 graph,
@@ -244,8 +324,7 @@ def apply_enrichment_report(
                 material_kind=kind,
                 locator=locator,
                 name_hints=name_hints,
-                impact_targets=list(material.get("impact_targets") or []),
-                declared_resources=list(report.get("declared_resources") or []),
+                impact_targets=typed_targets,
                 evidence=evidence,
                 collector=report.get("collector"),
                 unlock_rel=spec.unlock_rel,
@@ -265,8 +344,8 @@ def apply_enrichment_report(
                     }
                 )
 
-            # Non-DB materials: fuzzy name hints may still unlock identities/secrets.
-            if not is_db_credential_kind(kind):
+            # Without typed targets: fuzzy name hints may still unlock identities/secrets.
+            if not typed_targets:
                 for hint, node_id in matched_refs:
                     stats["name_matches"].append(
                         {"hint": hint, "node_id": node_id, "material": locator}
@@ -315,7 +394,7 @@ def apply_enrichment_report(
                             )
                         )
 
-            if resolves_to and not is_db_credential_kind(kind):
+            if resolves_to and not typed_targets:
                 existing = resolve_node_ref(
                     graph,
                     str(resolves_to),
@@ -404,17 +483,25 @@ def _clear_prior_import(
     result = {"materials_removed": 0, "edges_removed": 0}
     incoming_ids: set[str] = set()
     incoming_keys: set[tuple[str, str]] = set()
+    incoming_fps: set[str] = set()
     for material, spec in prepared:
         if spec.kind == "none_observed":
             continue
         locator = redact_secret_text(str(material.get("locator") or spec.kind))
+        fp = material.get("secret_fingerprint")
+        if isinstance(fp, str) and fp.strip():
+            incoming_fps.add(fp.strip())
+        impact_key = material.get("impact_key") or _impact_key_from_material(material)
         native = material.get("id") or material_native_id(
             spec.kind,
             locator,
-            fingerprint=material.get("secret_fingerprint"),
+            fingerprint=fp if isinstance(fp, str) else None,
+            impact_key=impact_key,
         )
         incoming_ids.add(str(native))
         incoming_keys.add((spec.kind, locator))
+        for loc in material.get("seen_at") or []:
+            incoming_keys.add((spec.kind, redact_secret_text(str(loc))))
 
     remove: list[str] = []
     for node_id, node in list(graph.nodes.items()):
@@ -425,7 +512,17 @@ def _clear_prior_import(
         native = str(node.props.get("native_id") or "")
         kind = str(node.props.get("material_kind") or "")
         locator = str(node.props.get("locator") or "")
+        node_fp = str(node.props.get("secret_fingerprint") or "")
+        node_impact = str(node.props.get("impact_key") or "")
         if native in incoming_ids or (kind, locator) in incoming_keys:
+            remove.append(node_id)
+        elif node_fp and node_fp in incoming_fps:
+            # Migrate location-keyed nodes onto fingerprint identity on re-import.
+            remove.append(node_id)
+        elif node_impact and any(
+            str(material.get("impact_key") or _impact_key_from_material(material) or "") == node_impact
+            for material, _spec in prepared
+        ):
             remove.append(node_id)
         elif node.props.get("import_scope") == import_scope:
             remove.append(node_id)
@@ -577,7 +674,8 @@ def _resolve_binding_target(
     if len(starts) == 1:
         return starts[0]
 
-    return None
+    # Folder-style host_hint / unbound collect → projected ECS workload or ASG host.
+    return preferred_enrichment_host(graph)
 
 
 def _is_host_like(graph: GraphSnapshot, node_id: str) -> bool:
@@ -642,11 +740,113 @@ def _upsert_edge(
     rel_type: str,
     dst_id: str,
     props: dict[str, Any],
+    *,
+    merge_seen_at: bool = False,
 ) -> bool:
     for dst, rel, existing in graph.adjacency.get(src_id, []):
         if dst == dst_id and rel == rel_type:
-            # Refresh props on re-import.
-            existing.update(props)
+            if merge_seen_at:
+                _merge_seen_at_props(existing, props)
+            else:
+                existing.update(props)
             return False
     builder.add_edge(src_id=src_id, rel_type=rel_type, dst_id=dst_id, props=props)
     return True
+
+
+def _normalize_seen_at(
+    locator: str,
+    seen_at: Any = None,
+    also_seen_in: Any = None,
+) -> list[str]:
+    out: list[str] = []
+    for raw in (locator, *(seen_at or []), *(also_seen_in or [])):
+        text = redact_secret_text(str(raw)) if raw else ""
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _impact_key_from_material(material: dict[str, Any]) -> str | None:
+    from samoyed.collectors.correlate import db_impact_key
+
+    return db_impact_key(material)
+
+
+def _merge_seen_at_props(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """Merge observation sites onto an existing edge; keep other incoming props."""
+    seen = _normalize_seen_at(
+        str(incoming.get("locator") or existing.get("locator") or ""),
+        existing.get("seen_at"),
+        incoming.get("seen_at"),
+    )
+    also = existing.get("also_seen_in") or []
+    if isinstance(also, list):
+        for loc in also:
+            text = str(loc)
+            if text and text not in seen:
+                seen.append(text)
+    merged = dict(incoming)
+    merged["seen_at"] = seen
+    if seen:
+        merged["locator"] = incoming.get("locator") or existing.get("locator") or seen[0]
+        if len(seen) > 1:
+            merged["also_seen_in"] = [s for s in seen if s != merged["locator"]]
+    existing.update(merged)
+
+
+def _find_node_by_native_id(graph: GraphSnapshot, native_id: str) -> Any | None:
+    for node in graph.nodes.values():
+        if str(node.props.get("native_id") or "") == native_id:
+            return node
+    return None
+
+
+def _collapse_material_node_props(
+    prior: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge a second observation of the same fingerprint into prior node props."""
+    merged = dict(prior)
+    seen = _normalize_seen_at(
+        str(incoming.get("locator") or ""),
+        prior.get("seen_at"),
+        incoming.get("seen_at"),
+    )
+    for loc in prior.get("also_seen_in") or []:
+        text = str(loc)
+        if text and text not in seen:
+            seen.append(text)
+    # Prefer incoming labels/kind when present (caller already chose primary).
+    for key, value in incoming.items():
+        if key in {"seen_at", "also_seen_in", "reuse_count", "material_kinds", "name_hints"}:
+            continue
+        if value is not None:
+            merged[key] = value
+    merged["seen_at"] = seen
+    locator = str(incoming.get("locator") or merged.get("locator") or "")
+    if locator:
+        merged["locator"] = locator
+    if len(seen) > 1:
+        merged["reuse_count"] = max(len(seen), int(prior.get("reuse_count") or 0), int(incoming.get("reuse_count") or 0))
+        merged["also_seen_in"] = [s for s in seen if s != merged.get("locator")]
+    kinds: list[str] = []
+    for source in (prior, incoming):
+        for kind in (
+            source.get("material_kind"),
+            *(source.get("material_kinds") or []),
+        ):
+            text = str(kind) if kind else ""
+            if text and text not in kinds:
+                kinds.append(text)
+    if kinds:
+        merged["material_kinds"] = kinds
+    hints: list[str] = []
+    for source in (prior, incoming):
+        for hint in source.get("name_hints") or []:
+            text = str(hint)
+            if text and text not in hints:
+                hints.append(text)
+    if hints:
+        merged["name_hints"] = hints
+    return merged

@@ -73,6 +73,13 @@ def resolve_policy_resource(resource: str, resource_type: str | None) -> tuple[s
         "SSMParameter",
         "LambdaFunction",
         "EC2Instance",
+        "RDSInstance",
+        "Rds",
+        "RDS",
+        "DBInstance",
+        "DynamoDBTable",
+        "DynamoDB",
+        "KMSKey",
     }
     if ":" in resource and not resource.startswith("arn:") and resource.split(":", 1)[0] in typed_prefixes:
         typed, rest = resource.split(":", 1)
@@ -146,6 +153,21 @@ def scope_from_native_id(native_id: str, *, image_uri: str | None = None) -> Res
         # Policy stubs often use Lambda:… — normalize to LambdaFunction for UFC pivots.
         rest = native_id.split(":", 1)[1]
         return ResourceScope("lambda", "LambdaFunction", f"LambdaFunction:{rest}", rest)
+    if native_id.startswith("EC2Instance:"):
+        rest = native_id.split(":", 1)[1]
+        return ResourceScope("ec2", "EC2Instance", native_id, rest if rest != "*" else "*")
+    if native_id.startswith(("RDSInstance:", "Rds:", "RDS:", "DBInstance:")):
+        rest = native_id.split(":", 1)[1]
+        return ResourceScope("rds", "RDSInstance", f"RDSInstance:{rest}", rest)
+    if native_id.startswith(("DynamoDBTable:", "DynamoDB:")):
+        rest = native_id.split(":", 1)[1]
+        return ResourceScope("dynamodb", "DynamoDBTable", f"DynamoDBTable:{rest}", rest)
+    if native_id.startswith("KMSKey:"):
+        return ResourceScope("kms", "KMSKey", native_id, native_id.split(":", 1)[1])
+    if native_id.startswith("arn:aws:rds:"):
+        # arn:aws:rds:region:account:db:identifier
+        leaf = native_id.rsplit(":", 1)[-1]
+        return ResourceScope("rds", "RDSInstance", f"RDSInstance:{leaf}", native_id)
     if native_id.startswith("arn:aws:lambda:"):
         return ResourceScope(
             "lambda",
@@ -182,9 +204,10 @@ def parse_ecr_image_uri(uri: str) -> ResourceScope | None:
 def intersect_scopes(producer: ResourceScope, consumer: ResourceScope) -> ScopeIntersection | None:
     """Return the narrowest overlapping scope, or None if disjoint."""
     # Different resource types never overlap — except ECR repo ARN ↔ image URI,
-    # and Lambda ↔ LambdaFunction (policy stubs vs inventored functions).
+    # Lambda ↔ LambdaFunction, and Rds ↔ RDSInstance (policy stubs vs inventored).
     if producer.resource_type != consumer.resource_type:
         lambda_aliases = {"Lambda", "LambdaFunction"}
+        rds_aliases = {"Rds", "RDSInstance", "RDS", "DBInstance"}
         if producer.family == consumer.family == "ecr":
             pass
         elif (
@@ -192,6 +215,14 @@ def intersect_scopes(producer: ResourceScope, consumer: ResourceScope) -> ScopeI
             or (
                 producer.resource_type in lambda_aliases
                 and consumer.resource_type in lambda_aliases
+            )
+        ):
+            pass
+        elif (
+            producer.family == consumer.family == "rds"
+            or (
+                producer.resource_type in rds_aliases
+                and consumer.resource_type in rds_aliases
             )
         ):
             pass
@@ -219,6 +250,18 @@ def intersect_scopes(producer: ResourceScope, consumer: ResourceScope) -> ScopeI
         return _intersect_ecr(producer, consumer)
     if producer.family == "ssm":
         return _intersect_ssm(producer, consumer)
+    if producer.family == "rds":
+        return _intersect_rds(producer, consumer)
+    if producer.family == "lambda":
+        return _intersect_lambda(producer, consumer)
+    if producer.family == "ec2":
+        if _ids_equal(producer.canonical_id, consumer.canonical_id):
+            return ScopeIntersection(producer, "exact", "explicit")
+        if _arn_glob_match(producer.pattern, consumer.pattern) or _arn_glob_match(
+            consumer.pattern, producer.pattern
+        ):
+            return ScopeIntersection(_narrower(producer, consumer), "arn_match", "explicit")
+        return None
 
     if _ids_equal(producer.canonical_id, consumer.canonical_id):
         return ScopeIntersection(producer, "exact", "explicit")
@@ -279,6 +322,14 @@ def _family_for_type(rtype: str) -> str:
         "SSMParameter": "ssm",
         "LambdaFunction": "lambda",
         "Lambda": "lambda",
+        "EC2Instance": "ec2",
+        "RDSInstance": "rds",
+        "Rds": "rds",
+        "RDS": "rds",
+        "DBInstance": "rds",
+        "DynamoDBTable": "dynamodb",
+        "DynamoDB": "dynamodb",
+        "KMSKey": "kms",
     }.get(rtype or "", "other")
 
 
@@ -286,8 +337,14 @@ def _type_from_native(native_id: str) -> str | None:
     if ":" not in native_id:
         return None
     prefix = native_id.split(":", 1)[0]
-    if prefix in {"S3Bucket", "Secret", "ECRRepository", "SSMParameter", "LambdaFunction", "Lambda"}:
+    if prefix in {"S3Bucket", "Secret", "ECRRepository", "SSMParameter", "LambdaFunction", "Lambda", "EC2Instance"}:
         return "LambdaFunction" if prefix == "Lambda" else prefix
+    if prefix in {"RDSInstance", "Rds", "RDS", "DBInstance"}:
+        return "RDSInstance"
+    if prefix in {"DynamoDBTable", "DynamoDB"}:
+        return "DynamoDBTable"
+    if prefix == "KMSKey":
+        return "KMSKey"
     return None
 
 
@@ -305,6 +362,20 @@ def _scope_from_typed(typed: str, rest: str) -> tuple[str, ResourceScope]:
         return nid, ResourceScope("ecr", "ECRRepository", nid, rest)
     if typed == "SSMParameter":
         return nid, ResourceScope("ssm", "SSMParameter", nid, rest, path_prefix=rest)
+    if typed in {"RDSInstance", "Rds", "RDS", "DBInstance"}:
+        # Normalize policy stubs (Rds:*) and inventored DBs to RDSInstance.
+        canon = f"RDSInstance:{rest}"
+        return canon, ResourceScope("rds", "RDSInstance", canon, rest if rest != "*" else "*")
+    if typed in {"DynamoDBTable", "DynamoDB"}:
+        canon = f"DynamoDBTable:{rest}"
+        return canon, ResourceScope("dynamodb", "DynamoDBTable", canon, rest)
+    if typed == "KMSKey":
+        return nid, ResourceScope("kms", "KMSKey", nid, rest)
+    if typed == "EC2Instance":
+        return nid, ResourceScope("ec2", "EC2Instance", nid, rest if rest != "*" else "*")
+    if typed in {"LambdaFunction", "Lambda"}:
+        canon = f"LambdaFunction:{rest}"
+        return canon, ResourceScope("lambda", "LambdaFunction", canon, rest if rest != "*" else "*")
     return nid, ResourceScope("other", typed, nid, rest)
 
 
@@ -462,6 +533,59 @@ def _intersect_ssm(a: ResourceScope, b: ResourceScope) -> ScopeIntersection | No
         return ScopeIntersection(scope, "prefix" if a_path != b_path else "exact", "explicit")
     if _arn_glob_match(a.pattern, b.pattern) or _arn_glob_match(b.pattern, a.pattern):
         return ScopeIntersection(_narrower(a, b), "arn_match", "wildcard")
+    return None
+
+
+def _intersect_rds(a: ResourceScope, b: ResourceScope) -> ScopeIntersection | None:
+    """Match Rds:* / RDSInstance:name / RDS ARN identifiers."""
+    a_id = a.canonical_id.split(":", 1)[-1]
+    b_id = b.canonical_id.split(":", 1)[-1]
+    if a_id == "*" or b_id == "*":
+        concrete = b if a_id == "*" else a
+        return ScopeIntersection(concrete, "type_wildcard", "wildcard")
+    if _ids_equal(a.canonical_id, b.canonical_id) or a_id == b_id:
+        return ScopeIntersection(_narrower(a, b), "exact", "explicit")
+    if _arn_glob_match(a.pattern, b.pattern) or _arn_glob_match(b.pattern, a.pattern):
+        return ScopeIntersection(_narrower(a, b), "arn_match", "explicit")
+    if _arn_glob_match(a_id, b_id) or _arn_glob_match(b_id, a_id):
+        return ScopeIntersection(_narrower(a, b), "arn_match", "explicit")
+    return None
+
+
+def _lambda_function_leaf(scope: ResourceScope) -> str:
+    """Extract function name (possibly with trailing *) from a Lambda scope."""
+    for candidate in (scope.pattern, scope.canonical_id):
+        text = str(candidate or "")
+        if ":function:" in text:
+            return text.split(":function:", 1)[1]
+        if text.startswith("LambdaFunction:"):
+            rest = text.split(":", 1)[1]
+            if ":function:" in rest:
+                return rest.split(":function:", 1)[1]
+            return rest
+        if text.startswith("Lambda:"):
+            rest = text.split(":", 1)[1]
+            if ":function:" in rest:
+                return rest.split(":function:", 1)[1]
+            return rest
+    return ""
+
+
+def _intersect_lambda(a: ResourceScope, b: ResourceScope) -> ScopeIntersection | None:
+    """Match Lambda:* / function:SecretsManager* stubs to inventored functions."""
+    if _ids_equal(a.canonical_id, b.canonical_id):
+        return ScopeIntersection(_narrower(a, b), "exact", "explicit")
+    if a.canonical_id.endswith(":*") or a.pattern == "*" or b.canonical_id.endswith(":*") or b.pattern == "*":
+        concrete = b if (a.canonical_id.endswith(":*") or a.pattern == "*") else a
+        return ScopeIntersection(concrete, "type_wildcard", "wildcard")
+    if _arn_glob_match(a.pattern, b.pattern) or _arn_glob_match(b.pattern, a.pattern):
+        return ScopeIntersection(_narrower(a, b), "arn_match", "explicit")
+    a_fn = _lambda_function_leaf(a)
+    b_fn = _lambda_function_leaf(b)
+    if a_fn and b_fn and (
+        _arn_glob_match(a_fn, b_fn) or _arn_glob_match(b_fn, a_fn) or a_fn == b_fn
+    ):
+        return ScopeIntersection(_narrower(a, b), "arn_match", "explicit")
     return None
 
 

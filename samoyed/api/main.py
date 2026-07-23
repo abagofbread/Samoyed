@@ -615,6 +615,17 @@ async def apply_session_enrichment(
     }
 
 
+@app.post("/api/sessions/{session_ref}/enrich-surface")
+def enrich_session_surface(session_ref: str):
+    """Re-run attack-surface enrichment on the whole session (globs, FEEDS, repairs)."""
+    session = _resolve_session_ref(session_ref)
+    try:
+        stats = SESSION_STORE.enrich_session_surface(session.session_id)
+    except KeyError:
+        raise HTTPException(404, "Session not found")
+    return {"session_id": session.session_id, "stats": stats}
+
+
 @app.patch("/api/sessions/{session_ref}/nodes")
 def patch_node_properties(session_ref: str, req: NodePropertiesRequest):
     session = _resolve_session_ref(session_ref)

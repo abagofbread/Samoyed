@@ -47,8 +47,10 @@
       <div class="section">
         <h3>Enrichment</h3>
         <p class="empty" style="padding:0 0 8px;text-align:left;font-size:11px">
-          Library: <code>~/.samoyed/enrichments/</code> — <code>samoyed collect &lt;path|host&gt;</code>, then right-click a node → <strong>Enrich</strong>.
+          Library: <code>~/.samoyed/enrichments/</code> — <code>samoyed collect</code>, then right-click a node → <strong>Enrich this node</strong>,
+          or right-click the graph → <strong>Enrich session</strong> to re-apply attack-surface props (globs, FEEDS, …).
         </p>
+        <button id="enrichSessionSurface" class="ghost" style="margin-bottom:8px;width:100%">Enrich session (attack surface)</button>
         <p class="empty" id="enrichmentLibraryPath" style="padding:0 0 6px;text-align:left;font-size:10px;color:var(--muted)"></p>
         <div id="enrichmentLibraryList" class="enrichment-library-list"></div>
         <button id="refreshEnrichmentLibrary" class="ghost" style="margin-top:8px;width:100%">Refresh library</button>

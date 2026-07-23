@@ -12,6 +12,7 @@ ENRICHMENT_EDGE_SOURCES = frozenset(
         "host-pivot",
         "collector",
         "collector-enrichment",
+        "collector-declared",
         "k8s-deploy-pivot",
         "k8s-rbac-enum",
         "high-value-catalog",

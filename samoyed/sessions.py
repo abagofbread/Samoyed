@@ -33,6 +33,7 @@ from samoyed.graph.neo4j_store import (
     neo4j_configured,
     write_snapshot,
 )
+from samoyed.graph import neo4j_query as neo4j_reads
 from samoyed.graph.persistence import (
     default_session_dir,
     delete_session_file,
@@ -198,7 +199,6 @@ class SessionStore:
             denial_log=denial_log,
             metadata=metadata,
         )
-        write_snapshot(builder.snapshot, session_meta=self._neo4j_meta(record))
         self._persist(record)
         self._sessions[session_id] = record
         return record
@@ -270,7 +270,6 @@ class SessionStore:
             denial_log=denial_log,
             metadata=metadata,
         )
-        write_snapshot(builder.snapshot, session_meta=self._neo4j_meta(record))
         self._persist(record)
         self._sessions[session_id] = record
         return record
@@ -333,7 +332,6 @@ class SessionStore:
             denial_log=DenialLog(),
             metadata=meta,
         )
-        write_snapshot(builder.snapshot, session_meta=self._neo4j_meta(record))
         self._persist(record)
         self._sessions[session_id] = record
         return record
@@ -402,7 +400,6 @@ class SessionStore:
             denial_log=DenialLog(),
             metadata=meta,
         )
-        write_snapshot(builder.snapshot, session_meta=self._neo4j_meta(record))
         if persist:
             self._persist(record)
         self._sessions[sid] = record
@@ -423,7 +420,6 @@ class SessionStore:
         if graph_access is not None:
             session.metadata["graph_access"] = graph_access
         self._persist(session)
-        write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
         return {
             "session_id": session_id,
             "graph_role": session.metadata.get("graph_role"),
@@ -439,9 +435,15 @@ class SessionStore:
     ) -> dict[str, Any]:
         from samoyed.graph.access import filter_graph_payload, graph_access_for_metadata
 
-        from samoyed.enrichment.impact import repair_credential_impact
+        from samoyed.attack.surface import blast_graph_changed, repair_blast_graph
         from samoyed.enrichment.labels import relabel_pivot_materials
         from samoyed.graph.builder import GraphBuilder
+
+        # Summary / compare-only can answer from Neo4j without hydrating the snapshot.
+        if detail == "summary" and neo4j_configured():
+            summary = neo4j_reads.graph_summary(session_id)
+            if summary is not None:
+                return {"access": "summary", **summary}
 
         session = self.get(session_id)
         if not session:
@@ -449,11 +451,12 @@ class SessionStore:
         dirty = False
         if relabel_pivot_materials(session.snapshot):
             dirty = True
-        # Re-wire password materials → RDS/secret impact (project stores if enum missed them).
+        # Global influence wiring on load (UNLOCKS, Secret:*, capability-glob, FEEDS)
+        # so sessions don't require a separate "Enrich session" click after enum/import.
         builder = GraphBuilder(session.session_id)
         builder.snapshot = session.snapshot
-        impact = repair_credential_impact(builder)
-        if impact.get("unlocks_applied") or impact.get("projected"):
+        repair_stats = repair_blast_graph(builder)
+        if blast_graph_changed(repair_stats):
             dirty = True
         if dirty:
             try:
@@ -465,6 +468,16 @@ class SessionStore:
             access = "summary"
         elif allow_restricted and access == "compare_only":
             access = "full"
+        if access in {"summary", "compare_only"} and neo4j_configured():
+            summary = neo4j_reads.graph_summary(session_id)
+            if summary is not None:
+                if access == "summary":
+                    return {"access": "summary", **summary}
+                return {
+                    "access": "compare_only",
+                    "message": "Full graph withheld — use POST /api/sessions/compare for attack-surface diff.",
+                    **summary,
+                }
         return filter_graph_payload(session.snapshot, access=access)
 
     def compare_sessions(
@@ -503,37 +516,24 @@ class SessionStore:
         cached = self._sessions.get(session_id)
         if cached:
             return cached
+        # When Neo4j is configured it is the durable source of truth; JSON is a cache.
+        if neo4j_configured():
+            record = self._load_from_neo4j(session_id)
+            if record:
+                self._sessions[session_id] = record
+                return record
+            record = self._load_from_disk(session_id)
+            if record:
+                # Hydrate Neo4j from legacy JSON sessions.
+                write_snapshot(record.snapshot, session_meta=self._neo4j_meta(record))
+                self._sessions[session_id] = record
+                return record
+            return None
         record = self._load_from_disk(session_id)
         if record:
             self._sessions[session_id] = record
             return record
-        snapshot = load_snapshot(session_id)
-        if not snapshot:
-            return None
-        meta = load_session_meta(session_id) or {}
-        denial_log = DenialLog()
-        if meta.get("denial_log_json"):
-            try:
-                for item in json.loads(meta["denial_log_json"]):
-                    denial_log.add(DenialRecord(**item))
-            except (json.JSONDecodeError, TypeError):
-                pass
-        metadata = meta.get("metadata_json")
-        if isinstance(metadata, str):
-            metadata = json.loads(metadata)
-        record = SessionRecord(
-            session_id=session_id,
-            provider=CloudProvider(meta.get("provider", "aws")),
-            caller_arn=meta.get("caller_arn", "unknown"),
-            scope_id=meta.get("scope_id", ""),
-            created_at=meta.get("created_at", ""),
-            status=meta.get("status", "complete"),
-            snapshot=snapshot,
-            denial_log=denial_log,
-            metadata=metadata or {"node_count": len(snapshot.nodes)},
-        )
-        self._sessions[session_id] = record
-        return record
+        return None
 
     def list_sessions(self) -> list[SessionRecord]:
         seen = set(self._sessions.keys())
@@ -720,16 +720,54 @@ class SessionStore:
         max_paths: int = 20,
         exclude_node_ids: list[str] | None = None,
     ) -> dict[str, Any]:
+        from samoyed.graph.backend import resolve_graph_backend
         from samoyed.path_engine.custom_query import run_graph_query
 
         session = self.get(session_id)
         if not session:
             raise KeyError(session_id)
+
+        # Blast enrichment must run (and persist) before any Neo4j short-circuit,
+        # otherwise Secret:*/FEEDS/capability-glob never land on the durable graph.
+        if mode == "blast":
+            from samoyed.attack.surface import blast_graph_changed, repair_blast_graph
+            from samoyed.graph.builder import GraphBuilder
+
+            builder = GraphBuilder(session.session_id)
+            builder.snapshot = session.snapshot
+            if blast_graph_changed(repair_blast_graph(builder)):
+                try:
+                    self._persist(session)
+                except Exception:
+                    pass
+
+        backend = resolve_graph_backend()
         start = start_node_id or self.find_caller_node(session)
+        if backend == "neo4j" and start and mode in {"paths", "blast", "neighbors"}:
+            try:
+                return run_graph_query(
+                    None,
+                    session_id=session_id,
+                    start_node_id=start,
+                    mode=mode,
+                    target_concept=target_concept,
+                    target_resource_type=target_resource_type,
+                    end_node_id=end_node_id,
+                    end_id_contains=end_id_contains,
+                    rel_types=rel_types,
+                    max_depth=max_depth,
+                    max_paths=max_paths,
+                    exclude_node_ids=exclude_node_ids,
+                    backend="neo4j",
+                )
+            except Exception:
+                pass
+
         if not start:
             raise ValueError("Start node not found")
         return run_graph_query(
             session.snapshot,
+            session_id=session_id,
             start_node_id=start,
             mode=mode,
             target_concept=target_concept,
@@ -740,6 +778,7 @@ class SessionStore:
             max_depth=max_depth,
             max_paths=max_paths,
             exclude_node_ids=exclude_node_ids,
+            backend=backend,
         )
 
     def analyze_proposed_changes(
@@ -970,9 +1009,19 @@ class SessionStore:
         *,
         max_depth: int = 6,
     ) -> list[PathResult]:
+        from samoyed.attack.surface import blast_graph_changed, repair_blast_graph
+        from samoyed.graph.builder import GraphBuilder
+
         session = self.get(session_id)
         if not session:
             raise KeyError(session_id)
+        builder = GraphBuilder(session.session_id)
+        builder.snapshot = session.snapshot
+        if blast_graph_changed(repair_blast_graph(builder)):
+            try:
+                self._persist(session)
+            except Exception:
+                pass
         start = start_node_id or self.find_caller_node(session)
         if not start:
             return []
@@ -986,6 +1035,12 @@ class SessionStore:
         rel_type: str | None = None,
         direction: str = "out",
     ) -> list[dict[str, Any]]:
+        if neo4j_configured():
+            neo = neo4j_reads.get_neighbors(
+                session_id, node_id, rel_type=rel_type, direction=direction  # type: ignore[arg-type]
+            )
+            if neo is not None:
+                return neo
         session = self.get(session_id)
         if not session:
             raise KeyError(session_id)
@@ -1013,6 +1068,12 @@ class SessionStore:
         concept_type: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
+        if neo4j_configured():
+            neo = neo4j_reads.search_nodes(
+                session_id, q=q, concept_type=concept_type, limit=limit
+            )
+            if neo is not None:
+                return neo
         session = self.get(session_id)
         if not session:
             raise KeyError(session_id)
@@ -1059,7 +1120,6 @@ class SessionStore:
             raise ValueError(f"Node not found: {node_id}")
         node.props.update(properties)
         self._persist(session)
-        write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
         return {"id": node.node_id, "label": node.label, **node.props}
 
     def apply_enrichment(
@@ -1082,10 +1142,39 @@ class SessionStore:
             payload,
             default_target_node_id=target_node_id,
         )
+        # Propagate derived edges/props across the whole graph (globs, FEEDS, …).
+        surface = enrich_attack_surface(builder, provider=session.provider)
+        stats["surface"] = surface
         session.snapshot = builder.snapshot
         session.metadata.setdefault("enrichment_runs", []).append(stats)
         self._persist(session)
-        write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
+        return stats
+
+    def enrich_session_surface(self, session_id: str) -> dict[str, Any]:
+        """Re-run attack-surface enrichment on an existing session (no collector file)."""
+        from samoyed.enrichment.impact import repair_credential_impact
+        from samoyed.enrichment.labels import relabel_pivot_materials
+        from samoyed.graph.builder import GraphBuilder
+
+        session = self.get(session_id)
+        if not session:
+            raise KeyError(session_id)
+        builder = GraphBuilder(session.session_id)
+        builder.snapshot = session.snapshot
+        relabeled = relabel_pivot_materials(session.snapshot)
+        impact = repair_credential_impact(builder)
+        surface = enrich_attack_surface(builder, provider=session.provider)
+        session.snapshot = builder.snapshot
+        stats = {
+            "materials_relabeled": int(relabeled or 0),
+            "credential_unlocks": int(impact.get("unlocks_applied") or 0),
+            "credential_projected": int(impact.get("projected") or 0),
+            **surface,
+        }
+        session.metadata.setdefault("enrichment_runs", []).append(
+            {"kind": "session-surface", **stats}
+        )
+        self._persist(session)
         return stats
 
     def resolve_start_node(self, session_id: str, start: str | None) -> str | None:
@@ -1204,7 +1293,6 @@ class SessionStore:
             )
         if marked:
             self._persist(session)
-            write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
         result = {
             "session_id": session_id,
             "marked": marked,
@@ -1214,7 +1302,6 @@ class SessionStore:
             propagated = propagate_compromise(session.snapshot)
             if propagated:
                 self._persist(session)
-                write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
                 result["propagated"] = propagated
         return result
 
@@ -1286,7 +1373,6 @@ class SessionStore:
             if propagated:
                 result["propagated"] = propagated
         self._persist(session)
-        write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
         return result
 
     def propagate_compromise(self, session_id: str) -> dict[str, Any]:
@@ -1296,7 +1382,6 @@ class SessionStore:
         propagated = propagate_compromise(session.snapshot)
         if propagated:
             self._persist(session)
-            write_snapshot(session.snapshot, session_meta=self._neo4j_meta(session))
         return {"session_id": session_id, "propagated": propagated}
 
     def list_relationships(self, session_id: str) -> dict[str, Any]:
@@ -1328,6 +1413,10 @@ class SessionStore:
         return results
 
     def list_markings(self, session_id: str) -> dict[str, Any]:
+        if neo4j_configured():
+            neo = neo4j_reads.list_markings(session_id)
+            if neo is not None:
+                return {"session_id": session_id, **neo}
         session = self.get(session_id)
         if not session:
             raise KeyError(session_id)
@@ -1359,6 +1448,38 @@ class SessionStore:
                 "denial_log": [d.__dict__ for d in record.denial_log.records],
                 "graph": snapshot_to_dict(record.snapshot),
             }
+        )
+        if neo4j_configured():
+            write_snapshot(record.snapshot, session_meta=self._neo4j_meta(record))
+
+    def _load_from_neo4j(self, session_id: str) -> SessionRecord | None:
+        snapshot = load_snapshot(session_id)
+        if not snapshot:
+            return None
+        meta = load_session_meta(session_id) or {}
+        denial_log = DenialLog()
+        if meta.get("denial_log_json"):
+            try:
+                for item in json.loads(meta["denial_log_json"]):
+                    denial_log.add(DenialRecord(**item))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        metadata = meta.get("metadata_json")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        return SessionRecord(
+            session_id=session_id,
+            provider=CloudProvider(meta.get("provider", "aws")),
+            caller_arn=meta.get("caller_arn", "unknown"),
+            scope_id=meta.get("scope_id", ""),
+            created_at=meta.get("created_at", ""),
+            status=meta.get("status", "complete"),
+            snapshot=snapshot,
+            denial_log=denial_log,
+            metadata=metadata or {"node_count": len(snapshot.nodes)},
         )
 
     def _load_from_disk(self, session_id: str) -> SessionRecord | None:

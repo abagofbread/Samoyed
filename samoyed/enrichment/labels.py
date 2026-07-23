@@ -151,25 +151,30 @@ def material_summary(
     locator: str | None = None,
     evidence: dict[str, Any] | None = None,
     name_hints: list[str] | None = None,
+    include_location: bool = True,
 ) -> str:
-    """One-line graph/detail label: what + where (+ unlock hint)."""
+    """One-line graph/detail label: what (+ where) (+ unlock hint).
+
+    When materials collapse across files, set ``include_location=False`` and put
+    observation sites on HAS_MATERIAL edges instead of the node title.
+    """
     evidence = evidence or {}
     match = evidence.get("match")
     finding = evidence.get("finding") or classify_finding(kind, str(match) if match else None)
     if is_weak_label(str(finding), kind=kind):
         finding = classify_finding(kind, str(match) if match else None)
 
-    file_path = evidence.get("file") or _file_from_locator(locator, kind)
-    line = evidence.get("line")
-    where = format_source_path(str(file_path) if file_path else None)
-    if where and line is not None and str(line).isdigit():
-        where = f"{where}:{line}"
-    elif not where and locator:
-        where = _human_locator(str(locator), kind)
-
     parts = [finding]
-    if where:
-        parts.append(f"in {where}")
+    if include_location:
+        file_path = evidence.get("file") or _file_from_locator(locator, kind)
+        line = evidence.get("line")
+        where = format_source_path(str(file_path) if file_path else None)
+        if where and line is not None and str(line).isdigit():
+            where = f"{where}:{line}"
+        elif not where and locator:
+            where = _human_locator(str(locator), kind)
+        if where:
+            parts.append(f"in {where}")
 
     hint = pick_name_hint(
         name_hints if name_hints is not None else evidence.get("name_hints"),
@@ -179,6 +184,11 @@ def material_summary(
     )
     if hint:
         parts.append(f"→ {hint}")
+    elif kind == "k8s_service_account_token":
+        ns = evidence.get("k8s_namespace")
+        sa = evidence.get("k8s_service_account")
+        if ns and sa:
+            parts.append(f"→ {ns}/{sa}")
 
     return " ".join(parts)
 
@@ -189,6 +199,7 @@ def material_detail_props(
     locator: str,
     evidence: dict[str, Any] | None = None,
     name_hints: list[str] | None = None,
+    include_location: bool = True,
 ) -> dict[str, Any]:
     """Extra node props so the UI/detail pane has real context."""
     evidence = dict(evidence or {})
@@ -207,6 +218,7 @@ def material_detail_props(
         locator=locator,
         evidence=evidence,
         name_hints=name_hints,
+        include_location=include_location,
     )
     preview = None
     if match:
