@@ -93,6 +93,7 @@ def mark_nodes(
     session_id: str | None = None,
     compromised: bool | None = None,
     high_value: bool | None = None,
+    mechanism: str | None = None,
     source: str = "mcp",
     clear: bool = False,
 ) -> str:
@@ -102,6 +103,8 @@ def mark_nodes(
     refs_json: JSON array of node ids, ARNs, display names, or aliases.
     Examples: '["arn:aws:iam::123:user/jane"]', '["prod-db", "caller"]'
     Use compromised=true for IR start nodes, high_value=true for targets.
+    Optional mechanism (ssrf, ci-runner, static-poison, leaked-key, …) labels
+    *how* compromise is hypothesized — does not invent CVE inventory.
     """
     session = _resolve_session(session_id)
     if not session:
@@ -118,6 +121,7 @@ def mark_nodes(
             [str(r) for r in refs],
             compromised=compromised,
             high_value=high_value,
+            mechanism=mechanism,
             source=source,
             clear=clear,
         )

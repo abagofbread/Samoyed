@@ -26,6 +26,7 @@ class ConceptType(str, Enum):
     DATA_STORE = "DataStore"
     SECRET_STORE = "SecretStore"
     NETWORK_EXPOSURE = "NetworkExposure"
+    ATTACK_OUTCOME = "AttackOutcome"
 
 
 # Graph node labels derived from concepts (L0)
@@ -43,6 +44,7 @@ CONCEPT_TO_NODE_LABEL: dict[ConceptType, str] = {
     ConceptType.IMAGE_PROVENANCE: "Resource",
     ConceptType.ESCAPE_SURFACE: "EscapeSurface",
     ConceptType.NETWORK_EXPOSURE: "Resource",
+    ConceptType.ATTACK_OUTCOME: "AttackOutcome",
 }
 
 
@@ -75,6 +77,7 @@ TRAVERSABLE_REL_TYPES = frozenset(
         "USES_IMAGE",
         "PULLS_FROM",
         "DEPENDS_ON",
+        "FEEDS",
         "CAN_ACCESS",
         "PROJECTS_TO",
         "HOSTED_IN",

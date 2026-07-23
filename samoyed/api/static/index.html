@@ -45,21 +45,23 @@
       </div>
 
       <div class="section">
-        <h3>Static enrichment</h3>
+        <h3>Enrichment</h3>
         <p class="empty" style="padding:0 0 8px;text-align:left;font-size:11px">
-          Apply collector JSON to the loaded session. Bindings use <code>target_ref</code> (native id / ARN / name) — no node pick required.
+          Library: <code>~/.samoyed/enrichments/</code> — <code>samoyed collect</code>, then right-click a node → <strong>Enrich this node</strong>,
+          or right-click the graph → <strong>Enrich session</strong> to re-apply attack-surface props (globs, FEEDS, …).
         </p>
-        <p class="empty" style="padding:0 0 8px;text-align:left;font-size:11px;color:var(--muted)">
-          Sources: <strong>static-repo</strong> · <strong>static-config</strong> (CLI: <code>samoyed collect static</code> → <code>samoyed enrich file.json</code>)
-        </p>
-        <label>Lab example</label>
+        <button id="enrichSessionSurface" class="ghost" style="margin-bottom:8px;width:100%">Enrich session (attack surface)</button>
+        <p class="empty" id="enrichmentLibraryPath" style="padding:0 0 6px;text-align:left;font-size:10px;color:var(--muted)"></p>
+        <div id="enrichmentLibraryList" class="enrichment-library-list"></div>
+        <button id="refreshEnrichmentLibrary" class="ghost" style="margin-top:8px;width:100%">Refresh library</button>
+        <label style="margin-top:12px;display:block">Lab example (binds to selected node)</label>
         <select id="enrichmentExampleSelect"></select>
         <button id="applyEnrichmentExample" class="ghost" style="margin-top:8px;width:100%">Apply lab example</button>
         <div id="enrichmentDropZone" class="enrichment-drop-zone" style="margin-top:10px">
           Drop enrichment JSON here
         </div>
         <input id="enrichmentFile" type="file" accept=".json" />
-        <button id="applyEnrichment" class="ghost" style="margin-top:8px;width:100%">Apply enrichment</button>
+        <button id="applyEnrichment" class="ghost" style="margin-top:8px;width:100%">Apply uploaded file</button>
         <p class="empty" id="enrichmentStatus"></p>
       </div>
 
@@ -153,6 +155,11 @@
         </div>
 
         <button id="runSearch" class="primary" style="margin-top:12px">Generate paths</button>
+
+        <h3 style="margin-top:20px">Ignored nodes</h3>
+        <div id="ignoredSummary" class="ignored-summary">
+          <span class="empty">Right-click a node → Ignore from queries</span>
+        </div>
 
         <h3 style="margin-top:20px">Incident markings</h3>
         <p class="empty" id="markingsSummary">Right-click nodes to mark compromised or high-value</p>

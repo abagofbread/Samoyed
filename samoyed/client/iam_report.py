@@ -166,24 +166,32 @@ def _collect_listed_principals(
             name = item.get("UserName") or item.get("RoleName") or arn
             _identity(identities, arn=arn, name=name, kind=kind)
             if kind == "Role":
+                from samoyed.policy.irsa import is_oidc_provider_arn
+
                 trust = item.get("AssumeRolePolicyDocument") or {}
                 if isinstance(trust, str):
                     trust = json.loads(trust)
+                if trust:
+                    identities[arn]["assume_role_policy"] = trust
                 for stmt in _statements(trust):
                     if stmt.get("Effect") != "Allow":
                         continue
                     for principal in _principals(stmt.get("Principal")):
-                        if principal.startswith("arn:"):
-                            _identity(identities, arn=principal, name=_name_from_arn(principal), kind=_kind_from_arn(principal))
-                            grants.append(
-                                {
-                                    "from": principal,
-                                    "to": arn,
-                                    "rel": "CAN_ASSUME_ROLE",
-                                    "action": "sts:AssumeRole",
-                                    "source": "trust-policy",
-                                }
-                            )
+                        if not principal.startswith("arn:"):
+                            continue
+                        # OIDC providers are not assume sources; IRSA uses Conditions → SA.
+                        if is_oidc_provider_arn(principal):
+                            continue
+                        _identity(identities, arn=principal, name=_name_from_arn(principal), kind=_kind_from_arn(principal))
+                        grants.append(
+                            {
+                                "from": principal,
+                                "to": arn,
+                                "rel": "CAN_ASSUME_ROLE",
+                                "action": "sts:AssumeRole",
+                                "source": "trust-policy",
+                            }
+                        )
 
 
 def _collect_assumable_role_policies(

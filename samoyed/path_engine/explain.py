@@ -14,7 +14,7 @@ def explain_path(graph: GraphSnapshot, path: PathResult) -> dict[str, Any]:
         src_name = _display(src, step.src_id)
         dst_name = _display(dst, step.dst_id)
         evidence = step.evidence or (dst.props if dst else {})
-        narrative = _narrative(step, src_name, dst_name, evidence)
+        narrative = _narrative(step, src_name, dst_name, evidence, src=src, dst=dst)
         steps_out.append(
             {
                 "step": step.step_index,
@@ -37,7 +37,15 @@ def explain_path(graph: GraphSnapshot, path: PathResult) -> dict[str, Any]:
     }
 
 
-def _narrative(step, src_name: str, dst_name: str, evidence: dict[str, Any]) -> str:
+def _narrative(
+    step,
+    src_name: str,
+    dst_name: str,
+    evidence: dict[str, Any],
+    *,
+    src=None,
+    dst=None,
+) -> str:
     if step.rel_type == "CAN_PRIVESC_TO" and evidence.get("attack_outcome"):
         outcome = evidence.get("outcome_display") or evidence.get("attack_outcome") or "administrator access"
         pattern = evidence.get("pattern_name")
@@ -58,9 +66,41 @@ def _narrative(step, src_name: str, dst_name: str, evidence: dict[str, Any]) -> 
     if step.rel_type == "CAN_STEAL_CREDS_FROM":
         return f"{src_name} can harvest credentials for {dst_name} from disk or memory"
     if step.rel_type == "HAS_MATERIAL":
-        return f"{src_name} stores pivot material ({evidence.get('material_kind') or 'credential'}) at {evidence.get('locator') or dst_name}"
+        dst_finding = ""
+        if dst:
+            dst_finding = str(
+                dst.props.get("summary")
+                or dst.props.get("display_name")
+                or dst.props.get("finding")
+                or ""
+            )
+        kind = (
+            evidence.get("finding")
+            or (dst.props.get("finding") if dst else None)
+            or evidence.get("material_kind")
+            or "credential"
+        )
+        where = dst_finding or evidence.get("summary") or evidence.get("locator") or dst_name
+        return f"{src_name} has pivot material ({kind}): {where}"
     if step.rel_type == "UNLOCKS":
-        return f"Harvested material on {src_name} unlocks access as {dst_name}"
+        src_label = src_name
+        if src and src.props.get("summary"):
+            src_label = str(src.props["summary"])
+        concept = _concept(dst) or ""
+        if evidence.get("mechanism") == "AssumeRoleWithWebIdentity":
+            via = evidence.get("via_sa") or "service account"
+            return (
+                f"Harvested SA token ({src_label}) can AssumeRoleWithWebIdentity "
+                f"as {dst_name} via {via}"
+            )
+        if concept in {"DataStore", "SecretStore"}:
+            return f"Harvested credentials ({src_label}) unlock access to {dst_name}"
+        return f"Harvested material ({src_label}) unlocks access as {dst_name}"
+    if step.rel_type == "PROJECTS_TO":
+        binding = evidence.get("binding_type") or "cloud identity"
+        if evidence.get("trust_validated"):
+            return f"{src_name} federates to {dst_name} via {binding} (OIDC trust validated)"
+        return f"{src_name} projects to {dst_name} via {binding}"
     if step.rel_type == "CAN_ASSUME_ROLE":
         return f"{src_name} can assume role {dst_name}"
     return f"{src_name} can reach {dst_name} via {step.rel_type}"

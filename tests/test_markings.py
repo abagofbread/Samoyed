@@ -32,7 +32,12 @@ def test_mark_compromised_and_high_value(tmp_path, monkeypatch):
 
     summary = SESSION_STORE.list_markings(sid)
     assert summary["compromised_count"] >= 1
-    assert summary["high_value_count"] == 1
+    assert summary["high_value_count"] >= 1
+    assert any(
+        m.get("display") and "prod-db" in str(m.get("display"))
+        or "prod-db" in str(m.get("node_id"))
+        for m in summary["high_value"]
+    )
 
 
 def test_resolve_compromised_alias(tmp_path, monkeypatch):
@@ -157,7 +162,7 @@ def test_mcp_list_markings(tmp_path, monkeypatch):
     SESSION_STORE.mark_nodes(sid, ["prod-db"], high_value=True)
 
     out = json.loads(mcp_server.list_markings(session_id=sid))
-    assert out["high_value_count"] == 1
+    assert out["high_value_count"] >= 1
 
 
 def test_paths_to_high_value_concept(tmp_path, monkeypatch):

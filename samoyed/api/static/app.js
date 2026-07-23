@@ -20,6 +20,9 @@ const state = {
   sessionSelectionIds: null,
   markings: null,
   contextMenuNodeId: null,
+  ignoredNodeIds: new Set(),
+  lastPathQuery: null,
+  enrichBusy: false,
 };
 
 const NODE_COLORS = {
@@ -29,6 +32,7 @@ const NODE_COLORS = {
   EscapeSurface: { background: "#4a2870", border: "#d2a8ff", highlight: { background: "#6e40b8", border: "#e2b0ff" } },
   ScopeBoundary: { background: "#30363d", border: "#8b949e", highlight: { background: "#484f58", border: "#b1bac4" } },
   PolicyStatement: { background: "#5a3c00", border: "#ffa657", highlight: { background: "#7d4e00", border: "#ffc078" } },
+  AttackOutcome: { background: "#7a3a08", border: "#ffa657", highlight: { background: "#9e4b0e", border: "#ffc078" } },
   Unknown: { background: "#21262d", border: "#484f58", highlight: { background: "#30363d", border: "#8b949e" } },
 };
 
@@ -48,6 +52,11 @@ const HIGH_VALUE_NODE_COLOR = {
   border: "#ffa657",
   highlight: { background: "#5a3c00", border: "#ffc078" },
 };
+const SHADOW_ADMIN_NODE_COLOR = {
+  background: "#2a1f4a",
+  border: "#a371f7",
+  highlight: { background: "#3d2d6b", border: "#d2a8ff" },
+};
 const BOTH_MARKING_COLOR = {
   background: "#4a2030",
   border: "#ff7b72",
@@ -63,7 +72,23 @@ async function fetchJSON(url, opts) {
   }
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    let message = text || res.statusText;
+    try {
+      const body = JSON.parse(text);
+      if (body?.detail) {
+        if (typeof body.detail === "string") message = body.detail;
+        else if (body.detail.error) {
+          message = body.detail.hint
+            ? `${body.detail.error} — ${body.detail.hint}`
+            : body.detail.error;
+        } else {
+          message = JSON.stringify(body.detail);
+        }
+      }
+    } catch {
+      /* keep text */
+    }
+    throw new Error(message);
   }
   return res.json();
 }
@@ -84,6 +109,9 @@ async function initAuth() {
 }
 
 function displayName(node) {
+  if (node.native_kind === "PivotMaterial" || node.material_kind) {
+    return materialDisplayName(node);
+  }
   const base = node.display_name || node.native_id || node.arn || node.name || node.id;
   if (node.instance_id && !String(base).includes(node.instance_id)) {
     return `${base} (${node.instance_id})`;
@@ -91,9 +119,74 @@ function displayName(node) {
   return base;
 }
 
+function isWeakMaterialLabel(text, node = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) return true;
+  const low = raw.toLowerCase();
+  const kind = String(node.material_kind || "");
+  if (/^material:[a-z0-9_]+:[a-f0-9]+$/i.test(raw)) return true;
+  if (low.includes("generic_credential_file")) return true;
+  if (low === "credential file" || raw.startsWith("Credential file")) return true;
+  if (/\(environment\):\s/.test(raw)) return true;
+  if (/:generic_credential_file|:aws_secret_key_env|:aws_access_key_env|:database_connection_string\b/.test(raw)) {
+    return true;
+  }
+  if (kind && (low === kind.toLowerCase() || low === kind.replace(/_/g, " ").toLowerCase())) {
+    return true;
+  }
+  if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(raw)) return true;
+  return false;
+}
+
+function materialDisplayName(node) {
+  const candidates = [node.summary, node.display_name, node.finding, node.name];
+  for (const c of candidates) {
+    if (c && !isWeakMaterialLabel(c, node)) return String(c);
+  }
+  const finding =
+    (node.finding && !isWeakMaterialLabel(node.finding, node) && node.finding)
+    || humanizeMaterialKind(node.material_kind);
+  const file = node.source_basename || (node.source_file ? String(node.source_file).split(/[/\\]/).pop() : "");
+  const where = file
+    ? (node.source_line != null ? `${file}:${node.source_line}` : file)
+    : "";
+  const hints = Array.isArray(node.name_hints) ? node.name_hints.filter(Boolean) : [];
+  const hint = hints.find((h) => /cred|secret|rds|db|pass|mysql|endpoint/i.test(h)) || hints[0];
+  const parts = [finding];
+  if (where) parts.push(`in ${where}`);
+  if (hint) parts.push(`→ ${hint}`);
+  const rebuilt = parts.join(" ");
+  return isWeakMaterialLabel(rebuilt, node) ? finding : rebuilt;
+}
+
+function humanizeMaterialKind(kind) {
+  const map = {
+    aws_access_key_env: "AWS access key",
+    aws_secret_key_env: "AWS secret access key",
+    aws_session_token_env: "AWS session token",
+    azure_client_secret_env: "Azure client secret",
+    gcp_service_account_json: "GCP service account key",
+    kubeconfig_file: "Kubeconfig",
+    k8s_service_account_token: "Kubernetes SA token",
+    k8s_client_cert: "Kubernetes client certificate",
+    database_connection_string: "Database credential",
+    generic_credential_file: "Hardcoded credential",
+    none_observed: "No credentials observed",
+  };
+  if (!kind) return "Credential material";
+  return map[kind] || String(kind).replace(/_/g, " ");
+}
+
 function shortId(id) {
   if (!id) return "";
   if (id.length <= 36) return id;
+  // Don't ARN-truncate human labels ("Hardcoded password in main.tf:42").
+  if (/\s/.test(id) || id.includes("/") || id.includes(" in ") || id.includes(" → ")) return id;
+  // Never surface material:kind:hash digests as labels.
+  if (/^material:[a-z0-9_]+:[a-f0-9]+$/i.test(id) || /generic_credential_file:[a-f0-9]+/i.test(id)) {
+    const parts = id.split(":");
+    return humanizeMaterialKind(parts[1] || parts[0]);
+  }
   const parts = id.split(":");
   return parts.length > 2 ? parts.slice(-2).join(":") : id.slice(0, 32) + "…";
 }
@@ -121,35 +214,133 @@ function nodeColor(label) {
 function nodeMarkingColor(node) {
   const compromised = !!node.is_compromised;
   const highValue = !!node.is_high_value;
+  const shadow = !!node.is_shadow_admin;
   if (compromised && highValue) return BOTH_MARKING_COLOR;
   if (compromised) return COMPROMISED_NODE_COLOR;
   if (highValue) return HIGH_VALUE_NODE_COLOR;
+  if (shadow) return SHADOW_ADMIN_NODE_COLOR;
   return nodeColor(node.label || "Unknown");
+}
+
+function ignoredStorageKey(sessionId) {
+  return `samoyed:ignoredNodes:${sessionId}`;
+}
+
+function loadIgnoredForSession(sessionId) {
+  state.ignoredNodeIds = new Set();
+  if (!sessionId) return;
+  try {
+    const raw = sessionStorage.getItem(ignoredStorageKey(sessionId));
+    if (!raw) return;
+    const ids = JSON.parse(raw);
+    if (Array.isArray(ids)) state.ignoredNodeIds = new Set(ids.filter(Boolean));
+  } catch (_) {
+    /* ignore corrupt storage */
+  }
+}
+
+function persistIgnoredNodes() {
+  if (!state.sessionId) return;
+  try {
+    sessionStorage.setItem(
+      ignoredStorageKey(state.sessionId),
+      JSON.stringify([...state.ignoredNodeIds]),
+    );
+  } catch (_) {
+    /* quota / private mode */
+  }
+}
+
+function excludedNodeIdsPayload() {
+  const ids = [...state.ignoredNodeIds];
+  return ids.length ? ids : null;
+}
+
+function renderIgnoredChips() {
+  const el = document.getElementById("ignoredSummary");
+  if (!el) return;
+  if (!state.ignoredNodeIds.size) {
+    el.innerHTML = `<span class="empty">Right-click a node → Ignore from queries</span>`;
+    return;
+  }
+  const chips = [...state.ignoredNodeIds]
+    .map((id) => {
+      const raw = state.graph.nodes.find((n) => n.id === id);
+      const label = escapeHtml(shortId(raw ? displayName(raw) : id));
+      return `<button type="button" class="marking-chip ignored" data-unignore="${escapeAttr(id)}" title="Click to stop ignoring">${label} ×</button>`;
+    })
+    .join("");
+  el.innerHTML =
+    chips +
+    `<button type="button" class="ghost" id="clearAllIgnored" style="margin-left:4px;font-size:11px">Clear all</button>`;
+  el.querySelectorAll("[data-unignore]").forEach((btn) => {
+    btn.onclick = () => setNodeIgnored(btn.getAttribute("data-unignore"), false);
+  });
+  document.getElementById("clearAllIgnored")?.addEventListener("click", () => {
+    state.ignoredNodeIds.clear();
+    persistIgnoredNodes();
+    refreshIgnoredVisuals();
+  });
+}
+
+function refreshIgnoredVisuals() {
+  if (state.nodesDS && state.graph?.nodes?.length) {
+    const { nodes: visibleNodes } = normalizeGraphForDisplay(state.graph);
+    state.nodesDS.update(visibleNodes.map((node) => toVisNode(node, state.nodePositions[node.id])));
+    if (state.selectedNodeId) refreshMainGraphSelection();
+  }
+  renderIgnoredChips();
+}
+
+function setNodeIgnored(nodeId, ignored) {
+  if (!nodeId) return;
+  if (ignored) state.ignoredNodeIds.add(nodeId);
+  else state.ignoredNodeIds.delete(nodeId);
+  persistIgnoredNodes();
+  refreshIgnoredVisuals();
 }
 
 function toVisNode(node, position) {
   const label = node.label || "Unknown";
   const colors = nodeMarkingColor(node);
   const titleParts = [
+    displayName(node),
     `Label: ${label}`,
     `Concept: ${node.concept_type || "—"}`,
+    node.finding ? `Finding: ${node.finding}` : null,
+    node.source_file
+      ? `File: ${node.source_file}${node.source_line != null ? `:${node.source_line}` : ""}`
+      : null,
+    node.match_preview ? `Match: ${node.match_preview}` : null,
+    node.description || null,
+    node.material_kind ? `Kind: ${node.material_kind}` : null,
     `ID: ${node.id}`,
     node.native_id ? `Native: ${node.native_id}` : null,
   ];
   if (node.is_compromised) titleParts.push("⚠ Marked compromised");
   if (node.is_high_value) titleParts.push("★ Marked high-value");
+  if (node.is_shadow_admin) {
+    titleParts.push(`◉ Shadow admin — ${node.shadow_admin_reason || node.shadow_admin_mechanism || "can escalate to admin"}`);
+  }
+  if (state.ignoredNodeIds.has(node.id)) titleParts.push("⊘ Ignored from queries");
   const title = titleParts.filter(Boolean).join("\n");
 
+  const labelText = (node.native_kind === "PivotMaterial" || node.material_kind)
+    ? wrapGraphLabel(displayName(node), 28)
+    : wrapGraphLabel(shortId(displayName(node)));
+
+  const ignored = state.ignoredNodeIds.has(node.id);
   const visNode = {
     id: node.id,
-    label: wrapGraphLabel(shortId(displayName(node))),
+    label: labelText,
     title,
     group: label,
     color: { ...colors },
-    font: { color: "#e6edf3", size: 12, multi: true, align: "center" },
+    font: { color: ignored ? "#8b949e" : "#e6edf3", size: 12, multi: true, align: "center" },
     shape: label === "Principal" ? "dot" : "box",
     size: label === "Principal" ? 18 : undefined,
     margin: 10,
+    opacity: ignored ? 0.35 : 1,
     _raw: node,
   };
 
@@ -176,13 +367,61 @@ function isTrustNode(node) {
   return node?.label === "Trust" || node?.concept_type === "Trust";
 }
 
+/** Concrete / high-value stores worth showing; IAM Describe/List stubs are not. */
+const INTERESTING_DATASTORE_TYPES = new Set([
+  "S3Bucket",
+  "GCSBucket",
+  "StorageAccount",
+  "BlobContainer",
+  "DynamoDBTable",
+  "RdsInstance",
+  "RdsCluster",
+  "RedshiftCluster",
+  "BigQueryDataset",
+  "CosmosDB",
+  "EFSFileSystem",
+  "SQSQueue",
+  "SNSTopic",
+  "KMSKey",
+  "Secret",
+  "SSMParameter",
+  "ECRRepository",
+  "EC2Instance",
+  "LambdaFunction",
+  "Lambda",
+]);
+
+const INTERESTING_DATASTORE_NATIVE = /^(S3Bucket|S3|Secret|SSMParameter|ECRRepository|EC2Instance|LambdaFunction|DynamoDB|RdsInstance|RdsCluster|GCSBucket|StorageAccount|SQSQueue|SNSTopic|KMSKey):/i;
+
+function isInterestingDataStore(node) {
+  if (!node) return false;
+  if (node.concept_type === "SecretStore" || node.concept_type === "RegistryStore") return true;
+  if (node.concept_type !== "DataStore" && node.label !== "Resource") return false;
+  if (node.is_high_value) return true;
+  const rt = node.resource_type || node.native_kind;
+  if (rt && INTERESTING_DATASTORE_TYPES.has(rt)) return true;
+  const nid = String(node.native_id || node.id || "");
+  if (INTERESTING_DATASTORE_NATIVE.test(nid)) return true;
+  return /^Resource:(Secret|SSMParameter|ECRRepository|EC2Instance|LambdaFunction|S3Bucket)\b/i.test(nid);
+}
+
+/** IAM-inferred service wildcards (Logs:*, Ec2 describe stubs, …) — hide those only. */
+function isMundaneResourceNode(node) {
+  if (!node) return false;
+  if (node.concept_type === "SecretStore" || node.concept_type === "RegistryStore") return false;
+  if (node.concept_type !== "DataStore" && node.label !== "Resource") return false;
+  return !isInterestingDataStore(node);
+}
+
 function isHiddenDisplayNode(node) {
   return (
     !node
     || node.label === "CollectionSession"
-    || isAttackOutcomeNode(node)
     || isPolicyStatementNode(node)
     || isTrustNode(node)
+    || isMundaneResourceNode(node)
+    // Crown-jewel AttackOutcome nodes duplicate high_value / admin markings on identities.
+    || isAttackOutcomeNode(node)
   );
 }
 
@@ -266,8 +505,37 @@ const CAPABILITY_REL_STRENGTH = {
 function compactCapabilityEdges(edges) {
   const kept = [];
   const buckets = new Map();
+  const privescPairs = new Set();
 
   for (const edge of edges) {
+    if (edge.rel === "CAN_PRIVESC_TO") {
+      const blob = `${edge.pattern_id || ""} ${edge.pattern_name || ""}`.toLowerCase();
+      const assumeLike = ["passrole", "assume-role", "assumerole", "update-assume", "create-access-key"]
+        .some((tok) => blob.includes(tok));
+      if (assumeLike) privescPairs.add(`${edge.src}\0${edge.dst}`);
+    }
+  }
+
+  for (const edge of edges) {
+    // Assume is redundant when privesc already covers the same endpoints.
+    if (edge.rel === "CAN_ASSUME_ROLE" && privescPairs.has(`${edge.src}\0${edge.dst}`)) {
+      continue;
+    }
+    // PassRole CONTROLS → Identity is redundant with CAN_PRIVESC_TO → that Identity.
+    if (
+      (edge.rel === "CONTROLS" || edge.rel === "EXECUTES")
+      && privescPairs.has(`${edge.src}\0${edge.dst}`)
+      && !["iam:*", "*"].includes(String(edge.action || "").toLowerCase())
+    ) {
+      const dstConcept = edge._dstConcept || edge.dst_concept_type;
+      // Without concept on the edge, still drop CONTROLS when destination is a Principal id.
+      if (
+        dstConcept === "Identity"
+        || String(edge.dst || "").startsWith("Principal:")
+      ) {
+        continue;
+      }
+    }
     if (
       !COMPACTABLE_CAPABILITY_RELS.has(edge.rel)
       || edge.attack_outcome
@@ -312,26 +580,14 @@ function compactCapabilityEdges(edges) {
 }
 
 function normalizeGraphForDisplay(graph) {
-  const outcomeIds = new Set(
-    (graph.nodes || []).filter(isAttackOutcomeNode).map((n) => n.id),
-  );
   const nodes = (graph.nodes || []).filter((n) => !isHiddenDisplayNode(n));
   const nodeIds = new Set(nodes.map((n) => n.id));
   const edges = [];
 
   for (const edge of graph.edges || []) {
     if (edge.rel === "DISCOVERED") continue;
-    if (outcomeIds.has(edge.dst) && edge.rel === "CAN_PRIVESC_TO") {
-      if (!nodeIds.has(edge.src)) continue;
-      edges.push({
-        ...edge,
-        dst: edge.src,
-        attack_outcome: edge.attack_outcome || "administrator-access",
-        outcome_display: edge.outcome_display || "Administrator access",
-        _collapsedOutcome: true,
-      });
-      continue;
-    }
+    // Drop legacy self-loops (old admin_outcome modelling); real edges target AttackOutcome.
+    if (edge.rel === "CAN_PRIVESC_TO" && edge.src === edge.dst) continue;
     if (nodeIds.has(edge.src) && nodeIds.has(edge.dst)) {
       edges.push(edge);
     }
@@ -442,6 +698,44 @@ function pickLayoutRoots(nodes, rootId, idSet) {
   return roots;
 }
 
+function findConnectedComponents(nodes, undirected) {
+  const seen = new Set();
+  const components = [];
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue;
+    const ids = [];
+    const queue = [node.id];
+    seen.add(node.id);
+    while (queue.length) {
+      const id = queue.shift();
+      ids.push(id);
+      for (const nbr of undirected.get(id) || []) {
+        if (seen.has(nbr)) continue;
+        seen.add(nbr);
+        queue.push(nbr);
+      }
+    }
+    components.push(ids);
+  }
+  return components;
+}
+
+function scoreLayoutComponent(ids, nodeById, preferredRoot) {
+  let score = ids.length * 10;
+  for (const id of ids) {
+    const node = nodeById.get(id);
+    if (!node) continue;
+    if (id === preferredRoot) score += 10000;
+    if (node.is_caller || node.is_scenario_start) score += 5000;
+    if (node.is_compromised) score += 800;
+    if (node.is_high_value) score += 300;
+    if (node.is_shadow_admin) score += 220;
+    if (node.label === "Principal" || node.concept_type === "Identity") score += 25;
+    if (node.concept_type === "SecretStore" || node.concept_type === "RegistryStore") score += 40;
+  }
+  return score;
+}
+
 function assignLayoutLevels(nodes, edges, rootId) {
   const { outgoing, undirected, idSet } = buildAdjacency(nodes, edges);
   const levels = new Map();
@@ -477,41 +771,21 @@ function assignLayoutLevels(nodes, edges, rootId) {
     }
   }
 
-  // Pack still-disconnected components into compact level blocks instead of a long spine.
+  // Any leftovers (shouldn't happen inside one component) get a tight local BFS pack.
   const unplaced = nodes.map((n) => n.id).filter((id) => !levels.has(id));
   if (unplaced.length) {
-    let blockStart = (levels.size ? Math.max(...levels.values()) : -1) + 1;
-    const seen = new Set();
-    for (const start of unplaced) {
-      if (seen.has(start)) continue;
-      const component = [];
-      const q = [start];
-      seen.add(start);
-      while (q.length) {
-        const id = q.shift();
-        component.push(id);
-        for (const nbr of undirected.get(id) || []) {
-          if (seen.has(nbr) || levels.has(nbr)) continue;
-          seen.add(nbr);
-          q.push(nbr);
-        }
+    const local = new Map([[unplaced[0], 0]]);
+    const lq = [unplaced[0]];
+    while (lq.length) {
+      const id = lq.shift();
+      for (const nbr of undirected.get(id) || []) {
+        if (!unplaced.includes(nbr) || local.has(nbr)) continue;
+        local.set(nbr, (local.get(id) || 0) + 1);
+        lq.push(nbr);
       }
-      // local BFS depths within the component
-      const local = new Map([[component[0], 0]]);
-      const lq = [component[0]];
-      while (lq.length) {
-        const id = lq.shift();
-        for (const nbr of undirected.get(id) || []) {
-          if (!component.includes(nbr) || local.has(nbr)) continue;
-          local.set(nbr, (local.get(id) || 0) + 1);
-          lq.push(nbr);
-        }
-      }
-      component.forEach((id) => {
-        levels.set(id, blockStart + (local.get(id) || 0));
-      });
-      blockStart += 1 + Math.max(0, ...[...local.values()]);
     }
+    const base = (levels.size ? Math.max(...levels.values()) : -1) + 1;
+    unplaced.forEach((id) => levels.set(id, base + (local.get(id) || 0)));
   }
 
   return { levels, roots };
@@ -535,8 +809,10 @@ function orderLayerByBarycenter(layerIds, prevPositions, undirected) {
     });
 }
 
-function computeLayeredLayout(nodes, edges, rootId) {
-  if (!nodes.length) return {};
+function layoutConnectedComponent(nodes, edges, rootId) {
+  if (!nodes.length) {
+    return { positions: {}, width: 0, height: 0, minX: 0, minY: 0 };
+  }
 
   const nodeById = graphNodeMap(nodes);
   const { undirected } = buildAdjacency(nodes, edges);
@@ -552,7 +828,6 @@ function computeLayeredLayout(nodes, edges, rootId) {
   const levelOrder = new Map();
   let prevY = new Map();
 
-  // A couple of barycenter sweeps reduce edge crossings within columns.
   for (let pass = 0; pass < 3; pass += 1) {
     const nextPrev = new Map();
     orderedLevels.forEach((level) => {
@@ -565,9 +840,10 @@ function computeLayeredLayout(nodes, edges, rootId) {
 
   const positions = {};
   let cursorX = 0;
-  const minXGap = 260;
-  const minYGap = 100;
-  const maxColumnHeight = 12;
+  const minXGap = 220;
+  const minYGap = 88;
+  // Prefer taller columns so attack depth stays compact left→right.
+  const maxColumnHeight = Math.max(8, Math.ceil(Math.sqrt(nodes.length) * 1.6));
 
   orderedLevels.forEach((level) => {
     const ids = levelOrder.get(level) || byLevel.get(level);
@@ -577,24 +853,93 @@ function computeLayeredLayout(nodes, edges, rootId) {
     }
 
     let levelWidth = 0;
+    let levelHeight = 0;
     columns.forEach((columnIds, colIndex) => {
       const colFeet = columnIds.map((id) => estimateNodeFootprint(nodeById.get(id)));
-      const colWidth = Math.max(80, ...colFeet.map((f) => f.width));
-      const gaps = colFeet.map((foot) => Math.max(minYGap, foot.height + 40));
+      const colWidth = Math.max(72, ...colFeet.map((f) => f.width));
+      const gaps = colFeet.map((foot) => Math.max(minYGap, foot.height + 28));
       const stackHeight = gaps.reduce((sum, gap, index) => (
         index === gaps.length - 1 ? sum + colFeet[index].height : sum + gap
       ), 0);
       const center = stackHeight / 2;
       let y = 0;
-      const x = cursorX + colIndex * (colWidth + 56);
+      const x = cursorX + colIndex * (colWidth + 48);
       columnIds.forEach((id, index) => {
         positions[id] = { x, y: y - center + colFeet[index].height / 2 };
         if (index < columnIds.length - 1) y += gaps[index];
       });
-      levelWidth = Math.max(levelWidth, (colIndex + 1) * (colWidth + 56) - 56);
+      levelWidth = Math.max(levelWidth, (colIndex + 1) * (colWidth + 48) - 48);
+      levelHeight = Math.max(levelHeight, stackHeight);
     });
 
-    cursorX += Math.max(levelWidth, minXGap) + 72;
+    cursorX += Math.max(levelWidth, minXGap) + 56;
+  });
+
+  const xs = Object.values(positions).map((p) => p.x);
+  const ys = Object.values(positions).map((p) => p.y);
+  const feet = nodes.map((n) => estimateNodeFootprint(n));
+  const maxHalfW = Math.max(40, ...feet.map((f) => f.width / 2));
+  const maxHalfH = Math.max(20, ...feet.map((f) => f.height / 2));
+  const minX = Math.min(...xs) - maxHalfW;
+  const maxX = Math.max(...xs) + maxHalfW;
+  const minY = Math.min(...ys) - maxHalfH;
+  const maxY = Math.max(...ys) + maxHalfH;
+
+  return {
+    positions,
+    width: Math.max(80, maxX - minX),
+    height: Math.max(60, maxY - minY),
+    minX,
+    minY,
+  };
+}
+
+function computeLayeredLayout(nodes, edges, rootId) {
+  if (!nodes.length) return {};
+
+  const nodeById = graphNodeMap(nodes);
+  const { undirected } = buildAdjacency(nodes, edges);
+  const components = findConnectedComponents(nodes, undirected).sort(
+    (a, b) => scoreLayoutComponent(b, nodeById, rootId) - scoreLayoutComponent(a, nodeById, rootId),
+  );
+
+  const gapX = 140;
+  const gapY = 160;
+  const layouts = components.map((ids) => {
+    const idSet = new Set(ids);
+    const componentNodes = ids.map((id) => nodeById.get(id)).filter(Boolean);
+    const componentEdges = edges.filter((edge) => idSet.has(edge.src) && idSet.has(edge.dst));
+    const localRoot = ids.includes(rootId)
+      ? rootId
+      : pickLayoutRoots(componentNodes, null, idSet)[0];
+    return layoutConnectedComponent(componentNodes, componentEdges, localRoot);
+  });
+
+  // Soft viewport budget: keep primary attack-path band readable, wrap extras beside/below.
+  const primaryWidth = layouts[0]?.width || 720;
+  const maxRowWidth = Math.max(primaryWidth * 1.35, 980);
+
+  const positions = {};
+  let rowX = 0;
+  let rowY = 0;
+  let rowHeight = 0;
+
+  layouts.forEach((layout, index) => {
+    if (index > 0 && rowX > 0 && rowX + layout.width > maxRowWidth) {
+      rowX = 0;
+      rowY += rowHeight + gapY;
+      rowHeight = 0;
+    }
+
+    Object.entries(layout.positions).forEach(([id, point]) => {
+      positions[id] = {
+        x: point.x - layout.minX + rowX,
+        y: point.y - layout.minY + rowY,
+      };
+    });
+
+    rowX += layout.width + gapX;
+    rowHeight = Math.max(rowHeight, layout.height);
   });
 
   return positions;
@@ -651,9 +996,6 @@ function buildGraphEdgeLookup(graph) {
 
 function resolveStepEdges(steps) {
   const lookup = buildGraphEdgeLookup(state.graph);
-  const outcomeIds = new Set(
-    (state.graph.nodes || []).filter(isAttackOutcomeNode).map((n) => n.id),
-  );
 
   return steps.map((step, index) => {
     const rel = step.rel || step.rel_type;
@@ -661,8 +1003,14 @@ function resolveStepEdges(steps) {
     let dst = step.dst || step.dst_id;
     const evidence = step.evidence || {};
 
-    if (outcomeIds.has(dst) && rel === "CAN_PRIVESC_TO") {
-      dst = src;
+    // Never collapse privesc onto self — outcomes are real graph nodes now.
+    if (rel === "CAN_PRIVESC_TO" && src === dst && evidence.attack_outcome) {
+      const outcome = (state.graph.nodes || []).find(
+        (n) => isAttackOutcomeNode(n)
+          && (n.attack_outcome === evidence.attack_outcome
+            || n.resource_type === evidence.attack_outcome),
+      );
+      if (outcome) dst = outcome.id;
     }
 
     let graphEdge =
@@ -1166,16 +1514,43 @@ function initPathGraph() {
   wireEdgeInteractionHandlers(state.pathNetwork, state.pathEdgesDS);
 }
 
-function fitGraphView() {
+function fitGraphView(opts = {}) {
   const graphEl = document.getElementById("graph");
   const pathEl = document.getElementById("pathGraph");
   const network = getMainViewportNetwork();
   const container = isGraphOnMain() ? graphEl : pathEl;
   if (!network || !container) return;
   resizeNetworkToContainer(network, container);
+
+  const focusIds = opts.nodeIds;
+  if (focusIds?.length) {
+    try {
+      network.fit({
+        nodes: focusIds,
+        animation: { duration: 350, easingFunction: "easeInOutQuad" },
+        padding: 48,
+      });
+      return;
+    } catch {
+      // fall through to full fit
+    }
+  }
+
   const hasNodes = (state.nodesDS?.get()?.length || 0) + (state.pathNodesDS?.get()?.length || 0);
   if (!hasNodes) return;
   network.fit({ animation: { duration: 350, easingFunction: "easeInOutQuad" } });
+}
+
+function primaryLayoutFocusIds(visibleNodes, edges, rootId) {
+  if (!visibleNodes?.length) return null;
+  const { undirected } = buildAdjacency(visibleNodes, edges);
+  const components = findConnectedComponents(visibleNodes, undirected);
+  if (!components.length) return null;
+  const nodeById = graphNodeMap(visibleNodes);
+  components.sort(
+    (a, b) => scoreLayoutComponent(b, nodeById, rootId) - scoreLayoutComponent(a, nodeById, rootId),
+  );
+  return components[0];
 }
 
 function applyGraphLayout(visibleNodes, edges, { fit = false } = {}) {
@@ -1184,7 +1559,10 @@ function applyGraphLayout(visibleNodes, edges, { fit = false } = {}) {
   state.nodePositions = computeLayeredLayout(visibleNodes, edges, state.layoutRootId);
 
   state.nodesDS.update(visibleNodes.map((node) => toVisNode(node, state.nodePositions[node.id])));
-  if (fit) fitGraphView();
+  if (fit) {
+    const focusIds = primaryLayoutFocusIds(visibleNodes, edges, state.layoutRootId);
+    fitGraphView({ nodeIds: focusIds });
+  }
 }
 
 function renderGraph(graph) {
@@ -1265,27 +1643,20 @@ function populateNodeDatalist(nodes) {
   const dl = document.getElementById("nodeOptions");
   dl.innerHTML = '<option value="caller">caller (compromised identity)</option>';
   const seen = new Set(["caller"]);
+  // One option per node: the graph node id (e.g. Principal:arn:…:role/x).
+  // Emitting arn / short name / native_id as separate values duplicates the same
+  // identity and breaks resolve when those aliases match multiple nodes.
   nodes
     .slice()
     .sort((a, b) => displayName(a).localeCompare(displayName(b)))
     .forEach((n) => {
-      const aliases = [
-        n.id,
-        n.native_id,
-        n.arn,
-        n.bucket_name,
-        n.name,
-        n.display_name,
-      ].filter(Boolean);
-      aliases.forEach((alias) => {
-        const value = String(alias);
-        if (seen.has(value)) return;
-        seen.add(value);
-        const opt = document.createElement("option");
-        opt.value = value;
-        opt.label = `${n.label}: ${displayName(n)}`;
-        dl.appendChild(opt);
-      });
+      const value = String(n.id || "");
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.label = `${n.label}: ${displayName(n)}`;
+      dl.appendChild(opt);
     });
 }
 
@@ -1304,10 +1675,9 @@ function collectPathSubgraph(paths) {
       let src = s.src;
       let dst = s.dst;
       let rel = s.rel;
-      if (hiddenIds.has(dst) && rel === "CAN_PRIVESC_TO") {
-        dst = src;
-      }
+      // Skip edges into hidden nodes (incl. suppressed AttackOutcome endpoints).
       if (hiddenIds.has(src) || (dst && hiddenIds.has(dst))) continue;
+      if (rel === "CAN_PRIVESC_TO" && src === dst) continue;
       const key = `${src}|${rel}|${dst}`;
       if (stepKeys.has(key)) continue;
       stepKeys.add(key);
@@ -1428,11 +1798,24 @@ function refreshMainGraphSelection() {
   if (!state.selectedNodeId) return;
   state.nodesDS.get().forEach((n) => {
     const raw = n._raw;
+    const ignored = state.ignoredNodeIds.has(n.id);
     if (n.id === state.selectedNodeId) {
-      state.nodesDS.update({ id: n.id, color: SELECTED_NODE_COLOR, borderWidth: 3 });
+      state.nodesDS.update({
+        id: n.id,
+        color: SELECTED_NODE_COLOR,
+        borderWidth: 3,
+        opacity: ignored ? 0.55 : 1,
+        font: { color: ignored ? "#8b949e" : "#e6edf3", size: 12, multi: true, align: "center" },
+      });
     } else {
       const colors = raw ? nodeMarkingColor(raw) : nodeColor(n.group);
-      state.nodesDS.update({ id: n.id, color: { ...colors }, borderWidth: 2 });
+      state.nodesDS.update({
+        id: n.id,
+        color: { ...colors },
+        borderWidth: 2,
+        opacity: ignored ? 0.35 : 1,
+        font: { color: ignored ? "#8b949e" : "#e6edf3", size: 12, multi: true, align: "center" },
+      });
     }
   });
 }
@@ -1463,13 +1846,27 @@ function openNodeDetail(nodeId) {
   if (!raw) return;
 
   document.getElementById("nodeHint").style.display = "none";
-  document.getElementById("nodeDetail").style.display = "block";
+  const detail = document.getElementById("nodeDetail");
+  detail.style.display = "block";
+  detail.dataset.nodeId = nodeId;
   document.getElementById("nodeTitle").textContent = `${raw.label} — ${displayName(raw)}`;
   const { id, label, ...props } = raw;
   document.getElementById("nodeProps").textContent = JSON.stringify(props, null, 2);
 
   refreshMainGraphSelection();
   switchTab("node");
+}
+
+function refreshOpenNodeDetail() {
+  const detail = document.getElementById("nodeDetail");
+  const nodeId = detail?.dataset?.nodeId || state.selectedNodeId;
+  if (!nodeId || detail?.style.display === "none") return;
+  const visNode = state.nodesDS?.get(nodeId);
+  const raw = visNode?._raw || state.graph.nodes.find((n) => n.id === nodeId);
+  if (!raw) return;
+  document.getElementById("nodeTitle").textContent = `${raw.label} — ${displayName(raw)}`;
+  const { id, label, ...props } = raw;
+  document.getElementById("nodeProps").textContent = JSON.stringify(props, null, 2);
 }
 
 function selectNode(nodeId) {
@@ -1498,9 +1895,10 @@ function renderPaths(paths, mode = "paths", opts = {}) {
     return;
   }
 
-  paths.forEach((p) => {
+    paths.forEach((p) => {
     const li = document.createElement("li");
-    const target = p.target_match?.outcome_display
+    const target = p.target_match?.blast_label
+      || p.target_match?.outcome_display
       || (p.target_match?.concept_type === "AttackOutcome" ? "👑 Administrator access" : null)
       || p.target_match?.concept_type
       || p.target_match?.resource_type
@@ -1568,6 +1966,16 @@ async function runPathQuery(query) {
     };
     if (!body.target_concept) delete body.target_concept;
     if (!body.target_resource_type) delete body.target_resource_type;
+    const ignored = excludedNodeIdsPayload();
+    if (ignored) body.exclude_node_ids = ignored;
+
+    state.lastPathQuery = {
+      mode: body.mode,
+      start: body.start,
+      target_concept: body.target_concept || null,
+      target_resource_type: body.target_resource_type || null,
+      max_depth: body.max_depth,
+    };
 
     const data = await fetchJSON(`/api/sessions/${state.sessionId}/paths/query`, {
       method: "POST",
@@ -1636,6 +2044,7 @@ async function loadSession(sessionId) {
   if (!sessionId) return;
   try {
     state.sessionId = sessionId;
+    loadIgnoredForSession(sessionId);
     const [meta, graph] = await Promise.all([
       fetchJSON(`/api/sessions/${sessionId}`),
       fetchJSON(`/api/sessions/${sessionId}/graph`),
@@ -1649,6 +2058,7 @@ async function loadSession(sessionId) {
     if (state.pathEdgesDS) state.pathEdgesDS.clear();
     updateMiniGraphSectionVisibility();
     renderGraph(graph);
+    renderIgnoredChips();
     renderPaths([]);
     const defaultStart = state.callerNodeId || "caller";
     document.getElementById("startSearch").value = defaultStart;
@@ -1692,6 +2102,8 @@ async function runGraphQuery() {
     if (!body.end_node_id) delete body.end_node_id;
     if (!body.end_id_contains) delete body.end_id_contains;
     if (!body.rel_types?.length) delete body.rel_types;
+    const ignored = excludedNodeIdsPayload();
+    if (ignored) body.exclude_node_ids = ignored;
 
     const data = await fetchJSON(`/api/sessions/${state.sessionId}/graph/query`, {
       method: "POST",
@@ -1957,6 +2369,9 @@ async function refreshMarkingsUI() {
     if (summary.high_value_count) {
       parts.push(`<span class="marking-chip high-value">${summary.high_value_count} high-value</span>`);
     }
+    if (summary.shadow_admin_count) {
+      parts.push(`<span class="marking-chip shadow-admin">${summary.shadow_admin_count} shadow admin</span>`);
+    }
     if (parts.length) {
       el.innerHTML = parts.join("") + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Right-click nodes to add or change markings</div>';
     } else {
@@ -1973,10 +2388,13 @@ async function runMarkingPathsQuery(kind, { silent = false } = {}) {
   if (!state.sessionId) return alert("Select a session first");
   const maxDepth = Number(document.getElementById("maxDepth")?.value) || 6;
   try {
+    const body = { kind, max_depth: maxDepth, max_paths: 30 };
+    const ignored = excludedNodeIdsPayload();
+    if (ignored) body.exclude_node_ids = ignored;
     const data = await fetchJSON(`/api/sessions/${state.sessionId}/paths/markings-query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, max_depth: maxDepth, max_paths: 30 }),
+      body: JSON.stringify(body),
     });
     state.markings = data.markings || state.markings;
     refreshMarkingsSummaryFromData(data.markings);
@@ -2001,6 +2419,9 @@ function refreshMarkingsSummaryFromData(summary) {
   }
   if (summary.high_value_count) {
     parts.push(`<span class="marking-chip high-value">${summary.high_value_count} high-value</span>`);
+  }
+  if (summary.shadow_admin_count) {
+    parts.push(`<span class="marking-chip shadow-admin">${summary.shadow_admin_count} shadow admin</span>`);
   }
   if (parts.length) {
     el.innerHTML = parts.join("") + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Right-click nodes to add or change markings</div>';
@@ -2035,9 +2456,8 @@ function handleGraphHostContextMenu(event, network) {
   event.preventDefault();
   event.stopPropagation();
   hideContextMenu();
-  if (!nodeId) return;
-  setPathSearchStart(nodeId);
-  showContextMenu(event, nodeId);
+  if (nodeId) setPathSearchStart(nodeId);
+  showContextMenu(event, nodeId || null);
 }
 
 function initGraphContextMenus() {
@@ -2065,6 +2485,7 @@ function initContextMenu() {
   });
   document.addEventListener("scroll", hideContextMenu, true);
   initGraphContextMenus();
+  ensureEnrichBusyIndicator();
 }
 
 function hideContextMenu() {
@@ -2075,56 +2496,83 @@ function hideContextMenu() {
 function showContextMenu(event, nodeId) {
   if (!contextMenuEl) return;
   state.contextMenuNodeId = nodeId;
-  const raw = state.graph.nodes.find((n) => n.id === nodeId);
-  const name = raw ? displayName(raw) : shortId(nodeId);
-  const isCompromised = !!raw?.is_compromised;
-  const isHighValue = !!raw?.is_high_value;
+  const raw = nodeId ? state.graph.nodes.find((n) => n.id === nodeId) : null;
+  const name = raw ? displayName(raw) : "Session";
+  const isIgnored = nodeId ? state.ignoredNodeIds.has(nodeId) : false;
 
-  contextMenuEl.innerHTML = `
-    <div class="context-menu-header">${shortId(name)}</div>
-    <button type="button" data-action="mark-compromised">Mark compromised</button>
-    <button type="button" data-action="mark-high-value" class="warn">Mark high-value</button>
-    <button type="button" data-action="clear-markings">Clear markings</button>
-    <hr />
-    <button type="button" data-action="blast-from-here">Blast radius from here</button>
-    <button type="button" data-action="paths-from-here">Paths from here → secrets</button>
-    <hr />
-    <button type="button" data-action="query-compromised-hv">Query: all compromised → high value</button>
-  `;
+  if (!nodeId) {
+    contextMenuEl.innerHTML = `
+      <div class="context-menu-header">Graph</div>
+      <button type="button" data-action="enrich-session">Enrich session (attack surface)</button>
+      <hr />
+      <div class="context-menu-section-label">Apply library file</div>
+      <div data-role="enrich-library"><div class="context-menu-empty">Loading…</div></div>
+    `;
+    contextMenuEl.querySelector('[data-action="enrich-session"]').onclick = () => {
+      hideContextMenu();
+      enrichSessionSurface();
+    };
+  } else {
+    contextMenuEl.innerHTML = `
+      <div class="context-menu-header">${escapeHtml(shortId(name))}</div>
+      <button type="button" data-action="mark-compromised">Mark compromised</button>
+      <button type="button" data-action="mark-high-value" class="warn">Mark high-value</button>
+      <button type="button" data-action="clear-markings">Clear markings</button>
+      <hr />
+      <button type="button" data-action="toggle-ignore">${isIgnored ? "Un-ignore from queries" : "Ignore from queries"}</button>
+      <hr />
+      <button type="button" data-action="blast-from-here">Blast radius from here</button>
+      <button type="button" data-action="paths-from-here">Paths from here → secrets</button>
+      <hr />
+      <button type="button" data-action="enrich-session">Enrich session (attack surface)</button>
+      <div class="context-menu-section-label">Enrich this node</div>
+      <div data-role="enrich-library"><div class="context-menu-empty">Loading…</div></div>
+      <hr />
+      <button type="button" data-action="query-compromised-hv">Query: all compromised → high value</button>
+    `;
 
-  contextMenuEl.querySelector('[data-action="mark-compromised"]').onclick = () => {
-    hideContextMenu();
-    setPathSearchStart(nodeId);
-    markNode(nodeId, { compromised: true });
-  };
-  contextMenuEl.querySelector('[data-action="mark-high-value"]').onclick = () => {
-    hideContextMenu();
-    setPathSearchStart(nodeId);
-    markNode(nodeId, { high_value: true });
-  };
-  contextMenuEl.querySelector('[data-action="clear-markings"]').onclick = () => {
-    hideContextMenu();
-    setPathSearchStart(nodeId);
-    markNode(nodeId, { compromised: false, high_value: false, clear: true });
-  };
-  contextMenuEl.querySelector('[data-action="blast-from-here"]').onclick = () => {
-    hideContextMenu();
-    document.getElementById("startSearch").value = nodeId;
-    runPathQuery({ start: nodeId, mode: "blast" });
-    switchTab("search");
-  };
-  contextMenuEl.querySelector('[data-action="paths-from-here"]').onclick = () => {
-    hideContextMenu();
-    document.getElementById("startSearch").value = nodeId;
-    document.getElementById("searchMode").value = "paths";
-    document.getElementById("targetConcept").value = "SecretStore";
-    runPathQuery({ start: nodeId, mode: "paths", target_concept: "SecretStore" });
-    switchTab("search");
-  };
-  contextMenuEl.querySelector('[data-action="query-compromised-hv"]').onclick = () => {
-    hideContextMenu();
-    runMarkingPathsQuery("compromised_to_high_value");
-  };
+    contextMenuEl.querySelector('[data-action="mark-compromised"]').onclick = () => {
+      hideContextMenu();
+      setPathSearchStart(nodeId);
+      markNode(nodeId, { compromised: true });
+    };
+    contextMenuEl.querySelector('[data-action="mark-high-value"]').onclick = () => {
+      hideContextMenu();
+      setPathSearchStart(nodeId);
+      markNode(nodeId, { high_value: true });
+    };
+    contextMenuEl.querySelector('[data-action="clear-markings"]').onclick = () => {
+      hideContextMenu();
+      setPathSearchStart(nodeId);
+      markNode(nodeId, { compromised: false, high_value: false, clear: true });
+    };
+    contextMenuEl.querySelector('[data-action="toggle-ignore"]').onclick = () => {
+      hideContextMenu();
+      setNodeIgnored(nodeId, !isIgnored);
+    };
+    contextMenuEl.querySelector('[data-action="blast-from-here"]').onclick = () => {
+      hideContextMenu();
+      document.getElementById("startSearch").value = nodeId;
+      runPathQuery({ start: nodeId, mode: "blast" });
+      switchTab("search");
+    };
+    contextMenuEl.querySelector('[data-action="paths-from-here"]').onclick = () => {
+      hideContextMenu();
+      document.getElementById("startSearch").value = nodeId;
+      document.getElementById("searchMode").value = "paths";
+      document.getElementById("targetConcept").value = "SecretStore";
+      runPathQuery({ start: nodeId, mode: "paths", target_concept: "SecretStore" });
+      switchTab("search");
+    };
+    contextMenuEl.querySelector('[data-action="enrich-session"]').onclick = () => {
+      hideContextMenu();
+      enrichSessionSurface();
+    };
+    contextMenuEl.querySelector('[data-action="query-compromised-hv"]').onclick = () => {
+      hideContextMenu();
+      runMarkingPathsQuery("compromised_to_high_value");
+    };
+  }
 
   contextMenuEl.style.display = "block";
   contextMenuEl.style.left = `${event.clientX}px`;
@@ -2135,6 +2583,229 @@ function showContextMenu(event, nodeId) {
   }
   if (rect.bottom > window.innerHeight - 8) {
     contextMenuEl.style.top = `${event.clientY - rect.height}px`;
+  }
+
+  populateContextEnrichMenu(nodeId);
+}
+
+async function populateContextEnrichMenu(nodeId) {
+  const slot = contextMenuEl?.querySelector('[data-role="enrich-library"]');
+  if (!slot) return;
+  const requestNodeId = nodeId;
+  try {
+    const data = await fetchJSON("/api/enrichment/library");
+    if (state.contextMenuNodeId !== requestNodeId) return;
+    const files = (data.files || []).filter((f) => f.valid !== false);
+    if (!files.length) {
+      slot.innerHTML = `<div class="context-menu-empty">No files in library<br/><span style="font-size:10px">${escapeHtml(data.directory || "")}</span></div>`;
+      return;
+    }
+    slot.innerHTML = files
+      .slice(0, 12)
+      .map((f) => {
+        const meta = [f.collector_mode || f.collector, f.material_count != null ? `${f.material_count} mats` : null]
+          .filter(Boolean)
+          .join(" · ");
+        return `<button type="button" class="enrich-file" data-enrich-file="${escapeAttr(f.filename)}">${escapeHtml(f.filename)}${
+          meta ? `<span class="enrich-file-meta">${escapeHtml(meta)}</span>` : ""
+        }</button>`;
+      })
+      .join("");
+    slot.querySelectorAll("[data-enrich-file]").forEach((btn) => {
+      btn.onclick = () => {
+        const filename = btn.getAttribute("data-enrich-file");
+        const bindTo = state.contextMenuNodeId || requestNodeId || null;
+        hideContextMenu();
+        applyEnrichmentLibraryFile(filename, bindTo);
+      };
+    });
+  } catch (err) {
+    if (state.contextMenuNodeId !== requestNodeId) return;
+    slot.innerHTML = `<div class="context-menu-empty">${escapeHtml(String(err.message || err))}</div>`;
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/'/g, "&#39;");
+}
+
+function ensureEnrichBusyIndicator() {
+  if (document.getElementById("enrichBusyBanner")) return;
+  const el = document.createElement("div");
+  el.id = "enrichBusyBanner";
+  el.className = "enrich-busy-banner";
+  el.hidden = true;
+  el.innerHTML = `<span class="enrich-busy-dot"></span><span data-role="enrich-busy-text">Enriching…</span>`;
+  document.body.appendChild(el);
+}
+
+function setEnrichBusy(active, message) {
+  state.enrichBusy = Boolean(active);
+  ensureEnrichBusyIndicator();
+  const el = document.getElementById("enrichBusyBanner");
+  const text = el?.querySelector('[data-role="enrich-busy-text"]');
+  if (!el) return;
+  if (active) {
+    if (text) text.textContent = message || "Enriching session…";
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+  const status = document.getElementById("enrichmentStatus");
+  if (status && active) status.textContent = message || "Enriching…";
+}
+
+function formatSurfaceEnrichStats(stats) {
+  const parts = [];
+  if (stats.capability_bindings) parts.push(`${stats.capability_bindings} capability bind(s)`);
+  if (stats.feeds_edges) parts.push(`${stats.feeds_edges} FEEDS`);
+  if (stats.passrole_ec2_bindings) parts.push(`${stats.passrole_ec2_bindings} PassRole→EC2`);
+  if (stats.credential_unlocks) parts.push(`${stats.credential_unlocks} unlock(s)`);
+  if (stats.materials_relabeled) parts.push(`${stats.materials_relabeled} relabel(s)`);
+  if (stats.imds_surfaces) parts.push(`${stats.imds_surfaces} IMDS`);
+  return parts.length ? parts.join(", ") : "surface enrichment complete";
+}
+
+function formatEnrichmentStats(stats, label) {
+  const unresolved = stats.unresolved_bindings?.length || 0;
+  const pending = stats.pending_unlocks?.length || 0;
+  const skipped = stats.skipped_materials?.length || 0;
+  const hostless = stats.hostless_bindings || 0;
+  const parts = [
+    `${stats.materials_applied || 0} material(s)`,
+    `${stats.edges_added || 0} edge(s)`,
+  ];
+  if (stats.unlocks_applied) parts.push(`${stats.unlocks_applied} unlock(s)`);
+  if (stats.materials_removed) parts.push(`${stats.materials_removed} replaced`);
+  if (hostless) parts.push(`${hostless} hostless`);
+  if (pending) parts.push(`${pending} pending unlock(s)`);
+  if (unresolved) parts.push(`${unresolved} unmatched host ref(s)`);
+  if (skipped) parts.push(`${skipped} skipped`);
+  if (stats.surface) {
+    const surfaceBits = formatSurfaceEnrichStats(stats.surface);
+    if (surfaceBits) parts.push(surfaceBits);
+  }
+  const prefix = label ? `${label}: ` : "";
+  if (!(stats.materials_applied || 0) && unresolved) {
+    return `${prefix}import matched no nodes — enum a session first`;
+  }
+  return `${prefix}${parts.join(", ")}`;
+}
+
+/** Reload graph + re-run the active query without stealing focus/selection. */
+async function afterEnrichmentRefresh(statusMessage) {
+  const keepSelected = state.selectedNodeId;
+  const keepStart =
+    document.getElementById("startSearch")?.value ||
+    state.lastPathQuery?.start ||
+    "";
+  const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
+  syncGraphFromServer(graph);
+  refreshGraphViewports({ fit: false });
+  if (keepSelected && (state.graph.nodes || []).some((n) => n.id === keepSelected)) {
+    state.selectedNodeId = keepSelected;
+    refreshMainGraphSelection();
+    refreshOpenNodeDetail();
+  }
+  const startEl = document.getElementById("startSearch");
+  if (startEl && keepStart) startEl.value = keepStart;
+
+  if (state.lastPathQuery && state.generatedPaths?.length) {
+    const q = { ...state.lastPathQuery };
+    await runPathQuery(q);
+  }
+  const status = document.getElementById("enrichmentStatus");
+  if (status && statusMessage) status.textContent = statusMessage;
+}
+
+async function enrichSessionSurface() {
+  const status = document.getElementById("enrichmentStatus");
+  if (!state.sessionId) {
+    if (status) status.textContent = "Load a session first";
+    return;
+  }
+  if (state.enrichBusy) return;
+  setEnrichBusy(true, "Enriching session…");
+  try {
+    const data = await fetchJSON(`/api/sessions/${state.sessionId}/enrich-surface`, {
+      method: "POST",
+    });
+    const msg = `Session: ${formatSurfaceEnrichStats(data.stats || {})}`;
+    await afterEnrichmentRefresh(msg);
+  } catch (err) {
+    if (status) status.textContent = String(err.message || err);
+  } finally {
+    setEnrichBusy(false);
+  }
+}
+
+async function applyEnrichmentLibraryFile(filename, targetNodeId) {
+  const status = document.getElementById("enrichmentStatus");
+  if (!state.sessionId) {
+    if (status) status.textContent = "Load a session first";
+    return;
+  }
+  if (state.enrichBusy) return;
+  setEnrichBusy(true, `Importing ${filename}…`);
+  try {
+    const qs = targetNodeId
+      ? `?target_node_id=${encodeURIComponent(targetNodeId)}`
+      : "";
+    const data = await fetchJSON(
+      `/api/sessions/${state.sessionId}/enrichment/library/${encodeURIComponent(filename)}${qs}`,
+      { method: "POST" },
+    );
+    await afterEnrichmentRefresh(formatEnrichmentStats(data.stats || {}, filename));
+    refreshEnrichmentLibrary();
+  } catch (err) {
+    if (status) status.textContent = String(err.message || err);
+  } finally {
+    setEnrichBusy(false);
+  }
+}
+
+async function refreshEnrichmentLibrary() {
+  const list = document.getElementById("enrichmentLibraryList");
+  const pathEl = document.getElementById("enrichmentLibraryPath");
+  if (!list) return;
+  try {
+    const data = await fetchJSON("/api/enrichment/library");
+    if (pathEl) pathEl.textContent = data.directory || "";
+    const files = data.files || [];
+    if (!files.length) {
+      list.innerHTML = `<button type="button" disabled>No enrichment files yet — run <code>samoyed collect</code></button>`;
+      return;
+    }
+    list.innerHTML = files
+      .map((f) => {
+        const meta = [
+          f.valid === false ? "invalid" : null,
+          f.collector_mode || f.collector,
+          f.material_count != null ? `${f.material_count} materials` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return `<button type="button" data-library-file="${escapeAttr(f.filename)}" ${
+          f.valid === false ? "disabled" : ""
+        }>${escapeHtml(f.filename)}${meta ? `<span class="meta">${escapeHtml(meta)}</span>` : ""}</button>`;
+      })
+      .join("");
+    list.querySelectorAll("[data-library-file]").forEach((btn) => {
+      btn.onclick = () => {
+        const filename = btn.getAttribute("data-library-file");
+        applyEnrichmentLibraryFile(filename, state.selectedNodeId || null);
+      };
+    });
+  } catch (err) {
+    list.innerHTML = `<button type="button" disabled>${escapeHtml(String(err.message || err))}</button>`;
   }
 }
 
@@ -2207,24 +2878,22 @@ async function applyEnrichmentExample(exampleId) {
     if (status) status.textContent = "Choose a lab enrichment example";
     return;
   }
-  if (status) status.textContent = "Applying lab example…";
+  if (state.enrichBusy) return;
+  const bindTo = state.selectedNodeId || state.contextMenuNodeId || null;
+  setEnrichBusy(true, "Importing lab example…");
   try {
-    const data = await fetchJSON(`/api/sessions/${state.sessionId}/enrichment/examples/${id}`, {
-      method: "POST",
-    });
-    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
-    renderGraph(graph);
-    refreshGraphViewports({ fit: false });
-    const stats = data.stats || {};
-    const unresolved = stats.unresolved_bindings?.length || 0;
-    if (status) {
-      status.textContent = unresolved
-        ? `Applied example; ${unresolved} binding(s) unmatched — load the ${data.lab_fixture || "matching"} demo first`
-        : `Applied ${stats.materials_applied || 0} material(s), ${stats.edges_added || 0} edge(s) from lab example`;
-    }
-    if (state.selectedNodeId) openNodeDetail(state.selectedNodeId);
+    const qs = bindTo ? `?target_node_id=${encodeURIComponent(bindTo)}` : "";
+    const data = await fetchJSON(
+      `/api/sessions/${state.sessionId}/enrichment/examples/${id}${qs}`,
+      { method: "POST" },
+    );
+    await afterEnrichmentRefresh(
+      formatEnrichmentStats(data.stats || {}, data.example_id || "lab example"),
+    );
   } catch (err) {
     if (status) status.textContent = String(err.message || err);
+  } finally {
+    setEnrichBusy(false);
   }
 }
 
@@ -2252,9 +2921,13 @@ async function applyEnrichmentFile(file) {
     if (status) status.textContent = "Choose an enrichment JSON file";
     return;
   }
-  if (status) status.textContent = "Applying enrichment…";
+  if (state.enrichBusy) return;
+  setEnrichBusy(true, "Importing enrichment…");
   const form = new FormData();
   form.append("file", file);
+  if (state.selectedNodeId) {
+    form.append("target_node_id", state.selectedNodeId);
+  }
   try {
     const res = await fetch(`/api/sessions/${state.sessionId}/enrichment`, {
       method: "POST",
@@ -2263,29 +2936,25 @@ async function applyEnrichmentFile(file) {
     });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    const graph = await fetchJSON(`/api/sessions/${state.sessionId}/graph`);
-    renderGraph(graph);
-    refreshGraphViewports({ fit: false });
-    const stats = data.stats || {};
-    const unresolved = stats.unresolved_bindings?.length || 0;
-    if (status) {
-      status.textContent = unresolved
-        ? `Applied ${stats.materials_applied || 0} material(s); ${unresolved} binding(s) unmatched — check target_ref`
-        : `Applied ${stats.materials_applied || 0} material(s), ${stats.edges_added || 0} edge(s)`;
-    }
-    if (state.selectedNodeId) openNodeDetail(state.selectedNodeId);
+    await afterEnrichmentRefresh(formatEnrichmentStats(data.stats || {}, file.name));
+    refreshEnrichmentLibrary();
   } catch (err) {
     if (status) status.textContent = String(err.message || err);
+  } finally {
+    setEnrichBusy(false);
   }
 }
 
 function initEnrichmentUpload() {
   const applyBtn = document.getElementById("applyEnrichment");
   const applyExampleBtn = document.getElementById("applyEnrichmentExample");
+  const refreshLibBtn = document.getElementById("refreshEnrichmentLibrary");
   const fileInput = document.getElementById("enrichmentFile");
   const dropZone = document.getElementById("enrichmentDropZone");
 
   applyExampleBtn?.addEventListener("click", () => applyEnrichmentExample());
+  refreshLibBtn?.addEventListener("click", () => refreshEnrichmentLibrary());
+  document.getElementById("enrichSessionSurface")?.addEventListener("click", () => enrichSessionSurface());
 
   applyBtn?.addEventListener("click", () => {
     applyEnrichmentFile(fileInput?.files?.[0]);
@@ -2368,5 +3037,5 @@ document.getElementById("sessions").addEventListener("keydown", (event) => {
 initNetwork();
 updateTargetFieldsVisibility();
 initAuth()
-  .then(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
-  .catch(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));
+  .then(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshEnrichmentLibrary(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]))
+  .catch(() => Promise.all([loadConnectors(), loadFixturesCatalog(), loadEnrichmentExamples(), refreshEnrichmentLibrary(), refreshSessions({ scope: "recent", limit: 1, autoLoad: true })]));

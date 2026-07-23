@@ -6,7 +6,11 @@ from typing import Any
 
 @dataclass(frozen=True)
 class MaterialKindSpec:
-    """Predefined collector finding → graph relationship mapping."""
+    """Predefined collector finding → graph relationship mapping.
+
+    ``requires_target`` means an identity unlock (UNLOCKS) is expected for full
+    blast extension. Materials still attach via HAS_MATERIAL without it.
+    """
 
     kind: str
     display_name: str
@@ -21,7 +25,7 @@ class MaterialKindSpec:
 MATERIAL_KINDS: dict[str, MaterialKindSpec] = {
     "aws_access_key_env": MaterialKindSpec(
         kind="aws_access_key_env",
-        display_name="AWS access key (environment)",
+        display_name="AWS access key",
         description="AWS access key id in process or config environment variables.",
         host_rel="HAS_MATERIAL",
         unlock_rel="UNLOCKS",
@@ -29,7 +33,7 @@ MATERIAL_KINDS: dict[str, MaterialKindSpec] = {
     ),
     "aws_secret_key_env": MaterialKindSpec(
         kind="aws_secret_key_env",
-        display_name="AWS secret key (environment)",
+        display_name="AWS secret access key",
         description="AWS secret access key stored in environment or config.",
         host_rel="HAS_MATERIAL",
         unlock_rel="UNLOCKS",
@@ -37,7 +41,7 @@ MATERIAL_KINDS: dict[str, MaterialKindSpec] = {
     ),
     "aws_session_token_env": MaterialKindSpec(
         kind="aws_session_token_env",
-        display_name="AWS session token (environment)",
+        display_name="AWS session token",
         description="Temporary AWS session token paired with access key material.",
         host_rel="HAS_MATERIAL",
         unlock_rel="UNLOCKS",
@@ -94,8 +98,8 @@ MATERIAL_KINDS: dict[str, MaterialKindSpec] = {
     ),
     "generic_credential_file": MaterialKindSpec(
         kind="generic_credential_file",
-        display_name="Credential file",
-        description="Unclassified credential material on disk (rule-detected).",
+        display_name="Hardcoded credential",
+        description="Password, key, or other credential embedded in config/source.",
         host_rel="HAS_MATERIAL",
         unlock_rel="UNLOCKS",
         extends_blast_to="Unknown identity",

@@ -59,14 +59,21 @@ def test_enterprise_fixture_engineering_path_reaches_vault_bucket(tmp_path, monk
         nid for nid, n in snapshot.nodes.items() if n.props.get("bucket_name") == "corp-secret-vault"
     )
 
-    paths = find_attack_paths(snapshot, start_node_id=start, target_concept="DataStore", max_depth=12)
+    paths = find_attack_paths(
+        snapshot,
+        start_node_id=start,
+        target_concept="DataStore",
+        max_depth=12,
+        max_paths=40,
+    )
     vault_paths = [p for p in paths if vault in p.node_ids]
     assert vault_paths
     longest = max(vault_paths, key=lambda p: len(p.steps))
     rels = [s.rel_type for s in longest.steps]
     assert "READS" in rels
     assert any(
-        "PROJECTS_TO" in [s.rel_type for s in p.steps] or "CAN_ESCAPE_TO" in [s.rel_type for s in p.steps]
+        "PROJECTS_TO" in [s.rel_type for s in p.steps]
+        or "CAN_ESCAPE_TO" in [s.rel_type for s in p.steps]
         for p in vault_paths
     )
     assert len(longest.steps) >= 7

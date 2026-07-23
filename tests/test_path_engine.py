@@ -126,6 +126,57 @@ def test_forward_blast_radius_reaches_all_outbound_nodes():
     assert direct[0].node_ids[-1] == role
 
 
+def test_exclude_node_ids_skips_intermediate_and_targets():
+    builder = GraphBuilder("test-session")
+    user = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::123:user/alice",
+        props={"is_caller": True},
+    )
+    role = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::123:role/admin",
+        props={"native_kind": "Role"},
+    )
+    secret = builder.add_concept_node(
+        concept_type=ConceptType.SECRET_STORE,
+        native_id="arn:aws:secretsmanager:us-east-1:123:secret:db",
+        props={"resource_type": "SecretsManagerSecret"},
+    )
+    builder.add_edge(src_id=user, rel_type="CAN_ASSUME_ROLE", dst_id=role)
+    builder.add_edge(src_id=role, rel_type="READS", dst_id=secret)
+
+    blocked = run_graph_query(
+        builder.snapshot,
+        start_node_id=user,
+        mode="paths",
+        target_concept="SecretStore",
+        max_depth=4,
+        exclude_node_ids=[role],
+    )
+    assert blocked["paths"] == []
+
+    open_paths = run_graph_query(
+        builder.snapshot,
+        start_node_id=user,
+        mode="paths",
+        target_concept="SecretStore",
+        max_depth=4,
+    )
+    assert any(secret in p["node_ids"] for p in open_paths["paths"])
+
+    blast = run_graph_query(
+        builder.snapshot,
+        start_node_id=user,
+        mode="blast",
+        max_depth=4,
+        exclude_node_ids=[role],
+    )
+    reached = {p["target_match"]["node_id"] for p in blast["paths"]}
+    assert role not in reached
+    assert secret not in reached
+
+
 def test_normalizer_trust_edge():
     builder = GraphBuilder("test-session")
     artifacts = [

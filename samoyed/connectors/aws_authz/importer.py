@@ -8,6 +8,11 @@ from samoyed.cloud.capabilities import map_aws_action
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.connectors._shared import aws_scope, build_session_from_artifacts, parse_json_payload
 from samoyed.graph.builder import GraphBuilder
+from samoyed.policy.boundary import (
+    boundary_arn_from_detail,
+    permissions_boundary_props,
+    resolve_boundary_actions_from_authz,
+)
 
 
 def import_aws_authz_details(
@@ -63,18 +68,20 @@ def _artifacts_from_authz(data: dict[str, Any], *, scope_id: str) -> Iterator[Co
         edges: list[ConceptEdge] = []
         edges.extend(_inline_policies(user.get("UserPolicyList") or [], arn))
         edges.extend(_managed_policies(user.get("AttachedManagedPolicies") or [], arn, data))
+        props: dict[str, Any] = {
+            "native_kind": "User",
+            "arn": arn,
+            "name": user.get("UserName"),
+            "display_name": user.get("UserName") or arn,
+            "source": "aws-authz-details",
+        }
+        props.update(_boundary_props_for_detail(user, data))
         yield ConceptArtifact(
             concept_type=ConceptType.IDENTITY,
             provider=CloudProvider.AWS,
             native_id=arn,
             scope_id=scope_id,
-            properties={
-                "native_kind": "User",
-                "arn": arn,
-                "name": user.get("UserName"),
-                "display_name": user.get("UserName") or arn,
-                "source": "aws-authz-details",
-            },
+            properties=props,
             evidence=Evidence("iam:GetAccountAuthorizationDetails.user", {"arn": arn}),
             edges=edges,
         )
@@ -83,43 +90,61 @@ def _artifacts_from_authz(data: dict[str, Any], *, scope_id: str) -> Iterator[Co
         arn = role.get("Arn")
         if not arn:
             continue
-        edges = _trust_policy_edges(role.get("AssumeRolePolicyDocument") or {}, arn)
+        trust_doc = role.get("AssumeRolePolicyDocument") or {}
+        edges = _trust_policy_edges(trust_doc, arn)
         edges.extend(_inline_policies(role.get("RolePolicyList") or [], arn))
         edges.extend(_managed_policies(role.get("AttachedManagedPolicies") or [], arn, data))
+        props = {
+            "native_kind": "Role",
+            "arn": arn,
+            "name": role.get("RoleName"),
+            "display_name": role.get("RoleName") or arn,
+            "source": "aws-authz-details",
+            "assume_role_policy": trust_doc,
+        }
+        props.update(_boundary_props_for_detail(role, data))
         yield ConceptArtifact(
             concept_type=ConceptType.IDENTITY,
             provider=CloudProvider.AWS,
             native_id=arn,
             scope_id=scope_id,
-            properties={
-                "native_kind": "Role",
-                "arn": arn,
-                "name": role.get("RoleName"),
-                "display_name": role.get("RoleName") or arn,
-                "source": "aws-authz-details",
-            },
+            properties=props,
             evidence=Evidence("iam:GetAccountAuthorizationDetails.role", {"arn": arn}),
             edges=edges,
         )
 
 
+def _boundary_props_for_detail(detail: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    arn = boundary_arn_from_detail(detail)
+    if not arn:
+        return {}
+    actions = resolve_boundary_actions_from_authz(data, arn)
+    return permissions_boundary_props(boundary_arn=arn, boundary_actions=actions or None)
+
+
 def _trust_policy_edges(trust: Any, role_arn: str) -> list[ConceptEdge]:
     if isinstance(trust, str):
         trust = json.loads(trust)
+    from samoyed.policy.irsa import is_oidc_provider_arn
+
     edges: list[ConceptEdge] = []
     for stmt in _statements(trust):
         if stmt.get("Effect") != "Allow":
             continue
         for principal in _principals(stmt.get("Principal")):
-            if principal.startswith("arn:"):
-                edges.append(
-                    ConceptEdge(
-                        rel_type="CAN_ASSUME_ROLE",
-                        src_native_id=principal,
-                        target_native_id=role_arn,
-                        props={"source": "aws-authz-details", "confidence": "explicit"},
-                    )
+            if not principal.startswith("arn:"):
+                continue
+            # OIDC providers are not assume sources; IRSA repair uses Conditions.
+            if is_oidc_provider_arn(principal):
+                continue
+            edges.append(
+                ConceptEdge(
+                    rel_type="CAN_ASSUME_ROLE",
+                    src_native_id=principal,
+                    target_native_id=role_arn,
+                    props={"source": "aws-authz-details", "confidence": "explicit"},
                 )
+            )
     return edges
 
 

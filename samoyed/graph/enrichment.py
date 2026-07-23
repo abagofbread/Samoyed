@@ -12,8 +12,15 @@ ENRICHMENT_EDGE_SOURCES = frozenset(
         "host-pivot",
         "collector",
         "collector-enrichment",
+        "collector-declared",
         "k8s-deploy-pivot",
         "k8s-rbac-enum",
+        "high-value-catalog",
+        "service-admin-catalog",
+        "shadow-admin",
+        "resource-pivot",
+        "shared-across-envs",
+        "capability-bindings",
     }
 )
 
@@ -26,7 +33,7 @@ PIVOT_REL_TYPES = frozenset(
         "LOGGED_IN_AS",
         "STORES_CREDS_FOR",
         "CAN_STEAL_CREDS_FROM",
-        "UNLOCKS",
+        "FEEDS",
     }
 )
 

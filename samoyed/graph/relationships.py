@@ -12,7 +12,7 @@ DEPENDS_ON = "DEPENDS_ON"
 CompromiseFlow = Literal["downstream", "upstream", "both"]
 
 # Enum/probe capability edges: compromised principal taints writable/controllable targets.
-CAPABILITY_COMPROMISE_RELS = frozenset({"WRITES", "CONTROLS", "EXECUTES", "DELETES"})
+CAPABILITY_COMPROMISE_RELS = frozenset({"WRITES", "CONTROLS", "EXECUTES", "DELETES", "FEEDS"})
 
 RELATIONSHIP_ALIASES: dict[str, dict[str, Any]] = {
     "depends_on": {

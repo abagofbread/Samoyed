@@ -7,6 +7,7 @@ from samoyed.cloud.concepts import CloudProvider, ConceptType, ConfidenceType
 from samoyed.credentials.k8s import pod_native_id
 from samoyed.credentials.protocol import EnumContext
 from samoyed.enumerators.k8s.helpers import call_k8s
+from samoyed.enumerators.k8s.nodes import cluster_host_native_id, node_native_id
 from samoyed.enumerators.k8s.workloads import pod_spec_dict
 
 
@@ -55,12 +56,22 @@ def analyze_pod_spec(spec: dict[str, Any]) -> list[dict[str, Any]]:
                 _finding(namespace, pod_name, "hostPath", f"hostPath mount: {path}", severity="critical")
             )
 
-    for container in pod_spec.get("containers") or []:
+    for container in list(pod_spec.get("containers") or []) + list(pod_spec.get("initContainers") or []):
         cname = container.get("name", "container")
         sc = container.get("securityContext") or {}
         if sc.get("privileged"):
             findings.append(
                 _finding(namespace, pod_name, "privileged", f"Container {cname} is privileged", severity="critical")
+            )
+        if sc.get("allowPrivilegeEscalation") is True:
+            findings.append(
+                _finding(
+                    namespace,
+                    pod_name,
+                    "allowPrivilegeEscalation",
+                    f"Container {cname} allows privilege escalation",
+                    severity="medium",
+                )
             )
         caps = ((sc.get("capabilities") or {}).get("add") or [])
         for cap in caps:
@@ -71,13 +82,13 @@ def analyze_pod_spec(spec: dict[str, Any]) -> list[dict[str, Any]]:
                 )
         for mount in container.get("volumeMounts") or []:
             mpath = mount.get("mountPath", "")
-            if "docker.sock" in mpath:
+            if "docker.sock" in mpath or "containerd.sock" in mpath or "crio.sock" in mpath:
                 findings.append(
                     _finding(
                         namespace,
                         pod_name,
                         "docker-socket",
-                        f"Container {cname} mounts docker socket at {mpath}",
+                        f"Container {cname} mounts runtime socket at {mpath}",
                         severity="critical",
                     )
                 )
@@ -113,7 +124,7 @@ class K8sEscapeSurfaceAnalyzer:
         cred = ctx.credentials
         core = cred.client("core")  # type: ignore[attr-defined]
         cluster = ctx.scope.properties.get("cluster", "cluster")
-        node_host_id = f"kubernetes:node:host:{cluster}"
+        host_id = cluster_host_native_id(cluster)
 
         ns_list = call_k8s(ctx, operation="core/v1:namespaces", call=lambda: core.list_namespace())
         namespaces = [ns.metadata.name for ns in ns_list.items] if ns_list else ["default"]
@@ -130,6 +141,8 @@ class K8sEscapeSurfaceAnalyzer:
                 spec = pod_spec_dict(pod)
                 findings = analyze_pod_spec(spec)
                 pod_id = pod_native_id(namespace, pod.metadata.name)
+                node_name = (spec.get("spec") or {}).get("nodeName")
+                landing = node_native_id(cluster, node_name) if node_name else host_id
                 for finding in findings:
                     edges = [
                         ConceptEdge(
@@ -142,12 +155,32 @@ class K8sEscapeSurfaceAnalyzer:
                         ConceptEdge(
                             rel_type="CAN_ESCAPE_TO",
                             src_native_id=finding["native_id"],
-                            target_native_id=node_host_id,
+                            target_native_id=landing,
                             target_concept_type=ConceptType.RUNTIME_BINDING,
-                            props={"target": "node/host", "severity": finding["severity"]},
+                            props={
+                                "target": "node" if node_name else "node/host",
+                                "node": node_name,
+                                "severity": finding["severity"],
+                                "mechanism": finding["kind"],
+                            },
                             confidence=ConfidenceType.EXPLICIT,
                         ),
                     ]
+                    # Always also bridge to cluster host so unsched paths still work
+                    if node_name and landing != host_id:
+                        edges.append(
+                            ConceptEdge(
+                                rel_type="CAN_ESCAPE_TO",
+                                src_native_id=finding["native_id"],
+                                target_native_id=host_id,
+                                target_concept_type=ConceptType.RUNTIME_BINDING,
+                                props={
+                                    "target": "node/host",
+                                    "severity": finding["severity"],
+                                    "mechanism": finding["kind"],
+                                },
+                            )
+                        )
                     yield ConceptArtifact(
                         concept_type=ConceptType.ESCAPE_SURFACE,
                         provider=CloudProvider.KUBERNETES,
@@ -156,6 +189,7 @@ class K8sEscapeSurfaceAnalyzer:
                         properties={
                             **finding,
                             "display_name": finding["description"],
+                            "node_name": node_name,
                         },
                         evidence=Evidence("core/v1:pods:escape-analysis", {"pod": pod_id}),
                         confidence=ConfidenceType.EXPLICIT,

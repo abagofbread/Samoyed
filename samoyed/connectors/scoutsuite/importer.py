@@ -54,18 +54,22 @@ def _artifacts_from_scoutsuite(data: dict[str, Any], *, scope_id: str) -> Iterat
                 continue
             edges = _iam_policy_edges(item, arn)
             edges.extend(_trust_edges(item, arn))
+            props = {
+                "native_kind": kind,
+                "arn": arn,
+                "name": name,
+                "display_name": name,
+                "source": "scoutsuite",
+            }
+            trust = item.get("trust_policy") or item.get("assume_role_policy")
+            if kind == "Role" and trust:
+                props["assume_role_policy"] = trust
             yield ConceptArtifact(
                 concept_type=ConceptType.IDENTITY,
                 provider=CloudProvider.AWS,
                 native_id=arn,
                 scope_id=scope_id,
-                properties={
-                    "native_kind": kind,
-                    "arn": arn,
-                    "name": name,
-                    "display_name": name,
-                    "source": "scoutsuite",
-                },
+                properties=props,
                 evidence=Evidence("scoutsuite:iam", {"arn": arn, "section": section}),
                 edges=edges,
             )
@@ -161,6 +165,8 @@ def _iam_policy_edges(item: dict[str, Any], principal_arn: str) -> list[ConceptE
 
 
 def _trust_edges(item: dict[str, Any], role_arn: str) -> list[ConceptEdge]:
+    from samoyed.policy.irsa import is_oidc_provider_arn
+
     edges: list[ConceptEdge] = []
     trust = item.get("trust_policy") or item.get("assume_role_policy") or {}
     statements = trust.get("Statement") or trust.get("statement") or []
@@ -168,6 +174,8 @@ def _trust_edges(item: dict[str, Any], role_arn: str) -> list[ConceptEdge]:
         statements = [statements]
     for stmt in statements:
         for principal in _statement_principals(stmt):
+            if is_oidc_provider_arn(principal):
+                continue
             edges.append(
                 ConceptEdge(
                     rel_type="CAN_ASSUME_ROLE",

@@ -5,6 +5,7 @@ from typing import Any, Iterator
 from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge, Evidence
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.credentials.protocol import EnumContext
+from samoyed.enumerators.aws.config_refs import config_reads_edges
 from samoyed.enumerators.runner import paginate_call
 
 
@@ -24,12 +25,22 @@ def lambda_function_artifact(
     function_name: str,
     role_arn: str | None,
     extra_props: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    image_uri: str | None = None,
     evidence_op: str,
     evidence_details: dict[str, Any],
 ) -> ConceptArtifact:
     edges: list[ConceptEdge] = []
     if role_arn:
         edges.append(executes_as_edge(role_arn, resource_type="LambdaFunction", function_arn=fn_arn))
+    edges.extend(
+        config_reads_edges(
+            source="lambda-config",
+            env=env,
+            image_uri=image_uri,
+            extra_blobs=[extra_props.get("kms_key_arn")] if extra_props and extra_props.get("kms_key_arn") else None,
+        )
+    )
     props: dict[str, Any] = {
         "resource_type": "LambdaFunction",
         "function_name": function_name,
@@ -56,16 +67,22 @@ def enrich_lambda_from_list(ctx: EnumContext, fn: dict[str, Any]) -> ConceptArti
     env = (fn.get("Environment") or {}).get("Variables") or {}
     if env:
         env_keys = sorted(env.keys())
+    image_uri = ((fn.get("ImageConfigResponse") or {}).get("ImageUri")) or None
+    if not image_uri and fn.get("PackageType") == "Image":
+        image_uri = fn.get("CodeSha256")  # not a URI — ignore non-URI
 
     return lambda_function_artifact(
         ctx,
         fn_arn=fn_arn,
         function_name=fn["FunctionName"],
         role_arn=role,
+        env=dict(env) if env else None,
+        image_uri=image_uri if image_uri and "/" in str(image_uri) else None,
         extra_props={
             "env_var_keys": env_keys,
             "runtime": fn.get("Runtime"),
             "has_env_vars": bool(env_keys),
+            "package_type": fn.get("PackageType"),
         },
         evidence_op="lambda:ListFunctions",
         evidence_details={"arn": fn_arn, "role": role},
@@ -83,6 +100,8 @@ def enumerate_lambda_functions(ctx: EnumContext) -> Iterator[ConceptArtifact]:
         fn_arn = fn["FunctionArn"]
         role = fn.get("Role")
         extra: dict[str, Any] = {}
+        env: dict[str, str] = {}
+        image_uri: str | None = None
 
         cfg = paginate_call(
             ctx,
@@ -91,12 +110,27 @@ def enumerate_lambda_functions(ctx: EnumContext) -> Iterator[ConceptArtifact]:
         )
         if cfg:
             role = cfg.get("Role") or role
-            env = (cfg.get("Environment") or {}).get("Variables") or {}
+            env = dict((cfg.get("Environment") or {}).get("Variables") or {})
             if env:
                 extra["env_var_keys"] = sorted(env.keys())
                 extra["has_env_vars"] = True
             if cfg.get("KMSKeyArn"):
                 extra["kms_key_arn"] = cfg["KMSKeyArn"]
+            extra["package_type"] = cfg.get("PackageType") or fn.get("PackageType")
+            # Container-image Lambdas — Code.ImageUri on GetFunction, not always on config
+            img = (cfg.get("ImageConfigResponse") or {}) if isinstance(cfg.get("ImageConfigResponse"), dict) else {}
+            if img.get("ImageUri"):
+                image_uri = img["ImageUri"]
+
+        # Prefer GetFunction for ImageUri when PackageType is Image
+        if (extra.get("package_type") or fn.get("PackageType")) == "Image" and not image_uri:
+            full = paginate_call(
+                ctx,
+                operation="lambda:GetFunction",
+                call=lambda name=fn["FunctionName"]: lam.get_function(FunctionName=name),
+            )
+            if full:
+                image_uri = ((full.get("Code") or {}).get("ImageUri")) or image_uri
 
         policy = paginate_call(
             ctx,
@@ -120,6 +154,8 @@ def enumerate_lambda_functions(ctx: EnumContext) -> Iterator[ConceptArtifact]:
             fn_arn=fn_arn,
             function_name=fn["FunctionName"],
             role_arn=role,
+            env=env or None,
+            image_uri=image_uri,
             extra_props=extra,
             evidence_op="lambda:GetFunctionConfiguration",
             evidence_details={"arn": fn_arn, "role": role},
@@ -162,44 +198,7 @@ def enumerate_ec2_instances(ctx: EnumContext) -> Iterator[ConceptArtifact]:
 
 
 def enumerate_ecs_task_roles(ctx: EnumContext) -> Iterator[ConceptArtifact]:
-    cred = ctx.credentials
-    ecs = cred.client("ecs")  # type: ignore[attr-defined]
-    clusters = paginate_call(ctx, operation="ecs:ListClusters", call=lambda: ecs.list_clusters())
-    if not clusters:
-        return
-    for cluster_arn in clusters.get("clusterArns", []):
-        tasks = paginate_call(
-            ctx,
-            operation="ecs:ListTasks",
-            call=lambda c=cluster_arn: ecs.list_tasks(cluster=c),
-        )
-        if not tasks:
-            continue
-        for task_arn in tasks.get("taskArns", []):
-            desc = paginate_call(
-                ctx,
-                operation="ecs:DescribeTasks",
-                call=lambda c=cluster_arn, t=task_arn: ecs.describe_tasks(cluster=c, tasks=[t]),
-            )
-            if not desc:
-                continue
-            for task in desc.get("tasks", []):
-                task_id = task.get("taskArn", task_arn)
-                role_arn = (task.get("taskRoleArn") or task.get("executionRoleArn"))
-                edges: list[ConceptEdge] = []
-                if role_arn:
-                    edges.append(executes_as_edge(role_arn, resource_type="ECSTask", task_arn=task_id))
-                yield ConceptArtifact(
-                    concept_type=ConceptType.RUNTIME_BINDING,
-                    provider=CloudProvider.AWS,
-                    native_id=f"ECSTask:{task_id}",
-                    scope_id=ctx.scope.scope_id,
-                    properties={
-                        "resource_type": "ECSTask",
-                        "task_arn": task_id,
-                        "cluster_arn": cluster_arn,
-                        "execution_role_arn": role_arn,
-                    },
-                    evidence=Evidence("ecs:DescribeTasks", {"task_arn": task_id}),
-                    edges=edges,
-                )
+    """Delegate to full ECS topology + escape enumeration."""
+    from samoyed.enumerators.aws.ecs import enumerate_ecs_topology
+
+    yield from enumerate_ecs_topology(ctx)
