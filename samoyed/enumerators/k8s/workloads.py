@@ -6,6 +6,7 @@ from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge, Evidence
 from samoyed.cloud.concepts import CloudProvider, ConceptType, ConfidenceType
 from samoyed.credentials.k8s import pod_native_id, sa_native_id
 from samoyed.credentials.protocol import EnumContext
+from samoyed.enumerators.k8s.escape_surface import analyze_pod_spec, escape_edges
 from samoyed.enumerators.k8s.helpers import call_k8s
 from samoyed.enumerators.k8s.nodes import cluster_host_native_id, node_native_id
 from samoyed.enumerators.k8s.secret_consumers import image_pull_secret_names, secret_refs_from_pod_spec
@@ -99,6 +100,14 @@ class K8sWorkloadEnumerator:
                             },
                         )
                     )
+
+                # Container escapes are transitive edges from the pod to its host,
+                # one per technique — not intermediate EscapeSurface nodes.
+                host_id = cluster_host_native_id(cluster)
+                landing = node_native_id(cluster, node_name) if node_name else host_id
+                edges.extend(
+                    escape_edges(analyze_pod_spec(spec), landing=landing, host_id=host_id)
+                )
 
                 yield ConceptArtifact(
                     concept_type=ConceptType.WORKLOAD,

@@ -155,7 +155,6 @@ RELATIONSHIP_TECHNIQUES: dict[str, tuple[str, ...]] = {
     "LOGGED_IN_AS": ("T1078.004", "T1550.001"),
     "STORES_CREDS_FOR": ("T1552.001",),
     "CAN_STEAL_CREDS_FROM": ("T1552.001", "T1550.001"),
-    "HAS_ESCAPE_SURFACE": ("T1611",),
     "CAN_ESCAPE_TO": ("T1611", "T1552.005"),
     "RUNS_ON": ("T1610",),
     "DEPENDS_ON": ("T1578",),

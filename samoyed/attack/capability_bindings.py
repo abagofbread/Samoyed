@@ -217,7 +217,7 @@ def _is_secret_node(node: Any) -> bool:
 def _secret_has_use_side_consumer(graph: GraphSnapshot, secret_node_id: str) -> bool:
     """True when a workload/runtime READS/DEPENDS_ON this inventored secret."""
     use_concepts = frozenset(
-        {"Workload", "RuntimeBinding", "ImageProvenance", "RegistryStore", "EscapeSurface"}
+        {"Workload", "RuntimeBinding", "ImageProvenance", "RegistryStore"}
     )
     for edge in graph.edges:
         if edge.dst_id != secret_node_id or edge.rel_type not in CONSUMER_RELS:

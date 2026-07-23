@@ -1,13 +1,12 @@
-"""ECS topology + container escape surfaces.
+"""ECS topology + container escape edges.
 
-Mirrors K8s workload/escape patterns for EC2-launch ECS (AWSGoat Module 2 style):
+Mirrors K8s workload/escape patterns for EC2-launch ECS (AWSGoat Module 2 style).
+Escapes are transitive edges (one per technique), not intermediate nodes:
 
-  Workload (container) ──EXECUTES_AS──► task role
-       │                    │
-       │                    └── via EscapeSurface(container-credentials) @ 169.254.170.2
+  Workload (container) ──EXECUTES_AS──► task role  (incl. container-credentials
+       │                                            @ 169.254.170.2)
        ├──RUNS_ON──► EC2Instance ──EXECUTES_AS──► instance profile role
-       └──HAS_ESCAPE_SURFACE──► privileged / SYS_PTRACE / …
-                                    └──CAN_ESCAPE_TO──► same EC2Instance
+       └──CAN_ESCAPE_TO──► same EC2Instance  (mechanism = privileged / SYS_PTRACE / …)
 """
 
 from __future__ import annotations
@@ -392,11 +391,21 @@ def _emit_task_topology(
         if not containers:
             containers = [{"name": "task"}]
 
-    workload_ids: list[tuple[str, str]] = []
+    workload_ids: list[tuple[str, str]] = [
+        (workload_native_id(task_arn, c.get("name") or "container"), c.get("name") or "container")
+        for c in containers
+    ]
+    # Escapes are transitive edges attached to each container workload.
+    escape_by_wl = escape_edges_by_workload(
+        td or {"taskRoleArn": task_role},
+        scope_key=task_arn,
+        workload_ids=workload_ids,
+        host_native_id=host_native_id,
+        task_role=task_role,
+    )
     for container in containers:
         cname = container.get("name") or "container"
         wl_id = workload_native_id(task_arn, cname)
-        workload_ids.append((wl_id, cname))
         wl_edges: list[ConceptEdge] = []
         if task_role:
             wl_edges.append(
@@ -423,6 +432,7 @@ def _emit_task_topology(
             )
 
         wl_edges.extend(_workload_resource_edges(container))
+        wl_edges.extend(escape_by_wl.get(wl_id, []))
 
         yield ConceptArtifact(
             concept_type=ConceptType.WORKLOAD,
@@ -443,17 +453,6 @@ def _emit_task_topology(
             evidence=Evidence("ecs:DescribeTasks", {"task_arn": task_arn, "container": cname}),
             edges=wl_edges,
         )
-
-    # Escapes once per finding; HAS_ESCAPE_SURFACE from every container workload.
-    yield from _emit_escape_surfaces(
-        ctx,
-        scope_key=task_arn,
-        workload_ids=workload_ids,
-        task_def=td or {"taskRoleArn": task_role},
-        host_native_id=host_native_id,
-        task_role=task_role,
-        evidence_op="ecs:DescribeTaskDefinition",
-    )
 
 
 def _enumerate_services(
@@ -566,11 +565,21 @@ def _enumerate_services(
             )
 
             containers = (td or {}).get("containerDefinitions") or [{"name": "service"}]
-            workload_ids: list[tuple[str, str]] = []
+            workload_ids: list[tuple[str, str]] = [
+                (workload_native_id(svc_task_key, c.get("name") or "container"), c.get("name") or "container")
+                for c in containers
+            ]
+            escape_by_wl = escape_edges_by_workload(
+                td or {"taskRoleArn": task_role},
+                scope_key=svc_task_key,
+                workload_ids=workload_ids,
+                host_native_id=host_native_id,
+                task_role=task_role,
+                planned=True,
+            )
             for container in containers:
                 cname = container.get("name") or "container"
                 wl_id = workload_native_id(svc_task_key, cname)
-                workload_ids.append((wl_id, cname))
                 wl_edges: list[ConceptEdge] = []
                 if task_role:
                     wl_edges.append(
@@ -592,6 +601,7 @@ def _enumerate_services(
                         )
                     )
                 wl_edges.extend(_workload_resource_edges(container))
+                wl_edges.extend(escape_by_wl.get(wl_id, []))
                 yield ConceptArtifact(
                     concept_type=ConceptType.WORKLOAD,
                     provider=CloudProvider.AWS,
@@ -615,37 +625,27 @@ def _enumerate_services(
                     edges=wl_edges,
                 )
 
-            yield from _emit_escape_surfaces(
-                ctx,
-                scope_key=svc_task_key,
-                workload_ids=workload_ids,
-                task_def=td or {"taskRoleArn": task_role},
-                host_native_id=host_native_id,
-                task_role=task_role,
-                evidence_op="ecs:DescribeServices",
-                planned=True,
-            )
 
-
-def _emit_escape_surfaces(
-    ctx: EnumContext,
+def escape_edges_by_workload(
+    task_def: dict[str, Any],
     *,
     scope_key: str,
     workload_ids: list[tuple[str, str]],
-    task_def: dict[str, Any],
     host_native_id: str | None,
     task_role: str | None,
-    evidence_op: str,
     planned: bool = False,
-) -> Iterator[ConceptArtifact]:
-    """Emit one EscapeSurface per finding; link HAS_ESCAPE_SURFACE from relevant workloads."""
+) -> dict[str, list[ConceptEdge]]:
+    """Map each container workload to its escape edges (one per technique).
+
+    Container escapes are transitive edges — a ``CAN_ESCAPE_TO`` per technique
+    from the container to its EC2 host — rather than intermediate EscapeSurface
+    nodes. The ECS container-credentials endpoint (169.254.170.2) is identity
+    assumption, so it collapses onto ``EXECUTES_AS`` the task role.
+    """
+    by_workload: dict[str, list[ConceptEdge]] = {}
     findings = analyze_ecs_task_definition(task_def, scope_key=scope_key)
     for finding in findings:
         kind = finding["kind"]
-        escape_id = finding["native_id"]
-        if kind in {"container-credentials", "hostPID", "hostIPC", "hostNetwork"}:
-            escape_id = escape_native_id(scope_key, kind)
-
         # Task-scoped findings attach to all containers; container-scoped only to matching ones.
         finding_container = finding.get("container")
         linked = [
@@ -655,69 +655,45 @@ def _emit_escape_surfaces(
         ]
         if not linked and workload_ids:
             linked = [workload_ids[0][0]]
-        if not linked:
-            continue
 
-        edges = [
-            ConceptEdge(
-                rel_type="HAS_ESCAPE_SURFACE",
-                src_native_id=wl_id,
-                target_native_id=escape_id,
-                target_concept_type=ConceptType.ESCAPE_SURFACE,
-                props={"kind": kind, **({"planned": True} if planned else {})},
-            )
-            for wl_id in linked
-        ]
-
-        if kind == "container-credentials" and task_role:
-            edges.append(
-                ConceptEdge(
-                    rel_type="EXECUTES_AS",
-                    src_native_id=escape_id,
-                    target_native_id=task_role,
-                    target_concept_type=ConceptType.IDENTITY,
-                    props={
-                        "mechanism": "ecs-container-credentials",
-                        "endpoint": "169.254.170.2",
-                        "role_kind": "task",
-                        "role_arn": task_role,
-                    },
-                    confidence=ConfidenceType.EXPLICIT,
+        for wl_id in linked:
+            if kind == "container-credentials":
+                if not task_role:
+                    continue
+                by_workload.setdefault(wl_id, []).append(
+                    ConceptEdge(
+                        rel_type="EXECUTES_AS",
+                        src_native_id=wl_id,
+                        target_native_id=task_role,
+                        target_concept_type=ConceptType.IDENTITY,
+                        props={
+                            "mechanism": "ecs-container-credentials",
+                            "endpoint": "169.254.170.2",
+                            "role_kind": "task",
+                            "role_arn": task_role,
+                            **({"planned": True} if planned else {}),
+                        },
+                        confidence=ConfidenceType.EXPLICIT,
+                    )
                 )
-            )
-        elif kind != "container-credentials" and host_native_id:
-            edges.append(
-                ConceptEdge(
-                    rel_type="CAN_ESCAPE_TO",
-                    src_native_id=escape_id,
-                    target_native_id=host_native_id,
-                    target_concept_type=ConceptType.RUNTIME_BINDING,
-                    props={
-                        "target": "ec2/host",
-                        "severity": finding["severity"],
-                        "kind": kind,
-                        **({"planned": True} if planned else {}),
-                    },
-                    confidence=ConfidenceType.WILDCARD if planned else ConfidenceType.EXPLICIT,
+            elif host_native_id:
+                by_workload.setdefault(wl_id, []).append(
+                    ConceptEdge(
+                        rel_type="CAN_ESCAPE_TO",
+                        src_native_id=wl_id,
+                        target_native_id=host_native_id,
+                        target_concept_type=ConceptType.RUNTIME_BINDING,
+                        props={
+                            "target": "ec2/host",
+                            "severity": finding["severity"],
+                            "mechanism": kind,
+                            "description": finding["description"],
+                            **({"planned": True} if planned else {}),
+                        },
+                        confidence=ConfidenceType.WILDCARD if planned else ConfidenceType.EXPLICIT,
+                    )
                 )
-            )
-
-        yield ConceptArtifact(
-            concept_type=ConceptType.ESCAPE_SURFACE,
-            provider=CloudProvider.AWS,
-            native_id=escape_id,
-            scope_id=ctx.scope.scope_id,
-            properties={
-                **finding,
-                "native_id": escape_id,
-                "display_name": finding["description"],
-                "resource_type": "ECSEscape",
-                "provider": "aws",
-            },
-            evidence=Evidence(evidence_op, {"scope_key": scope_key, "kind": kind}),
-            confidence=ConfidenceType.EXPLICIT,
-            edges=edges,
-        )
+    return by_workload
 
 
 def _workload_resource_edges(container: dict[str, Any]) -> list[ConceptEdge]:

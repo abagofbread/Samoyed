@@ -11,7 +11,7 @@ from samoyed.attack.service_admin import enrich_service_admins
 from samoyed.attack.shared_env import enrich_shared_environments
 from samoyed.attack.shadow_admin import enrich_shadow_admins
 from samoyed.cloud.concepts import CloudProvider, ConceptType
-from samoyed.graph.builder import GraphBuilder, stable_id
+from samoyed.graph.builder import GraphBuilder
 from samoyed.graph.dedupe import dedupe_redundant_edges
 from samoyed.graph.enrichment import mark_enrichment_edges
 from samoyed.graph.markings import COMPROMISE_MECHANISM
@@ -37,43 +37,12 @@ _SKIP_IMDS_RESOURCE_TYPES = frozenset(
         "ECSTask",
         "ECSContainer",
         "ECSService",
-        "ECSEscape",
     }
 )
 
-IMDS_NATIVE_ID = "aws:imds:instance-metadata"
 INTERNET_EXPOSURE_NATIVE_ID = "network:internet"
 # Display name for the shared internet exposure node (also used by network enrichment).
 INTERNET_DISPLAY_NAME = "The Internet"
-
-
-def _imds_native_id(compute_id: str, node: Any) -> str:
-    """Per-workload metadata surface — IMDS creds are local to one instance/function."""
-    instance_id = node.props.get("instance_id")
-    if instance_id:
-        return f"{IMDS_NATIVE_ID}:{instance_id}"
-    native = node.props.get("native_id") or compute_id
-    return f"{IMDS_NATIVE_ID}:{native}"
-
-
-def _ensure_imds_node(builder: GraphBuilder, graph: GraphSnapshot, compute_id: str, node: Any) -> str:
-    native_id = _imds_native_id(compute_id, node)
-    existing = stable_id("EscapeSurface", native_id)
-    if existing in graph.nodes:
-        return existing
-    label = node.props.get("name") or node.props.get("display_name") or compute_id
-    return builder.add_concept_node(
-        concept_type=ConceptType.ESCAPE_SURFACE,
-        native_id=native_id,
-        props={
-            "display_name": f"Instance metadata (IMDS) — {label}",
-            "resource_type": "IMDS",
-            "provider": "aws",
-            "source": "surface-enrichment",
-            "bound_compute": compute_id,
-            "instance_id": node.props.get("instance_id"),
-        },
-    )
 
 
 def enrich_attack_surface(
@@ -161,6 +130,12 @@ def blast_graph_changed(stats: dict[str, int]) -> bool:
 
 
 def _wire_imds_surfaces(builder: GraphBuilder, graph: GraphSnapshot) -> int:
+    """IMDS credential theft is a direct compute -> execution role escape edge.
+
+    The instance metadata service is not a node — reaching it from a compromised
+    compute yields that compute's bound role, so it collapses to a single
+    mechanism-labeled ``CAN_ESCAPE_TO`` edge onto the role.
+    """
     added = 0
     for node_id, node in list(graph.nodes.items()):
         rtype = node.props.get("resource_type")
@@ -169,33 +144,22 @@ def _wire_imds_surfaces(builder: GraphBuilder, graph: GraphSnapshot) -> int:
             continue
         if rtype in _SKIP_IMDS_RESOURCE_TYPES or node.props.get("native_kind") == "ECSContainer":
             continue
+        # SSRF-vulnerable compute is handled by _wire_ssrf_chains with a richer
+        # mechanism — avoid emitting a redundant generic imds edge alongside it.
+        if _is_ssrf_hypothesis(node.props):
+            continue
         role_id = _execution_role_for_compute(graph, node_id)
         if not role_id:
             continue
-        imds_id = _ensure_imds_node(builder, graph, node_id, node)
-        key = (node_id, "CAN_ESCAPE_TO", imds_id)
-        if not _has_edge(graph, *key):
+        if not _has_escape_edge(graph, node_id, role_id, "imds"):
             builder.add_edge(
                 src_id=node_id,
                 rel_type="CAN_ESCAPE_TO",
-                dst_id=imds_id,
+                dst_id=role_id,
                 props={
                     "source": "surface-enrichment",
                     "mechanism": "imds",
                     "confidence": "explicit",
-                },
-            )
-            added += 1
-        if not _has_edge(graph, imds_id, "EXECUTES_AS", role_id):
-            builder.add_edge(
-                src_id=imds_id,
-                rel_type="EXECUTES_AS",
-                dst_id=role_id,
-                props={
-                    "source": "surface-enrichment",
-                    "mechanism": "imds-credential-theft",
-                    "confidence": "explicit",
-                    "bound_compute": node_id,
                 },
             )
             added += 1
@@ -221,12 +185,11 @@ def _wire_ssrf_chains(builder: GraphBuilder, graph: GraphSnapshot) -> int:
         role_id = _execution_role_for_compute(graph, node_id)
         if not role_id:
             continue
-        imds_id = _ensure_imds_node(builder, graph, node_id, node)
-        if not _has_edge(graph, node_id, "CAN_ESCAPE_TO", imds_id):
+        if not _has_escape_edge(graph, node_id, role_id, "ssrf-to-imds"):
             builder.add_edge(
                 src_id=node_id,
                 rel_type="CAN_ESCAPE_TO",
-                dst_id=imds_id,
+                dst_id=role_id,
                 props={
                     "source": "surface-enrichment",
                     "mechanism": "ssrf-to-imds",
@@ -234,19 +197,6 @@ def _wire_ssrf_chains(builder: GraphBuilder, graph: GraphSnapshot) -> int:
                     "pattern_name": "SSRF to instance metadata",
                     "severity": "critical",
                     "confidence": "explicit",
-                },
-            )
-            added += 1
-        if not _has_edge(graph, imds_id, "EXECUTES_AS", role_id):
-            builder.add_edge(
-                src_id=imds_id,
-                rel_type="EXECUTES_AS",
-                dst_id=role_id,
-                props={
-                    "source": "surface-enrichment",
-                    "mechanism": "ssrf-metadata-creds",
-                    "confidence": "explicit",
-                    "bound_compute": node_id,
                 },
             )
             added += 1
@@ -389,4 +339,13 @@ def _has_edge(graph: GraphSnapshot, src: str, rel: str, dst: str) -> bool:
     for dst_id, edge_rel, _props in graph.adjacency.get(src, []):
         if edge_rel == rel and dst_id == dst:
             return True
+    return False
+
+
+def _has_escape_edge(graph: GraphSnapshot, src: str, dst: str, mechanism: str) -> bool:
+    """Escape edges are parallel per mechanism, so match on mechanism too."""
+    for dst_id, edge_rel, props in graph.adjacency.get(src, []):
+        if edge_rel == "CAN_ESCAPE_TO" and dst_id == dst:
+            if str((props or {}).get("mechanism") or "") == mechanism:
+                return True
     return False

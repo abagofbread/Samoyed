@@ -229,13 +229,17 @@ def test_imds_escape_is_per_instance_not_shared():
     enrich_attack_surface(builder)
     graph = builder.snapshot
 
-    marketing_imds = [
+    # IMDS credential theft is a direct compute->role escape edge, per-instance:
+    # marketing yields only its own role (never the GPU instance's role).
+    marketing_targets = {
         dst
         for dst, rel, _ in graph.adjacency.get(marketing, [])
         if rel == "CAN_ESCAPE_TO"
-    ]
-    assert len(marketing_imds) == 1
-    imds_id = marketing_imds[0]
-    imds_targets = [dst for dst, rel, _ in graph.adjacency.get(imds_id, []) if rel == "EXECUTES_AS"]
-    assert imds_targets == [marketing_role]
-    assert gpu_role not in imds_targets
+    }
+    assert marketing_targets == {marketing_role}
+    assert gpu_role not in marketing_targets
+
+    gpu_targets = {
+        dst for dst, rel, _ in graph.adjacency.get(gpu, []) if rel == "CAN_ESCAPE_TO"
+    }
+    assert gpu_targets == {gpu_role}

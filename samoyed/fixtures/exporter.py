@@ -15,7 +15,6 @@ RESOURCE_CONCEPTS = frozenset(
         "RegistryStore",
         "ImageProvenance",
         "Workload",
-        "EscapeSurface",
         "OrchestrationScope",
         "ScopeBoundary",
         "Entitlement",
@@ -77,7 +76,7 @@ def export_snapshot_to_iam_report(
                 if node.props.get(key) is not None:
                     entry[key] = node.props[key]
             identities.append({k: v for k, v in entry.items() if v is not None})
-        elif concept in RESOURCE_CONCEPTS or node.label in {"Resource", "ComputeContext", "EscapeSurface"}:
+        elif concept in RESOURCE_CONCEPTS or node.label in {"Resource", "ComputeContext"}:
             if ref in seen_resource:
                 continue
             seen_resource.add(ref)

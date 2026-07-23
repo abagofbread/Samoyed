@@ -47,6 +47,13 @@ FIXTURES: tuple[FixtureSpec, ...] = (
         tags=("aws", "azure", "host"),
     ),
     FixtureSpec(
+        id="aws-goat",
+        connector="iam-report",
+        filename="aws_goat_env.json",
+        description="AWSGoat-style web tier (EC2/Lambda/RDS/S3 + EKS IRSA SA) — base for off-cloud credential enrichment demos",
+        tags=("aws", "goat", "enrichment", "irsa", "credentials"),
+    ),
+    FixtureSpec(
         id="cloudfox-recon",
         connector="cloudfox",
         filename="cloudfox_recon.json",

@@ -19,7 +19,6 @@ class ConceptType(str, Enum):
     TRUST = "Trust"
     RUNTIME_BINDING = "RuntimeBinding"
     WORKLOAD = "Workload"
-    ESCAPE_SURFACE = "EscapeSurface"
     IMAGE_PROVENANCE = "ImageProvenance"
     REGISTRY_STORE = "RegistryStore"
     MANAGEMENT_ENDPOINT = "ManagementEndpoint"
@@ -42,7 +41,6 @@ CONCEPT_TO_NODE_LABEL: dict[ConceptType, str] = {
     ConceptType.REGISTRY_STORE: "Resource",
     ConceptType.MANAGEMENT_ENDPOINT: "Resource",
     ConceptType.IMAGE_PROVENANCE: "Resource",
-    ConceptType.ESCAPE_SURFACE: "EscapeSurface",
     ConceptType.NETWORK_EXPOSURE: "Resource",
     ConceptType.ATTACK_OUTCOME: "AttackOutcome",
 }
@@ -74,7 +72,6 @@ TRAVERSABLE_REL_TYPES = frozenset(
         "CAN_REACH",
         "VPC_PEERS",
         "BRIDGES_TO",
-        "HAS_ESCAPE_SURFACE",
         "CAN_ESCAPE_TO",
         "USES_IMAGE",
         "PULLS_FROM",

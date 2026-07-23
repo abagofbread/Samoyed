@@ -89,9 +89,9 @@
         <button id="focusCaller" class="ghost">Focus caller</button>
         <button id="exportMainGraph" class="ghost">Export PNG</button>
         <button id="swapGraphViews" class="ghost">Swap views</button>
-        <label class="graph-toolbar-toggle" title="Show VPC peering / SG-lite network edges">
-          <input type="checkbox" id="toggleNetworkEdges" checked />
-          Network edges
+        <label class="graph-toolbar-toggle" title="Show all network edges (SG-lite / internet CAN_REACH). VPC peering stays on either way.">
+          <input type="checkbox" id="toggleNetworkEdges" />
+          Network Edges (All)
         </label>
         <label class="graph-toolbar-toggle" title="Show leaf resources reached only by access edges">
           <input type="checkbox" id="toggleAllResourceAccess" />
@@ -150,7 +150,6 @@
             <option value="DataStore">DataStore</option>
             <option value="Identity">Identity</option>
             <option value="ManagementEndpoint">ManagementEndpoint</option>
-            <option value="EscapeSurface">EscapeSurface</option>
             <option value="RuntimeBinding">RuntimeBinding</option>
             <option value="Workload">Workload</option>
           </select>
@@ -212,7 +211,6 @@
           <option value="DataStore">DataStore</option>
           <option value="Identity">Identity</option>
           <option value="ManagementEndpoint">ManagementEndpoint</option>
-          <option value="EscapeSurface">EscapeSurface</option>
           <option value="RuntimeBinding">RuntimeBinding</option>
           <option value="Workload">Workload</option>
         </select>

@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any
 
-from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge, Evidence
-from samoyed.cloud.concepts import CloudProvider, ConceptType, ConfidenceType
-from samoyed.credentials.k8s import pod_native_id
-from samoyed.credentials.protocol import EnumContext
-from samoyed.enumerators.k8s.helpers import call_k8s
-from samoyed.enumerators.k8s.nodes import cluster_host_native_id, node_native_id
-from samoyed.enumerators.k8s.workloads import pod_spec_dict
+from samoyed.cloud.artifacts import ConceptEdge
+from samoyed.cloud.concepts import ConceptType, ConfidenceType
 
 
 DANGEROUS_HOST_PATHS = (
@@ -116,82 +111,49 @@ def _host_paths(pod_spec: dict[str, Any]) -> list[str]:
     return paths
 
 
-class K8sEscapeSurfaceAnalyzer:
-    concept = ConceptType.ESCAPE_SURFACE
-    name = "k8s-escape-surface"
+def escape_edges(
+    findings: list[dict[str, Any]],
+    *,
+    landing: str,
+    host_id: str,
+) -> list[ConceptEdge]:
+    """Parallel ``CAN_ESCAPE_TO`` edges — one per escape technique.
 
-    def enumerate(self, ctx: EnumContext) -> Iterator[ConceptArtifact]:
-        cred = ctx.credentials
-        core = cred.client("core")  # type: ignore[attr-defined]
-        cluster = ctx.scope.properties.get("cluster", "cluster")
-        host_id = cluster_host_native_id(cluster)
-
-        ns_list = call_k8s(ctx, operation="core/v1:namespaces", call=lambda: core.list_namespace())
-        namespaces = [ns.metadata.name for ns in ns_list.items] if ns_list else ["default"]
-
-        for namespace in namespaces:
-            pods = call_k8s(
-                ctx,
-                operation=f"core/v1:pods:{namespace}",
-                call=lambda ns=namespace: core.list_namespaced_pod(namespace=ns),
+    A container escape is a *transition*, not an intermediate node: each finding
+    becomes a mechanism-labeled edge from the pod to the node it lands on. When a
+    pod is scheduled on a named node we also bridge to the synthetic cluster host
+    so unscheduled/unknown-node paths still resolve a landing zone.
+    """
+    edges: list[ConceptEdge] = []
+    scheduled = landing != host_id
+    for finding in findings:
+        edges.append(
+            ConceptEdge(
+                rel_type="CAN_ESCAPE_TO",
+                target_native_id=landing,
+                target_concept_type=ConceptType.RUNTIME_BINDING,
+                props={
+                    "target": "node" if scheduled else "node/host",
+                    "severity": finding["severity"],
+                    "mechanism": finding["kind"],
+                    "description": finding["description"],
+                },
+                confidence=ConfidenceType.EXPLICIT,
             )
-            if not pods:
-                continue
-            for pod in pods.items:
-                spec = pod_spec_dict(pod)
-                findings = analyze_pod_spec(spec)
-                pod_id = pod_native_id(namespace, pod.metadata.name)
-                node_name = (spec.get("spec") or {}).get("nodeName")
-                landing = node_native_id(cluster, node_name) if node_name else host_id
-                for finding in findings:
-                    edges = [
-                        ConceptEdge(
-                            rel_type="HAS_ESCAPE_SURFACE",
-                            src_native_id=pod_id,
-                            target_native_id=finding["native_id"],
-                            target_concept_type=ConceptType.ESCAPE_SURFACE,
-                            props={"kind": finding["kind"]},
-                        ),
-                        ConceptEdge(
-                            rel_type="CAN_ESCAPE_TO",
-                            src_native_id=finding["native_id"],
-                            target_native_id=landing,
-                            target_concept_type=ConceptType.RUNTIME_BINDING,
-                            props={
-                                "target": "node" if node_name else "node/host",
-                                "node": node_name,
-                                "severity": finding["severity"],
-                                "mechanism": finding["kind"],
-                            },
-                            confidence=ConfidenceType.EXPLICIT,
-                        ),
-                    ]
-                    # Always also bridge to cluster host so unsched paths still work
-                    if node_name and landing != host_id:
-                        edges.append(
-                            ConceptEdge(
-                                rel_type="CAN_ESCAPE_TO",
-                                src_native_id=finding["native_id"],
-                                target_native_id=host_id,
-                                target_concept_type=ConceptType.RUNTIME_BINDING,
-                                props={
-                                    "target": "node/host",
-                                    "severity": finding["severity"],
-                                    "mechanism": finding["kind"],
-                                },
-                            )
-                        )
-                    yield ConceptArtifact(
-                        concept_type=ConceptType.ESCAPE_SURFACE,
-                        provider=CloudProvider.KUBERNETES,
-                        native_id=finding["native_id"],
-                        scope_id=ctx.scope.scope_id,
-                        properties={
-                            **finding,
-                            "display_name": finding["description"],
-                            "node_name": node_name,
-                        },
-                        evidence=Evidence("core/v1:pods:escape-analysis", {"pod": pod_id}),
-                        confidence=ConfidenceType.EXPLICIT,
-                        edges=edges,
-                    )
+        )
+        if scheduled:
+            edges.append(
+                ConceptEdge(
+                    rel_type="CAN_ESCAPE_TO",
+                    target_native_id=host_id,
+                    target_concept_type=ConceptType.RUNTIME_BINDING,
+                    props={
+                        "target": "node/host",
+                        "severity": finding["severity"],
+                        "mechanism": finding["kind"],
+                        "description": finding["description"],
+                    },
+                    confidence=ConfidenceType.EXPLICIT,
+                )
+            )
+    return edges

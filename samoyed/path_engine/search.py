@@ -137,7 +137,7 @@ def _path_traversal_step_priority(step: tuple[str, str, str, str, dict]) -> tupl
         and "PassRole" in str(props.get("pattern_name") or props.get("pattern_id") or "")
     ) else 1
     identity = 0 if rel in _IDENTITY_CHAIN_RELS else 1
-    escape_last = 1 if rel in {"CAN_ESCAPE_TO", "HAS_ESCAPE_SURFACE"} else 0
+    escape_last = 1 if rel == "CAN_ESCAPE_TO" else 0
     return (passrole, identity, escape_last, rel)
 
 

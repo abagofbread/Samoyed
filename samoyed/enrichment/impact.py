@@ -66,6 +66,26 @@ def _ec2_props(name: str) -> dict[str, Any]:
     return {"name": name, "display_name": name, "instance_id": name}
 
 
+def _external_service_props(name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "display_name": name,
+        "service": name,
+        "is_external": True,
+        "boundary": "external",
+    }
+
+
+def _email_account_props(name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "display_name": name,
+        "mailbox": name,
+        "is_external": True,
+        "boundary": "external",
+    }
+
+
 def _k8s_sa_native_id(name: str) -> str:
     text = str(name or "").strip()
     if text.startswith("kubernetes:serviceaccount:"):
@@ -178,6 +198,26 @@ IMPACT_KIND_REGISTRY: dict[str, ImpactKindSpec] = {
         prefer_concepts=("identity", "serviceaccount", "kubernetes"),
         native_id=_k8s_sa_native_id,
         extra_props=_k8s_sa_props,
+    ),
+    # Credentials frequently pivot *out* of the cloud — a leaked API key or OAuth
+    # token unlocks a third-party SaaS/API, and mailbox creds unlock an email
+    # service. These land as external ManagementEndpoint nodes so the blast graph
+    # shows the reachable off-cloud surface without pretending it is in-account.
+    "external_service": ImpactKindSpec(
+        kind="external_service",
+        concept=ConceptType.MANAGEMENT_ENDPOINT,
+        resource_type="ExternalService",
+        prefer_concepts=("managementendpoint", "externalservice", "external", "service"),
+        native_id=lambda n: f"ExternalService:{n}",
+        extra_props=_external_service_props,
+    ),
+    "email_account": ImpactKindSpec(
+        kind="email_account",
+        concept=ConceptType.MANAGEMENT_ENDPOINT,
+        resource_type="EmailAccount",
+        prefer_concepts=("managementendpoint", "emailaccount", "email", "external"),
+        native_id=lambda n: f"EmailAccount:{n}",
+        extra_props=_email_account_props,
     ),
 }
 

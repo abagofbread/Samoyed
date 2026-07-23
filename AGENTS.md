@@ -32,7 +32,7 @@ samoyed import-path ./network.json --attach-to <session>
 samoyed scenario can-reach-other-accounts
 ```
 
-UI: **Network edges** toolbar toggle (on by default).
+UI: **Network Edges (All)** toolbar toggle (off by default; VPC_PEERS / BRIDGES_TO always shown).
 
 ## Cartography connector
 
@@ -98,7 +98,6 @@ class MyInternalApiEnumerator:
 | Trust | Assume-role, impersonation |
 | RuntimeBinding | EC2, Lambda, pod→node cloud identity |
 | Workload | Pods, containers |
-| EscapeSurface | Privileged, hostPath, docker.sock |
 | SecretStore / DataStore | High-value targets |
 | RegistryStore / ImageProvenance | Supply chain |
 
@@ -146,7 +145,7 @@ Successful probes become graph nodes and `READS`/`WRITES` edges with `discovered
 ## Common patterns
 
 1. **Leaked cloud key** — start at caller Identity, traverse READS/EXECUTES/CAN_ASSUME_ROLE to SecretStore
-2. **Compromised pod** — start Workload → HAS_ESCAPE_SURFACE → CAN_ESCAPE_TO → node RuntimeBinding → PROJECTS_TO cloud role
+2. **Compromised pod** — start Workload → CAN_ESCAPE_TO (mechanism-labeled, one edge per technique: privileged/SYS_PTRACE/hostPath/docker.sock) → node RuntimeBinding → PROJECTS_TO cloud role. Container escapes are transitive edges, not intermediate nodes; IMDS/SSRF credential theft is a CAN_ESCAPE_TO edge straight to the execution role.
 3. **Supply chain** — RegistryStore write → ImageProvenance → USES_IMAGE ← Workloads → SA secrets
 
 ## REST API

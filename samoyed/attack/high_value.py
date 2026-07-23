@@ -215,7 +215,7 @@ def ensure_attack_outcome_node(
     meta = outcome_metadata(provider, outcome_type)
     native_id = f"AttackOutcome:{provider.value}:{outcome_type}"
     node_id = builder.add_concept_node(
-        concept_type=ConceptType.ESCAPE_SURFACE,  # placeholder label; props override concept
+        concept_type=ConceptType.ATTACK_OUTCOME,  # props also set concept_type=AttackOutcome
         native_id=native_id,
         props={
             "concept_type": "AttackOutcome",

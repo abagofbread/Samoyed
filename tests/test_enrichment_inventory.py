@@ -108,8 +108,12 @@ def test_project_declared_ecs_topology(tmp_path: Path):
         e.src_id == asg_hosts[0].node_id and e.rel_type == "EXECUTES_AS" and e.dst_id == instance_role
         for e in graph.edges
     )
-    assert any(e.rel_type == "HAS_ESCAPE_SURFACE" for e in graph.edges)
-    assert any(e.rel_type == "CAN_ESCAPE_TO" for e in graph.edges)
+    # Escapes are transitive edges rooted at the workload (no EscapeSurface node).
+    workload_ids = {w.node_id for w in workloads}
+    assert any(
+        e.rel_type == "CAN_ESCAPE_TO" and e.src_id in workload_ids for e in graph.edges
+    )
+    assert not any(e.rel_type == "HAS_ESCAPE_SURFACE" for e in graph.edges)
 
 
 def test_apply_binds_module_hint_to_projected_workload(tmp_path: Path):

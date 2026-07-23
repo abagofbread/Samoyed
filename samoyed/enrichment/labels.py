@@ -57,6 +57,13 @@ def classify_finding(kind: str, match_snippet: str | None = None) -> str:
         return "Kubeconfig"
     if kind == "k8s_service_account_token":
         return "Kubernetes SA token"
+    if kind == "api_key":
+        env = _first_env_name(snippet)
+        return f"API key ({env})" if env else "Third-party API key"
+    if kind == "oauth_token":
+        return "OAuth token"
+    if kind == "email_credential":
+        return "Email account credentials"
     if kind == "k8s_client_cert":
         return "Kubernetes client certificate"
     if kind == "database_connection_string":

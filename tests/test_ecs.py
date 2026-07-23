@@ -6,12 +6,11 @@ from samoyed.cloud.concepts import ConceptType
 from samoyed.enumerators.aws.ecs import (
     analyze_ecs_container_definition,
     analyze_ecs_task_definition,
-    escape_native_id,
     workload_native_id,
 )
 from samoyed.graph.builder import GraphBuilder
 from samoyed.ingest.concept_normalizer import ConceptNormalizer
-from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge, Evidence
+from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge
 from samoyed.cloud.concepts import CloudProvider, ConfidenceType
 from samoyed.path_engine.search import find_attack_paths
 
@@ -82,11 +81,9 @@ def test_ecs_goat_path_workload_to_instance_role():
     builder = GraphBuilder(session_id="ecs-goat-test")
     task_arn = "arn:aws:ecs:us-east-1:859695290971:task/goat/abc"
     wl_id = workload_native_id(task_arn, "payroll")
-    escape_id = escape_native_id(task_arn, "capabilities", "payroll")
     host_id = "EC2Instance:i-0goat"
     task_role = "arn:aws:iam::859695290971:role/ecs-task-role"
     instance_role = "arn:aws:iam::859695290971:role/ecs-instance-role"
-    creds_escape = escape_native_id(task_arn, "container-credentials")
 
     artifacts = [
         ConceptArtifact(
@@ -160,51 +157,13 @@ def test_ecs_goat_path_workload_to_instance_role():
                     target_native_id=host_id,
                     target_concept_type=ConceptType.RUNTIME_BINDING,
                 ),
-            ],
-        ),
-        ConceptArtifact(
-            concept_type=ConceptType.ESCAPE_SURFACE,
-            provider=CloudProvider.AWS,
-            native_id=escape_id,
-            scope_id="aws:859695290971",
-            properties={"kind": "capabilities", "display_name": "SYS_PTRACE"},
-            evidence=Evidence("test", {}),
-            edges=[
-                ConceptEdge(
-                    rel_type="HAS_ESCAPE_SURFACE",
-                    src_native_id=wl_id,
-                    target_native_id=escape_id,
-                    target_concept_type=ConceptType.ESCAPE_SURFACE,
-                    props={"kind": "capabilities"},
-                ),
+                # SYS_PTRACE escape is a transitive edge straight to the host.
                 ConceptEdge(
                     rel_type="CAN_ESCAPE_TO",
-                    src_native_id=escape_id,
                     target_native_id=host_id,
                     target_concept_type=ConceptType.RUNTIME_BINDING,
+                    props={"mechanism": "capabilities", "severity": "high"},
                     confidence=ConfidenceType.EXPLICIT,
-                ),
-            ],
-        ),
-        ConceptArtifact(
-            concept_type=ConceptType.ESCAPE_SURFACE,
-            provider=CloudProvider.AWS,
-            native_id=creds_escape,
-            scope_id="aws:859695290971",
-            properties={"kind": "container-credentials"},
-            edges=[
-                ConceptEdge(
-                    rel_type="HAS_ESCAPE_SURFACE",
-                    src_native_id=wl_id,
-                    target_native_id=creds_escape,
-                    target_concept_type=ConceptType.ESCAPE_SURFACE,
-                ),
-                ConceptEdge(
-                    rel_type="EXECUTES_AS",
-                    src_native_id=creds_escape,
-                    target_native_id=task_role,
-                    target_concept_type=ConceptType.IDENTITY,
-                    props={"endpoint": "169.254.170.2"},
                 ),
             ],
         ),
@@ -225,7 +184,7 @@ def test_ecs_goat_path_workload_to_instance_role():
     )
     assert paths, "expected path from ECS workload to instance role via escape"
     rels = [s.rel_type for s in paths[0].steps]
-    assert "HAS_ESCAPE_SURFACE" in rels or "CAN_ESCAPE_TO" in rels
+    assert "CAN_ESCAPE_TO" in rels
     assert "EXECUTES_AS" in rels
 
 
@@ -281,11 +240,22 @@ def test_ecs_imds_enrichment_skips_task_uses_host():
     ]
     ConceptNormalizer().ingest(builder, artifacts)
     enrich_attack_surface(builder)
-    imds_nodes = [
-        n
-        for n in builder.snapshot.nodes.values()
-        if n.props.get("resource_type") == "IMDS"
+    graph = builder.snapshot
+
+    def _node(native_id: str) -> str:
+        return next(
+            nid for nid, n in graph.nodes.items() if n.props.get("native_id") == native_id
+        )
+
+    ec2_id = _node("EC2Instance:i-abc")
+    task_id = _node("ECSTask:arn:aws:ecs:us-east-1:1:task/c/t")
+
+    imds_edges = [
+        e
+        for e in graph.edges
+        if e.rel_type == "CAN_ESCAPE_TO" and e.props.get("mechanism") == "imds"
     ]
-    # Only EC2 host should get IMDS, not the ECSTask.
-    assert len(imds_nodes) == 1
-    assert imds_nodes[0].props.get("instance_id") == "i-abc"
+    # IMDS credential theft is a direct compute->role edge; only the EC2 host gets
+    # one (the ECS task's identity comes from 169.254.170.2, not classic IMDS).
+    assert any(e.src_id == ec2_id for e in imds_edges)
+    assert not any(e.src_id == task_id for e in imds_edges)

@@ -19,7 +19,7 @@ class CompromisedSaScenario:
 
 class PodEscapeScenario:
     name = "pod-escape"
-    target_concepts = ["EscapeSurface", "RuntimeBinding", "SecretStore", "Identity"]
+    target_concepts = ["RuntimeBinding", "SecretStore", "Identity"]
 
     def run(self, graph: GraphSnapshot, start_node_id: str) -> list[PathResult]:
         paths: list[PathResult] = []

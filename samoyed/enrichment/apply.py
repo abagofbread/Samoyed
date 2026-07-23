@@ -29,7 +29,7 @@ from samoyed.graph.model import GraphSnapshot
 from samoyed.graph.refs import prefer_concepts_for_material, resolve_node_ref
 from samoyed.graph.native_ids import infer_concept_type
 
-_HOST_CONCEPTS = frozenset({"RuntimeBinding", "Workload", "EscapeSurface"})
+_HOST_CONCEPTS = frozenset({"RuntimeBinding", "Workload"})
 _HOST_PREFER = (
     "runtimebinding",
     "workload",

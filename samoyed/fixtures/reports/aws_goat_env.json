@@ -1,0 +1,96 @@
+{
+  "provider": "aws",
+  "account_id": "123456789012",
+  "source": "samoyed-fixture",
+  "collected_via": "aws-goat-lab",
+  "caller_arn": "arn:aws:iam::123456789012:user/attacker",
+  "scenario": "AWSGoat-style web tier compromise with harvestable off-cloud credentials",
+  "identities": [
+    {
+      "arn": "arn:aws:iam::123456789012:user/attacker",
+      "kind": "User",
+      "name": "attacker",
+      "display_name": "attacker (leaked access key)",
+      "is_caller": true,
+      "notes": "Low-priv developer key used as the initial foothold."
+    },
+    {
+      "arn": "arn:aws:iam::123456789012:role/goat-ec2-role",
+      "kind": "Role",
+      "name": "goat-ec2-role",
+      "display_name": "goat-ec2-role (web instance profile)"
+    },
+    {
+      "arn": "arn:aws:iam::123456789012:role/goat-lambda-role",
+      "kind": "Role",
+      "name": "goat-lambda-role",
+      "display_name": "goat-lambda-role"
+    },
+    {
+      "arn": "arn:aws:iam::123456789012:role/goat-eks-irsa-role",
+      "kind": "Role",
+      "name": "goat-eks-irsa-role",
+      "display_name": "goat-eks-irsa-role (IRSA)"
+    },
+    {
+      "id": "kubernetes:serviceaccount:goat:app-sa",
+      "kind": "ServiceAccount",
+      "name": "app-sa",
+      "namespace": "goat",
+      "display_name": "goat/app-sa"
+    }
+  ],
+  "resources": [
+    {
+      "id": "EC2Instance:goat-web-01",
+      "concept": "RuntimeBinding",
+      "type": "EC2Instance",
+      "name": "goat-web-01",
+      "display_name": "goat-web-01 (public web tier)",
+      "instance_id": "goat-web-01",
+      "is_scenario_start": true,
+      "exposed_internet": true,
+      "has_public_url": true
+    },
+    {
+      "id": "LambdaFunction:goat-api",
+      "concept": "RuntimeBinding",
+      "type": "LambdaFunction",
+      "name": "goat-api",
+      "display_name": "goat-api"
+    },
+    {
+      "id": "RDSInstance:aws-goat-db",
+      "concept": "DataStore",
+      "type": "RDSInstance",
+      "name": "aws-goat-db",
+      "display_name": "aws-goat-db (customer PII)",
+      "sensitivity": "high"
+    },
+    {
+      "id": "S3Bucket:goat-app-assets",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "goat-app-assets",
+      "bucket_name": "goat-app-assets",
+      "display_name": "goat-app-assets"
+    },
+    {
+      "id": "Secret:goat/app-secrets",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "goat/app-secrets",
+      "secret_name": "goat/app-secrets",
+      "display_name": "goat/app-secrets"
+    }
+  ],
+  "grants": [
+    {"from": "arn:aws:iam::123456789012:user/attacker", "to": "arn:aws:iam::123456789012:role/goat-ec2-role", "rel": "CAN_ASSUME_ROLE"},
+    {"from": "EC2Instance:goat-web-01", "to": "arn:aws:iam::123456789012:role/goat-ec2-role", "rel": "EXECUTES_AS"},
+    {"from": "arn:aws:iam::123456789012:role/goat-ec2-role", "to": "Secret:goat/app-secrets", "rel": "READS", "action": "secretsmanager:GetSecretValue"},
+    {"from": "LambdaFunction:goat-api", "to": "arn:aws:iam::123456789012:role/goat-lambda-role", "rel": "EXECUTES_AS"},
+    {"from": "arn:aws:iam::123456789012:role/goat-lambda-role", "to": "S3Bucket:goat-app-assets", "rel": "READS", "action": "s3:GetObject"},
+    {"from": "arn:aws:iam::123456789012:role/goat-eks-irsa-role", "to": "RDSInstance:aws-goat-db", "rel": "READS", "action": "rds-db:connect"},
+    {"from": "kubernetes:serviceaccount:goat:app-sa", "to": "arn:aws:iam::123456789012:role/goat-eks-irsa-role", "rel": "PROJECTS_TO", "binding_type": "IRSA", "trust_validated": true}
+  ]
+}

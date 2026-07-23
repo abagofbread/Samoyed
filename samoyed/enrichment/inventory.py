@@ -15,7 +15,7 @@ from typing import Any
 
 from samoyed.cloud.concepts import ConceptType
 from samoyed.enrichment.impact import ensure_impact_target_node, get_impact_kind
-from samoyed.enumerators.aws.ecs import analyze_ecs_task_definition, escape_native_id, workload_native_id
+from samoyed.enumerators.aws.ecs import analyze_ecs_task_definition, workload_native_id
 from samoyed.graph.builder import GraphBuilder
 from samoyed.graph.enrichment import enrichment_edge_props
 from samoyed.graph.model import GraphSnapshot
@@ -294,25 +294,6 @@ def _wire_ecs_declared_topology(
         findings = analyze_ecs_task_definition(td_for_analyze, scope_key=scope_key)
         for finding in findings:
             kind = finding["kind"]
-            esc_native = finding.get("native_id") or escape_native_id(scope_key, kind)
-            if kind in {"container-credentials", "hostPID", "hostIPC", "hostNetwork"}:
-                esc_native = escape_native_id(scope_key, kind)
-            before = set(graph.nodes)
-            esc_id = builder.add_concept_node(
-                concept_type=ConceptType.ESCAPE_SURFACE,
-                native_id=esc_native,
-                props={
-                    "resource_type": "ECSEscape",
-                    "escape_kind": kind,
-                    "display_name": finding.get("description") or kind,
-                    "severity": finding.get("severity"),
-                    "projected": True,
-                    "projected_reason": "declared-ecs",
-                    "source": "collector-declared",
-                },
-            )
-            if esc_id not in before:
-                stats["escape_surfaces"] += 1
             finding_container = finding.get("container")
             linked = [
                 wl_id
@@ -320,48 +301,40 @@ def _wire_ecs_declared_topology(
                 if finding_container is None or finding_container == cname
             ] or ([workload_ids[0][0]] if workload_ids else [])
             for wl_id in linked:
-                if _upsert_edge(
-                    builder,
-                    graph,
-                    wl_id,
-                    "HAS_ESCAPE_SURFACE",
-                    esc_id,
-                    enrichment_edge_props(
-                        source="collector-declared",
-                        mechanism=kind,
-                        severity=finding.get("severity"),
-                    ),
-                ):
-                    edges_added += 1
-            if kind == "container-credentials" and task_role_id:
-                if _upsert_edge(
-                    builder,
-                    graph,
-                    esc_id,
-                    "EXECUTES_AS",
-                    task_role_id,
-                    enrichment_edge_props(
-                        source="collector-declared",
-                        mechanism="ecs-container-credentials",
-                        endpoint="169.254.170.2",
-                        role_kind="task",
-                    ),
-                ):
-                    edges_added += 1
-            elif host_id and kind != "container-credentials":
-                if _upsert_edge(
-                    builder,
-                    graph,
-                    esc_id,
-                    "CAN_ESCAPE_TO",
-                    host_id,
-                    enrichment_edge_props(
-                        source="collector-declared",
-                        mechanism=kind,
-                        planned=True,
-                    ),
-                ):
-                    edges_added += 1
+                # container-credentials is identity assumption; other techniques are
+                # transitive escapes to the host — one parallel edge per technique.
+                if kind == "container-credentials" and task_role_id:
+                    if _upsert_edge(
+                        builder,
+                        graph,
+                        wl_id,
+                        "EXECUTES_AS",
+                        task_role_id,
+                        enrichment_edge_props(
+                            source="collector-declared",
+                            mechanism="ecs-container-credentials",
+                            endpoint="169.254.170.2",
+                            role_kind="task",
+                        ),
+                    ):
+                        edges_added += 1
+                elif host_id and kind != "container-credentials":
+                    if _upsert_edge(
+                        builder,
+                        graph,
+                        wl_id,
+                        "CAN_ESCAPE_TO",
+                        host_id,
+                        enrichment_edge_props(
+                            source="collector-declared",
+                            mechanism=kind,
+                            severity=finding.get("severity"),
+                            description=finding.get("description"),
+                            planned=True,
+                        ),
+                    ):
+                        stats["escape_surfaces"] += 1
+                        edges_added += 1
 
     return edges_added
 
@@ -482,8 +455,12 @@ def _upsert_edge(
     dst: str,
     props: dict[str, Any],
 ) -> bool:
+    # Escape edges are parallel per technique — keep distinct mechanisms apart.
+    mechanism = str(props.get("mechanism") or "") if rel == "CAN_ESCAPE_TO" else None
     for edge in graph.edges:
         if edge.src_id == src and edge.dst_id == dst and edge.rel_type == rel:
+            if mechanism is not None and str(edge.props.get("mechanism") or "") != mechanism:
+                continue
             edge.props.update(props)
             return False
     builder.add_edge(src_id=src, rel_type=rel, dst_id=dst, props=props)

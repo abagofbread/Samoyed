@@ -69,12 +69,6 @@
       "service_account": "app-sa"
     },
     {
-      "id": "kubernetes:escape:default:evil-pod:docker-socket",
-      "concept": "EscapeSurface",
-      "type": "Resource",
-      "severity": "critical"
-    },
-    {
       "id": "kubernetes:node:host:samoyed-lab",
       "concept": "RuntimeBinding",
       "type": "NodeHost",
@@ -133,22 +127,21 @@
     },
     {
       "from": "kubernetes:pod:default:evil-pod",
-      "to": "kubernetes:escape:default:evil-pod:docker-socket",
-      "rel": "HAS_ESCAPE_SURFACE"
-    },
-    {
-      "from": "kubernetes:escape:default:evil-pod:docker-socket",
-      "to": "kubernetes:node:host:samoyed-lab",
-      "rel": "CAN_ESCAPE_TO",
-      "severity": "critical"
-    },
-    {
-      "from": "kubernetes:escape:default:evil-pod:docker-socket",
       "to": "kubernetes:node:samoyed-lab:ip-10-0-1-20",
       "rel": "CAN_ESCAPE_TO",
       "target": "node",
       "severity": "critical",
-      "mechanism": "docker-socket"
+      "mechanism": "docker-socket",
+      "description": "hostPath mount: /var/run/docker.sock"
+    },
+    {
+      "from": "kubernetes:pod:default:evil-pod",
+      "to": "kubernetes:node:host:samoyed-lab",
+      "rel": "CAN_ESCAPE_TO",
+      "target": "node/host",
+      "severity": "critical",
+      "mechanism": "docker-socket",
+      "description": "hostPath mount: /var/run/docker.sock"
     },
     {
       "from": "kubernetes:node:samoyed-lab:ip-10-0-1-20",

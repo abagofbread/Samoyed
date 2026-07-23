@@ -143,9 +143,9 @@ def _native_id_index(graph: GraphSnapshot) -> dict[str, str]:
     index: dict[str, str] = {}
     for node_id, node in graph.nodes.items():
         concept = node.props.get("concept_type")
-        # EscapeSurface/IMDS nodes copy instance_id from compute — do not let them
+        # NetworkExposure nodes copy instance_id from compute — do not let them
         # steal EC2Instance:* resolution used for network edges.
-        if concept in {"EscapeSurface", "NetworkExposure"}:
+        if concept in {"NetworkExposure"}:
             native = node.props.get("native_id")
             if native:
                 index.setdefault(str(native), node_id)

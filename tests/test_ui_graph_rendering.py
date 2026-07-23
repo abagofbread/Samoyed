@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 
-def test_privesc_self_loop_and_leaf_resource_filter_contract() -> None:
+def test_privesc_self_loops_are_never_rendered() -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required for frontend graph contract test")
@@ -23,6 +23,7 @@ const graph = {{
     {{ id: "outcome", label: "AttackOutcome", concept_type: "AttackOutcome" }},
     {{ id: "kms", label: "Resource", native_id: "KMSKey:*" }},
     {{ id: "crown", label: "Resource", native_id: "S3Bucket:crown", high_value: true }},
+    {{ id: "role", label: "Principal", concept_type: "Identity" }},
   ],
   edges: [
     {{
@@ -33,28 +34,41 @@ const graph = {{
       src: "principal", rel: "CAN_PRIVESC_TO", dst: "principal",
       attack_outcome: "administrator-access", pattern_id: "direct-outcome",
     }},
+    {{
+      src: "principal", rel: "CAN_PRIVESC_TO", dst: "role",
+      pattern_id: "passrole-to-role",
+    }},
     {{ src: "principal", rel: "READS", dst: "kms" }},
     {{ src: "principal", rel: "READS", dst: "crown" }},
   ],
 }};
 
 const compact = display.normalize(graph, {{ showAllResourceAccess: false }});
-const loops = compact.edges.filter(
-  (edge) => edge.rel === "CAN_PRIVESC_TO"
-    && edge.src === "principal"
-    && edge.dst === "principal"
-);
-if (loops.length !== 2) throw new Error(`expected 2 privesc self-loops, got ${{loops.length}}`);
+const privesc = compact.edges.filter((edge) => edge.rel === "CAN_PRIVESC_TO");
+const loops = privesc.filter((edge) => edge.src === edge.dst);
+if (loops.length !== 0) {{
+  throw new Error(`expected 0 privesc self-loops, got ${{loops.length}}`);
+}}
+// Outcome-targeted edges are dropped (AttackOutcome nodes are hidden).
+if (privesc.some((edge) => edge.dst === "outcome" || edge._collapsedOutcome)) {{
+  throw new Error("outcome privesc edges must not render");
+}}
+// Real principal→role privesc still renders.
+if (!privesc.some((edge) => edge.dst === "role")) {{
+  throw new Error("passrole privesc to another principal missing");
+}}
 if (compact.nodes.some((node) => node.id === "kms")) throw new Error("leaf KMS resource rendered");
 if (!compact.nodes.some((node) => node.id === "crown")) throw new Error("high-value leaf hidden");
-
-const visLoops = display.buildEdges(compact.edges, compact.nodes)
-  .filter((edge) => edge.from === edge.to);
-if (visLoops.length !== 2 || visLoops.some((edge) => !edge.selfReference)) {{
-  throw new Error("privesc self-reference rendering missing");
+if (compact.nodes.some((node) => node.id === "outcome")) {{
+  throw new Error("AttackOutcome node must stay hidden");
 }}
-if (visLoops[0].selfReference.size === visLoops[1].selfReference.size) {{
-  throw new Error("parallel self-loops overlap exactly");
+
+const visEdges = display.buildEdges(compact.edges, compact.nodes);
+if (visEdges.some((edge) => edge.from === edge.to)) {{
+  throw new Error("vis self-loops must not render");
+}}
+if (visEdges.some((edge) => edge.selfReference)) {{
+  throw new Error("selfReference must not be set");
 }}
 
 const expanded = display.normalize(graph, {{ showAllResourceAccess: true }});

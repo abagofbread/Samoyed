@@ -51,15 +51,6 @@ STATIC_SUGGESTIONS: list[dict[str, Any]] = [
         "max_depth": 5,
     },
     {
-        "id": "paths-to-escape",
-        "title": "Paths to EscapeSurface",
-        "description": "Container escape surfaces from current start",
-        "mode": "paths",
-        "start": "caller",
-        "target_concept": "EscapeSurface",
-        "max_depth": 5,
-    },
-    {
         "id": "shared-env-blast",
         "title": "Shared-environment resources",
         "description": "Data stores / registries consumed across prod+dev (poisonable geometry)",
@@ -264,7 +255,6 @@ def suggest_searches(store: SessionStore, session_id: str, *, limit: int = 10) -
     # Dynamic: suggest path to each high-value concept present
     for concept in (
         ConceptType.SECRET_STORE.value,
-        ConceptType.ESCAPE_SURFACE.value,
         ConceptType.MANAGEMENT_ENDPOINT.value,
     ):
         if concept in concepts and not any(s.get("target_concept") == concept for s in ranked):

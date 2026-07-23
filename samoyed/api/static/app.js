@@ -23,7 +23,9 @@ const state = {
   ignoredNodeIds: new Set(),
   lastPathQuery: null,
   enrichBusy: false,
-  showNetworkEdges: true,
+  // Full SG-lite / internet CAN_REACH render. Peering (VPC_PEERS / BRIDGES_TO)
+  // stays visible even when this is off — those edges are rare and high-signal.
+  showNetworkEdges: false,
   showAllResourceAccess: false,
 };
 
@@ -31,7 +33,6 @@ const NODE_COLORS = {
   Principal: { background: "#1f6feb", border: "#58a6ff", highlight: { background: "#388bfd", border: "#79c0ff" } },
   Resource: { background: "#8b2520", border: "#f85149", highlight: { background: "#b62324", border: "#ff7b72" } },
   ComputeContext: { background: "#1a4d2e", border: "#3fb950", highlight: { background: "#238636", border: "#56d364" } },
-  EscapeSurface: { background: "#4a2870", border: "#d2a8ff", highlight: { background: "#6e40b8", border: "#e2b0ff" } },
   ScopeBoundary: { background: "#30363d", border: "#8b949e", highlight: { background: "#484f58", border: "#b1bac4" } },
   PolicyStatement: { background: "#5a3c00", border: "#ffa657", highlight: { background: "#7d4e00", border: "#ffc078" } },
   AttackOutcome: { background: "#7a3a08", border: "#ffa657", highlight: { background: "#9e4b0e", border: "#ffc078" } },
@@ -452,7 +453,6 @@ function isEnrichmentEdge(edge) {
   if (edge.source && ENRICHMENT_EDGE_SOURCES.has(edge.source)) return true;
   if (ENRICHMENT_EDGE_RELS.has(edge.rel)) return true;
   if (edge.rel === "CAN_ESCAPE_TO" && edge.mechanism) return true;
-  if (edge.rel === "HAS_ESCAPE_SURFACE" && ENRICHMENT_EDGE_SOURCES.has(edge.source)) return true;
   if (
     edge.rel === "EXECUTES_AS"
     && (ENRICHMENT_EDGE_SOURCES.has(edge.source) || String(edge.mechanism || "").startsWith("imds"))
@@ -465,14 +465,23 @@ function isEnrichmentEdge(edge) {
   return false;
 }
 
+function isPeeringNetworkEdge(edge) {
+  return Boolean(edge && (edge.rel === "VPC_PEERS" || edge.rel === "BRIDGES_TO"));
+}
+
 function isNetworkEdge(edge) {
   if (!edge) return false;
-  if (edge.rel === "VPC_PEERS" || edge.rel === "BRIDGES_TO") return true;
+  if (isPeeringNetworkEdge(edge)) return true;
   if (edge.source === "network-enrichment") return true;
   if (edge.rel === "CAN_REACH" && (edge.mechanism === "sg-lite" || edge.mechanism === "internet-ingress" || edge.mechanism === "vpc-peering")) {
     return true;
   }
   return false;
+}
+
+/** Edges gated by the "Network Edges (All)" toggle — peering is never gated. */
+function isToggleableNetworkEdge(edge) {
+  return isNetworkEdge(edge) && !isPeeringNetworkEdge(edge);
 }
 
 function edgeVisStyle(edge) {
@@ -657,19 +666,11 @@ function normalizeGraphForDisplay(graph) {
 
   for (const edge of graph.edges || []) {
     if (edge.rel === "DISCOVERED") continue;
-    if (!state.showNetworkEdges && isNetworkEdge(edge)) continue;
-    // Both historical outcome-node edges and current direct self-outcome edges
-    // must render as a self-loop. Key off attack_outcome as well as destination
-    // shape so this does not regress when the persistence representation changes.
-    if (isPrivescOutcomeEdge(edge, outcomeIds)) {
-      if (!nodeIds.has(edge.src)) continue;
-      edges.push({
-        ...edge,
-        dst: edge.src,
-        attack_outcome: edge.attack_outcome || "administrator-access",
-        outcome_display: edge.outcome_display || "Administrator access",
-        _collapsedOutcome: true,
-      });
+    if (!state.showNetworkEdges && isToggleableNetworkEdge(edge)) continue;
+    // Never draw CAN_PRIVESC_TO as a self-loop. AttackOutcome destinations are
+    // already hidden display nodes; collapsing those edges onto the principal
+    // produced the orange "points at itself" loops. Drop them instead.
+    if (edge.rel === "CAN_PRIVESC_TO" && (edge.src === edge.dst || isPrivescOutcomeEdge(edge, outcomeIds))) {
       continue;
     }
     if (nodeIds.has(edge.src) && nodeIds.has(edge.dst)) {
@@ -687,6 +688,10 @@ function edgeDisplayLabel(edge) {
   }
   if (edge.attack_outcome) {
     return `👑 ${edge.rel}`;
+  }
+  // Escapes are transitive edges — show which technique enables the escape.
+  if (edge.rel === "CAN_ESCAPE_TO" && edge.mechanism) {
+    return `◇ ${edge.rel} (${edge.mechanism})`;
   }
   if (isEnrichmentEdge(edge)) {
     return `◇ ${edge.rel}`;
@@ -1036,6 +1041,8 @@ function visEdgeId(edge, idCounts) {
   let base = `${edge.src}|${edge.rel}|${edge.dst}`;
   if (edge.pattern_id) base += `|${edge.pattern_id}`;
   else if (edge.action) base += `|${edge.action}`;
+  // Escape edges render as parallel edges — one per technique to the same host.
+  else if (edge.rel === "CAN_ESCAPE_TO" && edge.mechanism) base += `|${edge.mechanism}`;
   const seen = idCounts.get(base) || 0;
   idCounts.set(base, seen + 1);
   return seen === 0 ? base : `${base}#${seen}`;
@@ -1174,6 +1181,11 @@ function edgeMatchesStep(visEdge, step) {
 }
 
 function buildVisEdges(edges, nodeById) {
+  // Hard ban: CAN_PRIVESC_TO must never render as a self-loop, even if a caller
+  // feeds normalize output that somehow still has src === dst.
+  edges = (edges || []).filter(
+    (edge) => !(edge.rel === "CAN_PRIVESC_TO" && edge.src === edge.dst),
+  );
   const pairCounts = new Map();
   const pairSeen = new Map();
   const sourceCounts = new Map();
@@ -2928,8 +2940,7 @@ function updateTargetFieldsVisibility() {
 }
 
 // Small pure display contract used by regression tests. Keeping this callable
-// outside the browser prevents CAN_PRIVESC_TO self-loop rendering from silently
-// regressing again.
+// outside the browser prevents CAN_PRIVESC_TO self-loops from coming back.
 globalThis.SamoyedGraphDisplay = {
   normalize(graph, options = {}) {
     if (options.showNetworkEdges != null) {

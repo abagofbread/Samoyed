@@ -36,6 +36,14 @@ ENRICHMENT_EXAMPLES: tuple[EnrichmentExampleSpec, ...] = (
         tags=("host-pivot", "static-repo"),
     ),
     EnrichmentExampleSpec(
+        id="aws-goat-creds",
+        filename="enrichment_aws_goat_creds.json",
+        description="Off-cloud credentials harvested from the AWSGoat web tier (API key, OAuth token, mailbox creds, k8s SA token) that pivot to SaaS/email and internal S3/IRSA",
+        lab_fixture="aws-goat",
+        collector="static-goat-scan",
+        tags=("aws", "goat", "api-key", "oauth", "email", "k8s-token", "external-service"),
+    ),
+    EnrichmentExampleSpec(
         id="internal-tool-static",
         filename="enrichment_internal_tool_static.json",
         description="Static scan of internal-tool Lambda deploy config (.env.production)",

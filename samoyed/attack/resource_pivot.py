@@ -37,7 +37,6 @@ _USE_CONSUMER_CONCEPTS = frozenset(
         "RuntimeBinding",
         "ImageProvenance",
         "RegistryStore",
-        "EscapeSurface",
     }
 )
 _USE_CONSUMER_RELS = frozenset({"USES_IMAGE", "PULLS_FROM", "DEPENDS_ON"})

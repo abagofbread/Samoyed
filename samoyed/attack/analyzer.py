@@ -356,6 +356,12 @@ def apply_attack_analysis(
                 str(edge.props["attack_outcome"]),
             )
 
+        # A privesc target that resolves back to the source principal without an
+        # attack-outcome redirect is a spurious self-loop ("can escalate to
+        # itself") — drop it so it never reaches the graph or path search.
+        if dst_id == edge.src_id:
+            continue
+
         key = (edge.src_id, dst_id)
         resolved = AttackEdge(
             src_id=edge.src_id,

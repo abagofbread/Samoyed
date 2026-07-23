@@ -14,7 +14,6 @@ CONCEPT_MAP = {
     "SecretStore": ConceptType.SECRET_STORE,
     "RuntimeBinding": ConceptType.RUNTIME_BINDING,
     "Workload": ConceptType.WORKLOAD,
-    "EscapeSurface": ConceptType.ESCAPE_SURFACE,
     "Entitlement": ConceptType.ENTITLEMENT,
     "Trust": ConceptType.TRUST,
     "ManagementEndpoint": ConceptType.MANAGEMENT_ENDPOINT,

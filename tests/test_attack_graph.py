@@ -93,6 +93,34 @@ def test_lambda_passrole_privesc_to_role():
     assert any(e.dst_id != user for e in privesc)
 
 
+def test_privesc_target_resolving_to_self_is_dropped():
+    """A runtime binding that can SSM-SendCommand resolves the runtime-binding
+    target set — which includes itself. That "escalate to itself" edge is a
+    spurious self-loop and must never reach the graph."""
+    builder = GraphBuilder("attack-test")
+    instance = builder.add_concept_node(
+        concept_type=ConceptType.RUNTIME_BINDING,
+        native_id="arn:aws:ec2::123:instance/i-lonely",
+        props={"is_caller": True, "native_kind": "EC2Instance"},
+    )
+    builder.add_edge(
+        src_id=instance,
+        rel_type="CONTROLS",
+        dst_id=instance,
+        props={"action": "ssm:SendCommand"},
+    )
+
+    apply_attack_analysis(
+        builder, provider=CloudProvider.AWS, start_node_ids=[instance]
+    )
+
+    privesc = [e for e in builder.snapshot.edges if e.rel_type == "CAN_PRIVESC_TO"]
+    assert all(e.src_id != e.dst_id for e in privesc)
+    assert not any(
+        e.src_id == instance and e.dst_id == instance for e in privesc
+    )
+
+
 def test_blast_radius_includes_admin_outcome():
     builder = GraphBuilder("attack-test")
     user = builder.add_concept_node(

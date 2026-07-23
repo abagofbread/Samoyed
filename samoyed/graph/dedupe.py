@@ -35,15 +35,23 @@ def dedupe_redundant_edges(builder: GraphBuilder) -> dict[str, int]:
 
 
 def _collapse_identical_edges(graph: GraphSnapshot) -> int:
-    """One edge per (src, rel, dst); merge action evidence."""
-    buckets: dict[tuple[str, str, str], list[GraphEdge]] = {}
+    """One edge per (src, rel, dst); merge action evidence.
+
+    Escape edges are modeled as parallel transitive edges — one per technique
+    (e.g. SYS_PTRACE vs docker-socket to the same host) — so their identity
+    includes the ``mechanism`` discriminator and distinct techniques are kept.
+    """
+    buckets: dict[tuple[str, str, str, str], list[GraphEdge]] = {}
     for edge in graph.edges:
-        key = (edge.src_id, edge.rel_type, edge.dst_id)
+        discriminator = ""
+        if edge.rel_type == "CAN_ESCAPE_TO":
+            discriminator = str(edge.props.get("mechanism") or "")
+        key = (edge.src_id, edge.rel_type, edge.dst_id, discriminator)
         buckets.setdefault(key, []).append(edge)
 
     new_edges: list[GraphEdge] = []
     collapsed = 0
-    for (_src, _rel, _dst), group in buckets.items():
+    for (_src, _rel, _dst, _mech), group in buckets.items():
         if len(group) == 1:
             new_edges.append(group[0])
             continue

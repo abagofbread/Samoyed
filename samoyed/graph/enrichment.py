@@ -58,8 +58,6 @@ def is_enrichment_edge(rel_type: str, props: dict[str, Any] | None) -> bool:
         return True
     if rel_type == "CAN_ESCAPE_TO" and props.get("mechanism"):
         return True
-    if rel_type == "HAS_ESCAPE_SURFACE" and source in ENRICHMENT_EDGE_SOURCES:
-        return True
     if rel_type == "EXECUTES_AS" and (
         source in ENRICHMENT_EDGE_SOURCES
         or str(props.get("mechanism", "")).startswith("imds")

@@ -81,6 +81,44 @@ def test_collapses_identical_capability_edges():
     assert set(reads[0].props.get("actions") or []) >= {"s3:GetObject", "s3:ListBucket"}
 
 
+def test_parallel_escape_edges_survive_dedupe():
+    """Distinct escape techniques to the same host are parallel edges, not merged."""
+    builder = GraphBuilder("dedupe-escape")
+    pod = builder.add_concept_node(
+        concept_type=ConceptType.WORKLOAD,
+        native_id="kubernetes:pod:default:evil",
+        props={"native_kind": "Pod"},
+    )
+    host = builder.add_concept_node(
+        concept_type=ConceptType.RUNTIME_BINDING,
+        native_id="kubernetes:node:host:lab",
+        props={"resource_type": "NodeHost"},
+    )
+    for mechanism in ("privileged", "docker-socket", "SYS_PTRACE"):
+        builder.add_edge(
+            src_id=pod,
+            rel_type="CAN_ESCAPE_TO",
+            dst_id=host,
+            props={"mechanism": mechanism, "severity": "critical"},
+        )
+    # A true duplicate (same mechanism) should still collapse.
+    builder.add_edge(
+        src_id=pod,
+        rel_type="CAN_ESCAPE_TO",
+        dst_id=host,
+        props={"mechanism": "privileged", "severity": "critical"},
+    )
+
+    dedupe_redundant_edges(builder)
+    escape_edges = [
+        e
+        for e in builder.snapshot.edges
+        if e.rel_type == "CAN_ESCAPE_TO" and e.src_id == pod and e.dst_id == host
+    ]
+    mechanisms = sorted(e.props.get("mechanism") for e in escape_edges)
+    assert mechanisms == ["SYS_PTRACE", "docker-socket", "privileged"]
+
+
 def test_drops_passrole_controls_when_privesc_to_same_identity():
     builder = GraphBuilder("dedupe-passrole")
     src = builder.add_concept_node(
