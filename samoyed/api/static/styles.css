@@ -174,6 +174,21 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .graph-toolbar-toggle input {
   margin: 0;
 }
+.graph-toolbar-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--muted, #8b949e);
+}
+.graph-toolbar-select select {
+  background: var(--panel, #161b22);
+  color: var(--text, #e6edf3);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 0.8rem;
+}
 .graph-toolbar-label {
   font-size: 11px;
   text-transform: uppercase;
@@ -209,6 +224,27 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .graph-legend-swatch--iam { background: #484f58; }
 .graph-legend-swatch--enrichment { background: #3fb9b0; }
 .graph-legend-swatch--attack { background: #ffa657; }
+.graph-legend-swatch--vpc {
+  background: transparent;
+  border: 2px solid #58a6ff;
+  height: 10px;
+  width: 16px;
+  border-radius: 3px;
+}
+.graph-legend-swatch--subnet {
+  background: transparent;
+  border: 2px solid #3fb950;
+  height: 10px;
+  width: 16px;
+  border-radius: 3px;
+}
+.graph-legend-swatch--peering {
+  background: transparent;
+  border: 2px dashed #3fb9b0;
+  height: 10px;
+  width: 16px;
+  border-radius: 3px;
+}
 
 .enrichment-drop-zone {
   border: 1px dashed var(--border);

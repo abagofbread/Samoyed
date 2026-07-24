@@ -19,6 +19,7 @@ CONCEPT_MAP = {
     "ManagementEndpoint": ConceptType.MANAGEMENT_ENDPOINT,
     "OrchestrationScope": ConceptType.ORCHESTRATION_SCOPE,
     "ScopeBoundary": ConceptType.SCOPE_BOUNDARY,
+    "NetworkBoundary": ConceptType.NETWORK_BOUNDARY,
     "RegistryStore": ConceptType.REGISTRY_STORE,
     "NetworkExposure": ConceptType.NETWORK_EXPOSURE,
 }

@@ -70,7 +70,12 @@
       "has_public_url": true,
       "execution_role_arn": "arn:aws:iam::111111111111:role/ssrf-lambda-exec",
       "environment": "dmz",
-      "scope_boundary": "dmz"
+      "scope_boundary": "dmz",
+      "vpc_id": "vpc-dmz",
+      "subnet_ids": ["subnet-dmz-a"],
+      "sg_ids": ["sg-dmz-lambda"],
+      "private_ips": ["10.0.1.20"],
+      "exposed_internet": true
     },
     {
       "id": "S3Bucket:pci-internal-ledger",
@@ -105,7 +110,13 @@
       "exposure_level": "internet",
       "execution_role_arn": "arn:aws:iam::111111111111:role/marketing-web-instance",
       "environment": "dmz",
-      "scope_boundary": "dmz"
+      "scope_boundary": "dmz",
+      "vpc_id": "vpc-dmz",
+      "subnet_ids": ["subnet-dmz-a"],
+      "sg_ids": ["sg-dmz-web"],
+      "private_ips": ["10.0.1.10"],
+      "public_ip": "203.0.113.10",
+      "exposed_internet": true
     },
     {
       "id": "EC2Instance:arn:aws:ec2:us-east-1:111111111111:instance/i-ml-training-gpu",
@@ -117,7 +128,11 @@
       "instance_type": "g4dn.xlarge",
       "compute_class": "gpu",
       "gpu_accelerated": true,
-      "execution_role_arn": "arn:aws:iam::111111111111:role/ml-gpu-runner"
+      "execution_role_arn": "arn:aws:iam::111111111111:role/ml-gpu-runner",
+      "vpc_id": "vpc-app",
+      "subnet_ids": ["subnet-app-private"],
+      "sg_ids": ["sg-app-gpu"],
+      "private_ips": ["10.1.2.30"]
     },
     {
       "id": "S3Bucket:ml-training-artifacts",
@@ -210,6 +225,20 @@
     }
   ],
   "caller_arn": "arn:aws:iam::111111111111:user/leaked-user",
+  "network": {
+    "version": 1,
+    "provider": "aws",
+    "source": "fixture",
+    "vpc_cidrs": {
+      "vpc-dmz": ["10.0.0.0/16"],
+      "vpc-app": ["10.1.0.0/16"]
+    },
+    "sg_rules": [
+      {"sg_id": "sg-dmz-web", "direction": "ingress", "cidrs": ["0.0.0.0/0"]},
+      {"sg_id": "sg-dmz-lambda", "direction": "ingress", "cidrs": ["0.0.0.0/0"]},
+      {"sg_id": "sg-app-gpu", "direction": "ingress", "cidrs": ["10.0.0.0/16"]}
+    ]
+  },
   "metadata": {
     "scenario": "compute-exposure-lab"
   }

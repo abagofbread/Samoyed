@@ -14,6 +14,7 @@ class CloudProvider(str, Enum):
 class ConceptType(str, Enum):
     SCOPE_BOUNDARY = "ScopeBoundary"
     ORCHESTRATION_SCOPE = "OrchestrationScope"
+    NETWORK_BOUNDARY = "NetworkBoundary"
     IDENTITY = "Identity"
     ENTITLEMENT = "Entitlement"
     TRUST = "Trust"
@@ -32,6 +33,7 @@ class ConceptType(str, Enum):
 CONCEPT_TO_NODE_LABEL: dict[ConceptType, str] = {
     ConceptType.SCOPE_BOUNDARY: "ScopeBoundary",
     ConceptType.ORCHESTRATION_SCOPE: "ScopeBoundary",
+    ConceptType.NETWORK_BOUNDARY: "NetworkBoundary",
     ConceptType.IDENTITY: "Principal",
     ConceptType.ENTITLEMENT: "PolicyStatement",
     ConceptType.RUNTIME_BINDING: "ComputeContext",

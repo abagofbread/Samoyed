@@ -283,6 +283,7 @@ def _wire_scope_hosting(builder: GraphBuilder, graph: GraphSnapshot) -> int:
             continue
         scope_id = scope_nodes.get(str(scope_ref))
         if not scope_id:
+            kind = "ou" if node.props.get("ou") and not node.props.get("environment") else "environment"
             scope_id = builder.add_concept_node(
                 concept_type=ConceptType.SCOPE_BOUNDARY,
                 native_id=str(scope_ref),
@@ -290,6 +291,7 @@ def _wire_scope_hosting(builder: GraphBuilder, graph: GraphSnapshot) -> int:
                     "display_name": str(scope_ref),
                     "environment": node.props.get("environment"),
                     "sensitivity": node.props.get("sensitivity"),
+                    "boundary_kind": kind,
                     "source": "surface-enrichment",
                 },
             )

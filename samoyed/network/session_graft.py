@@ -92,6 +92,9 @@ def ensure_account_boundary(builder: GraphBuilder, account_id: str) -> str:
     scope_id = make_scope_id(CloudProvider.AWS, "account", account_id)
     existing = stable_id("ScopeBoundary", scope_id)
     if existing in builder.snapshot.nodes:
+        node = builder.snapshot.nodes[existing]
+        node.props.setdefault("boundary_kind", "account")
+        node.props.setdefault("account_id", account_id)
         return existing
     return builder.add_concept_node(
         concept_type=ConceptType.SCOPE_BOUNDARY,
@@ -99,6 +102,7 @@ def ensure_account_boundary(builder: GraphBuilder, account_id: str) -> str:
         props={
             "display_name": f"Account:{account_id}",
             "account_id": account_id,
+            "boundary_kind": "account",
             "source": NETWORK_ENRICHMENT_SOURCE,
             "is_cross_account_boundary": True,
         },

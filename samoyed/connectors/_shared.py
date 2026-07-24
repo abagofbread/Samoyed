@@ -39,14 +39,17 @@ def build_session_from_artifacts(
         raise ValueError("No artifacts produced from import")
 
     builder = GraphBuilder(session_id)
+    scope_props: dict[str, Any] = {
+        "display_name": scope_display,
+        "source": source,
+        "account_id": account_id,
+    }
+    if provider == CloudProvider.AWS and account_id:
+        scope_props["boundary_kind"] = "account"
     scope_node = builder.add_concept_node(
         concept_type=ConceptType.SCOPE_BOUNDARY,
         native_id=scope_id,
-        props={
-            "display_name": scope_display,
-            "source": source,
-            "account_id": account_id,
-        },
+        props=scope_props,
     )
     builder.link_session(scope_node)
     ConceptNormalizer().ingest(builder, artifacts)

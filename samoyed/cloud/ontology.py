@@ -29,6 +29,13 @@ CONCEPT_MAPPINGS: tuple[ConceptMapping, ...] = (
         "Docker host",
     ),
     ConceptMapping(
+        ConceptType.NETWORK_BOUNDARY,
+        "Network placement container (VPC/subnet) — UI bounding box, not a path hop",
+        "VPC / Subnet",
+        "VPC / Subnet",
+        "VNet / Subnet",
+    ),
+    ConceptMapping(
         ConceptType.IDENTITY,
         "Start node / pivot principal",
         "IAM User/Role",
@@ -135,7 +142,13 @@ CONCEPT_MAPPINGS: tuple[ConceptMapping, ...] = (
 
 
 CROSS_LAYER_EDGES: tuple[dict[str, str], ...] = (
-    {"rel": "HOSTED_IN", "meaning": "Workload/cluster nested in cloud or parent scope"},
+    {
+        "rel": "HOSTED_IN",
+        "meaning": (
+            "Resource/workload nested in a ScopeBoundary or NetworkBoundary "
+            "(placement; UI uses these for spatial boxes)"
+        ),
+    },
     {"rel": "EXECUTES_AS", "meaning": "Runtime uses bound identity (pod SA, instance profile)"},
     {"rel": "PROJECTS_TO", "meaning": "K8s SA projects to cloud IAM role (IRSA/WI/MI)"},
     {"rel": "USES_IMAGE", "meaning": "Workload references container image"},

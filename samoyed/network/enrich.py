@@ -6,6 +6,7 @@ from samoyed.cloud.concepts import ConceptType
 from samoyed.graph.builder import GraphBuilder, stable_id
 from samoyed.graph.enrichment import mark_enrichment_edges
 from samoyed.graph.model import GraphSnapshot
+from samoyed.network.boundaries import synthesize_network_boundaries
 from samoyed.network.model import (
     INTERNET_NATIVE_ID,
     NETWORK_ENRICHMENT_SOURCE,
@@ -42,11 +43,18 @@ def enrich_network_reachability(
         "grafted_nodes": 0,
         "grafted_edges": 0,
         "account_boundaries": 0,
+        "vpc_boundaries": 0,
+        "subnet_boundaries": 0,
+        "hosted_in_edges": 0,
     }
     if merged.is_empty():
         return stats
 
     _apply_placement_props(builder, merged)
+    boundary_stats = synthesize_network_boundaries(builder, merged)
+    stats["vpc_boundaries"] = int(boundary_stats.get("vpc_boundaries") or 0)
+    stats["subnet_boundaries"] = int(boundary_stats.get("subnet_boundaries") or 0)
+    stats["hosted_in_edges"] = int(boundary_stats.get("hosted_in_edges") or 0)
     _ensure_internet_node(builder)
 
     local_accounts = {p.account_id for p in merged.placements if p.account_id}

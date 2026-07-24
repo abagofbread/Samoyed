@@ -172,10 +172,13 @@ class SessionStore:
         artifacts = list(runner.run_all(ctx))
 
         builder = GraphBuilder(session_id)
+        scope_props = {"display_name": scope.display_name, **scope.properties}
+        if credentials.provider == CloudProvider.AWS and scope.properties.get("account_id"):
+            scope_props.setdefault("boundary_kind", "account")
         scope_node = builder.add_concept_node(
             concept_type=ConceptType.SCOPE_BOUNDARY,
             native_id=scope.scope_id,
-            props={"display_name": scope.display_name, **scope.properties},
+            props=scope_props,
         )
         builder.link_session(scope_node)
 
@@ -259,10 +262,13 @@ class SessionStore:
                 pass
 
         builder = GraphBuilder(session_id)
+        scope_props = {"display_name": scope.display_name, **scope.properties}
+        if credentials.provider == CloudProvider.AWS and scope.properties.get("account_id"):
+            scope_props.setdefault("boundary_kind", "account")
         scope_node = builder.add_concept_node(
             concept_type=ConceptType.SCOPE_BOUNDARY,
             native_id=scope.scope_id,
-            props={"display_name": scope.display_name, **scope.properties},
+            props=scope_props,
         )
         builder.link_session(scope_node)
         ConceptNormalizer().ingest(builder, artifacts)

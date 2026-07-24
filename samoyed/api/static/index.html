@@ -97,10 +97,29 @@
           <input type="checkbox" id="toggleAllResourceAccess" />
           Render all resource access
         </label>
-        <span class="graph-legend" aria-label="Edge colors">
+        <label class="graph-toolbar-toggle" title="Draw nested bounding boxes around ScopeBoundary / NetworkBoundary members (HOSTED_IN). Account boxes only appear for cross-account access.">
+          <input type="checkbox" id="toggleBoundaryBoxes" checked />
+          Boundary boxes
+        </label>
+        <label class="graph-toolbar-select" title="Graph layout algorithm">
+          Layout
+          <select id="layoutMode">
+            <option value="force" selected>Force-directed</option>
+            <option value="swim">Swimming lane</option>
+            <option value="diamond">Diamond</option>
+            <option value="sugiyama">Sugiyama</option>
+            <option value="helio">Heliocentric</option>
+            <option value="space">Space filling</option>
+            <option value="hierarchy">Hierarchy</option>
+          </select>
+        </label>
+        <span class="graph-legend" aria-label="Edge and boundary colors">
           <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--iam"></i> IAM / enum</span>
           <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--enrichment"></i> Enrichment / pivot</span>
           <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--attack"></i> Attack outcome</span>
+          <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--vpc"></i> VPC box</span>
+          <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--subnet"></i> Subnet box</span>
+          <span class="graph-legend-item"><i class="graph-legend-swatch graph-legend-swatch--peering"></i> Box peering</span>
         </span>
       </div>
       <div id="mainGraphHost" class="graph-host">
