@@ -56,6 +56,7 @@ from samoyed.scenarios.k8s import CompromisedSaScenario, PodEscapeScenario
 from samoyed.scenarios.host_compromise import HostCompromiseScenario
 from samoyed.scenarios.leaked_credential import LeakedCredentialScenario
 from samoyed.scenarios.cross_account import CanReachOtherAccountsScenario
+from samoyed.scenarios.intercloud_federation import IntercloudFederationScenario
 from samoyed.session_naming import (
     build_session_id,
     derive_short_name,
@@ -184,13 +185,16 @@ class SessionStore:
 
         ConceptNormalizer().ingest(builder, artifacts)
         attack_edges = apply_attack_analysis(builder, provider=credentials.provider)
-        enrich_attack_surface(builder, provider=credentials.provider)
+        enrich_attack_surface(
+            builder, provider=credentials.provider, session_store=self
+        )
 
         network_stats = None
         network_inventory = None
+        from samoyed.network.enrich import enrich_network_reachability
+
         if credentials.provider == CloudProvider.AWS:
             from samoyed.enumerators.aws.network import collect_aws_network_inventory
-            from samoyed.network.enrich import enrich_network_reachability
 
             network_inventory = collect_aws_network_inventory(ctx)
             network_stats = enrich_network_reachability(
@@ -198,6 +202,16 @@ class SessionStore:
                 network_inventory,
                 session_store=self,
                 inventory_source="aws-enum",
+            )
+        elif credentials.provider == CloudProvider.GCP:
+            from samoyed.enumerators.gcp.network import collect_gcp_network_inventory
+
+            network_inventory = collect_gcp_network_inventory(ctx)
+            network_stats = enrich_network_reachability(
+                builder,
+                network_inventory,
+                session_store=self,
+                inventory_source="gcp-enum",
             )
 
         metadata = {
@@ -273,7 +287,9 @@ class SessionStore:
         builder.link_session(scope_node)
         ConceptNormalizer().ingest(builder, artifacts)
         attack_edges = apply_attack_analysis(builder, provider=credentials.provider)
-        enrich_attack_surface(builder, provider=credentials.provider)
+        enrich_attack_surface(
+            builder, provider=credentials.provider, session_store=self
+        )
 
         metadata = {
             "artifact_count": len(artifacts),
@@ -1074,6 +1090,8 @@ class SessionStore:
         if name == "can-reach-other-accounts":
             start = self.find_caller_node(session) or self._resolve_compromised_start(session) or start
             return CanReachOtherAccountsScenario().run(session.snapshot, start)
+        if name == "intercloud-federation":
+            return IntercloudFederationScenario().run(session.snapshot, start)
         raise ValueError(f"Unknown scenario: {name}")
 
     def query_paths(
@@ -1240,7 +1258,9 @@ class SessionStore:
             default_target_node_id=target_node_id,
         )
         # Propagate derived edges/props across the whole graph (globs, FEEDS, …).
-        surface = enrich_attack_surface(builder, provider=session.provider)
+        surface = enrich_attack_surface(
+            builder, provider=session.provider, session_store=self
+        )
         stats["surface"] = surface
         session.snapshot = builder.snapshot
         session.metadata.setdefault("enrichment_runs", []).append(stats)
@@ -1260,7 +1280,9 @@ class SessionStore:
         builder.snapshot = session.snapshot
         relabeled = relabel_pivot_materials(session.snapshot)
         impact = repair_credential_impact(builder)
-        surface = enrich_attack_surface(builder, provider=session.provider)
+        surface = enrich_attack_surface(
+            builder, provider=session.provider, session_store=self
+        )
         session.snapshot = builder.snapshot
         stats = {
             "materials_relabeled": int(relabeled or 0),

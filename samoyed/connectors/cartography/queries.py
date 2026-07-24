@@ -89,6 +89,36 @@ WHERE $project_id IS NULL OR p.id = $project_id
 RETURN DISTINCT sa.email AS email, p.id AS project_id
 """
 
+GCP_PROJECTS = """
+MATCH (p:GCPProject)
+WHERE $project_id IS NULL OR p.id = $project_id
+RETURN DISTINCT p.id AS project_id, coalesce(p.name, p.id) AS name
+"""
+
+GCP_BUCKETS = """
+MATCH (b:GCSBucket)
+OPTIONAL MATCH (p:GCPProject)-[:RESOURCE]->(b)
+WHERE $project_id IS NULL OR p.id = $project_id OR b.projectid = $project_id
+RETURN DISTINCT coalesce(b.name, b.id) AS name, coalesce(p.id, b.projectid) AS project_id
+"""
+
+GCP_SECRETS = """
+MATCH (s:GCPSecret)
+OPTIONAL MATCH (p:GCPProject)-[:RESOURCE]->(s)
+WHERE $project_id IS NULL OR p.id = $project_id
+RETURN DISTINCT coalesce(s.name, s.id) AS name, coalesce(p.id, s.projectid) AS project_id
+"""
+
+GCP_INSTANCES = """
+MATCH (i:GCPInstance)
+OPTIONAL MATCH (p:GCPProject)-[:RESOURCE]->(i)
+WHERE $project_id IS NULL OR p.id = $project_id
+RETURN DISTINCT
+  coalesce(i.id, i.name) AS instance_id,
+  coalesce(i.serviceaccountemail, i.email) AS sa_email,
+  coalesce(p.id, i.projectid) AS project_id
+"""
+
 EC2_NETWORK_PLACEMENT = """
 MATCH (i:EC2Instance)
 WHERE $account_id IS NULL OR coalesce(i.arn, '') CONTAINS $account_id

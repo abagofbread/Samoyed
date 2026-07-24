@@ -380,6 +380,25 @@ def _collect_artifacts(
 
 
 def _collect_gcp(client: CartographyClient, *, project_id: str | None) -> Iterator[ConceptArtifact]:
+    for row in client.run(cq.GCP_PROJECTS, project_id=project_id):
+        pid = str(row.get("project_id") or "")
+        if not pid:
+            continue
+        scope_id = make_scope_id(CloudProvider.GCP, "project", pid)
+        yield ConceptArtifact(
+            concept_type=ConceptType.SCOPE_BOUNDARY,
+            provider=CloudProvider.GCP,
+            native_id=scope_id,
+            scope_id=scope_id,
+            properties={
+                "boundary_kind": "project",
+                "project_id": pid,
+                "display_name": f"Project:{row.get('name') or pid}",
+                "source": "cartography",
+            },
+            evidence=Evidence("cartography:GCPProject", {"project_id": pid}),
+        )
+
     for row in client.run(cq.GCP_SERVICE_ACCOUNTS, project_id=project_id):
         email = row.get("email")
         if not email:
@@ -396,9 +415,85 @@ def _collect_gcp(client: CartographyClient, *, project_id: str | None) -> Iterat
                 "native_kind": "ServiceAccount",
                 "email": email,
                 "display_name": email,
+                "project_id": pid,
                 "source": "cartography",
             },
             evidence=Evidence("cartography:GCPServiceAccount", {"email": email}),
+        )
+
+    for row in client.run(cq.GCP_BUCKETS, project_id=project_id):
+        name = row.get("name")
+        if not name:
+            continue
+        pid = str(row.get("project_id") or "unknown")
+        scope_id = make_scope_id(CloudProvider.GCP, "project", pid)
+        yield ConceptArtifact(
+            concept_type=ConceptType.DATA_STORE,
+            provider=CloudProvider.GCP,
+            native_id=f"GCSBucket:{name}",
+            scope_id=scope_id,
+            properties={
+                "resource_type": "GCSBucket",
+                "bucket_name": name,
+                "project_id": pid,
+                "display_name": name,
+                "source": "cartography",
+            },
+            evidence=Evidence("cartography:GCSBucket", {"name": name}),
+        )
+
+    for row in client.run(cq.GCP_SECRETS, project_id=project_id):
+        name = row.get("name")
+        if not name:
+            continue
+        pid = str(row.get("project_id") or "unknown")
+        scope_id = make_scope_id(CloudProvider.GCP, "project", pid)
+        yield ConceptArtifact(
+            concept_type=ConceptType.SECRET_STORE,
+            provider=CloudProvider.GCP,
+            native_id=f"GCPSecret:{name}",
+            scope_id=scope_id,
+            properties={
+                "resource_type": "GCPSecret",
+                "name": str(name).split("/")[-1],
+                "project_id": pid,
+                "display_name": str(name).split("/")[-1],
+                "source": "cartography",
+            },
+            evidence=Evidence("cartography:GCPSecret", {"name": name}),
+        )
+
+    for row in client.run(cq.GCP_INSTANCES, project_id=project_id):
+        instance_id = row.get("instance_id")
+        if not instance_id:
+            continue
+        pid = str(row.get("project_id") or "unknown")
+        scope_id = make_scope_id(CloudProvider.GCP, "project", pid)
+        edges = []
+        sa_email = row.get("sa_email")
+        if sa_email:
+            edges.append(
+                ConceptEdge(
+                    rel_type="EXECUTES_AS",
+                    target_native_id=sa_native_id(str(sa_email)),
+                    target_concept_type=ConceptType.IDENTITY,
+                    props={"service_account": sa_email, "source": "cartography"},
+                )
+            )
+        yield ConceptArtifact(
+            concept_type=ConceptType.RUNTIME_BINDING,
+            provider=CloudProvider.GCP,
+            native_id=f"GCEInstance:{instance_id}",
+            scope_id=scope_id,
+            properties={
+                "resource_type": "GCEInstance",
+                "instance_id": instance_id,
+                "project_id": pid,
+                "display_name": str(instance_id),
+                "source": "cartography",
+            },
+            evidence=Evidence("cartography:GCPInstance", {"id": instance_id}),
+            edges=edges,
         )
 
 

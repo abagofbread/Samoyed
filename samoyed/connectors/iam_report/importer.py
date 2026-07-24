@@ -95,12 +95,27 @@ def _artifacts_from_report(
             props["is_caller"] = True
         if identity.get("is_scenario_start"):
             props["is_scenario_start"] = True
-        for key in ("ou", "namespace", "provider", "notes", "assume_role_policy"):
+        for key in (
+            "ou",
+            "namespace",
+            "provider",
+            "notes",
+            "assume_role_policy",
+            "email",
+            "project_id",
+            "account_id",
+        ):
             if identity.get(key) is not None:
                 props[key] = identity[key]
+        node_provider = provider
+        if identity.get("provider"):
+            try:
+                node_provider = CloudProvider(str(identity["provider"]).lower())
+            except ValueError:
+                node_provider = provider
         yield ConceptArtifact(
             concept_type=ConceptType.IDENTITY,
-            provider=provider,
+            provider=node_provider,
             native_id=arn,
             scope_id=scope_id,
             properties=props,
@@ -159,13 +174,36 @@ def _artifacts_from_report(
             "private_ip",
             "public_ip",
             "account_id",
+            "project_id",
             "exposed_internet",
+            "high_value",
+            "provider",
         ):
             if resource.get(key) is not None:
                 props[key] = resource[key]
+        node_provider = provider
+        if resource.get("provider"):
+            try:
+                node_provider = CloudProvider(str(resource["provider"]).lower())
+            except ValueError:
+                node_provider = provider
+        elif str(native_id).startswith("arn:aws:") or str(native_id).startswith("S3Bucket:") or str(
+            native_id
+        ).startswith("Secret:arn:aws:") or str(native_id).startswith("LambdaFunction:arn:aws:") or str(
+            native_id
+        ).startswith("ECRRepository:"):
+            node_provider = CloudProvider.AWS
+        elif str(native_id).startswith("gcp:") or str(native_id).startswith("GCSBucket:") or str(
+            native_id
+        ).startswith("GCPSecret:") or str(native_id).startswith("CloudRun") or str(native_id).startswith(
+            "CloudFunction"
+        ) or str(native_id).startswith("GCEInstance:") or str(native_id).startswith("CloudBuild:"):
+            node_provider = CloudProvider.GCP
+        elif str(native_id).startswith("kubernetes:"):
+            node_provider = CloudProvider.KUBERNETES
         yield ConceptArtifact(
             concept_type=concept,
-            provider=provider,
+            provider=node_provider,
             native_id=native_id,
             scope_id=scope_id,
             properties=props,

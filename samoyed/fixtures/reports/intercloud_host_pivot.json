@@ -1,0 +1,330 @@
+{
+  "provider": "aws",
+  "account_id": "111111111111",
+  "source": "samoyed-fixture",
+  "description": "Compromised laptop → AWS + GCP creds → dual-cloud blast with WIF bridge and crown jewels on both sides",
+  "identities": [
+    {
+      "id": "arn:aws:iam::111111111111:user/dev-alex",
+      "kind": "User",
+      "provider": "aws",
+      "display_name": "dev-alex"
+    },
+    {
+      "id": "arn:aws:iam::111111111111:role/DevPowerUser",
+      "kind": "Role",
+      "provider": "aws",
+      "display_name": "DevPowerUser"
+    },
+    {
+      "id": "arn:aws:iam::111111111111:role/CICDDeploy",
+      "kind": "Role",
+      "provider": "aws",
+      "display_name": "CICDDeploy"
+    },
+    {
+      "id": "arn:aws:iam::444444444444:role/SharedServicesAdmin",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "444444444444",
+      "display_name": "SharedServicesAdmin"
+    },
+    {
+      "id": "gcp:user:alex@corp.com",
+      "kind": "User",
+      "provider": "gcp",
+      "display_name": "alex@corp.com",
+      "email": "alex@corp.com"
+    },
+    {
+      "id": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "alex-dev@proj-app.iam.gserviceaccount.com",
+      "project_id": "proj-app",
+      "display_name": "alex-dev SA"
+    },
+    {
+      "id": "gcp:serviceaccount:fn-runtime@proj-app.iam.gserviceaccount.com",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "fn-runtime@proj-app.iam.gserviceaccount.com",
+      "project_id": "proj-app",
+      "display_name": "Cloud Function runtime"
+    },
+    {
+      "id": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "data-etl@proj-pci.iam.gserviceaccount.com",
+      "project_id": "proj-pci",
+      "display_name": "PCI ETL SA"
+    },
+    {
+      "id": "arn:aws:iam::444444444444:role/FromGcpWif",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "444444444444",
+      "display_name": "FromGcpWif"
+    }
+  ],
+  "resources": [
+    {
+      "id": "host:workstation:alex-laptop",
+      "concept": "Workload",
+      "type": "CompromisedHost",
+      "name": "Alex's developer laptop",
+      "display_name": "Alex's developer laptop",
+      "is_scenario_start": true
+    },
+    {
+      "id": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:dev-tooling",
+      "concept": "RuntimeBinding",
+      "type": "LambdaFunction",
+      "name": "dev-tooling"
+    },
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:dev/slack-bot",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "dev/slack-bot"
+    },
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:444444444444:secret:shared/pagerduty",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "shared/pagerduty",
+      "account_id": "444444444444",
+      "high_value": true
+    },
+    {
+      "id": "S3Bucket:corp-shared-tfstate",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "corp-shared-tfstate",
+      "account_id": "444444444444",
+      "high_value": true
+    },
+    {
+      "id": "CloudFunction:projects/proj-app/locations/us-east1/functions/webhook-relay",
+      "concept": "RuntimeBinding",
+      "type": "CloudFunction",
+      "name": "webhook-relay",
+      "project_id": "proj-app"
+    },
+    {
+      "id": "GCEInstance:bastion-dmz",
+      "concept": "RuntimeBinding",
+      "type": "GCEInstance",
+      "name": "bastion-dmz",
+      "project_id": "proj-dmz",
+      "exposed_internet": true
+    },
+    {
+      "id": "GCPSecret:projects/proj-app/secrets/github-pat",
+      "concept": "SecretStore",
+      "type": "GCPSecret",
+      "name": "github-pat",
+      "project_id": "proj-app"
+    },
+    {
+      "id": "GCPSecret:projects/proj-pci/secrets/cardholder-db",
+      "concept": "SecretStore",
+      "type": "GCPSecret",
+      "name": "cardholder-db",
+      "project_id": "proj-pci",
+      "high_value": true
+    },
+    {
+      "id": "GCSBucket:corp-pci-backups",
+      "concept": "DataStore",
+      "type": "GCSBucket",
+      "name": "corp-pci-backups",
+      "project_id": "proj-pci",
+      "high_value": true
+    },
+    {
+      "id": "GCSBucket:corp-app-uploads",
+      "concept": "DataStore",
+      "type": "GCSBucket",
+      "name": "corp-app-uploads",
+      "project_id": "proj-app"
+    }
+  ],
+  "grants": [
+    {
+      "from": "host:workstation:alex-laptop",
+      "to": "arn:aws:iam::111111111111:user/dev-alex",
+      "rel": "STORES_CREDS_FOR",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:alex-laptop",
+      "to": "arn:aws:iam::111111111111:user/dev-alex",
+      "rel": "CAN_STEAL_CREDS_FROM",
+      "action": "host:credential-store",
+      "mechanism": "aws-cli-cache",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:alex-laptop",
+      "to": "gcp:user:alex@corp.com",
+      "rel": "LOGGED_IN_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:alex-laptop",
+      "to": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
+      "rel": "CAN_STEAL_CREDS_FROM",
+      "action": "host:credential-store",
+      "mechanism": "gcloud-application-default-credentials",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:alex-laptop",
+      "to": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
+      "rel": "STORES_CREDS_FOR",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/dev-alex",
+      "to": "arn:aws:iam::111111111111:role/DevPowerUser",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/DevPowerUser",
+      "to": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:dev-tooling",
+      "rel": "CONTROLS",
+      "action": "lambda:UpdateFunctionCode",
+      "confidence": "explicit"
+    },
+    {
+      "from": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:dev-tooling",
+      "to": "arn:aws:iam::111111111111:role/CICDDeploy",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CICDDeploy",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:111111111111:secret:dev/slack-bot",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CICDDeploy",
+      "to": "arn:aws:iam::444444444444:role/SharedServicesAdmin",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::444444444444:role/SharedServicesAdmin",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:444444444444:secret:shared/pagerduty",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::444444444444:role/SharedServicesAdmin",
+      "to": "S3Bucket:corp-shared-tfstate",
+      "rel": "WRITES",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:user:alex@corp.com",
+      "to": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "getAccessToken",
+      "role": "roles/iam.serviceAccountTokenCreator",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
+      "to": "CloudFunction:projects/proj-app/locations/us-east1/functions/webhook-relay",
+      "rel": "CONTROLS",
+      "action": "cloudfunctions.functions.update",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
+      "to": "gcp:serviceaccount:fn-runtime@proj-app.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "actAs",
+      "role": "roles/iam.serviceAccountUser",
+      "confidence": "explicit"
+    },
+    {
+      "from": "CloudFunction:projects/proj-app/locations/us-east1/functions/webhook-relay",
+      "to": "gcp:serviceaccount:fn-runtime@proj-app.iam.gserviceaccount.com",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "CloudFunction:projects/proj-app/locations/us-east1/functions/webhook-relay",
+      "to": "gcp:serviceaccount:fn-runtime@proj-app.iam.gserviceaccount.com",
+      "rel": "CAN_ESCAPE_TO",
+      "mechanism": "imds",
+      "confidence": "inferred"
+    },
+    {
+      "from": "gcp:serviceaccount:fn-runtime@proj-app.iam.gserviceaccount.com",
+      "to": "GCPSecret:projects/proj-app/secrets/github-pat",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:fn-runtime@proj-app.iam.gserviceaccount.com",
+      "to": "GCSBucket:corp-app-uploads",
+      "rel": "WRITES",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:fn-runtime@proj-app.iam.gserviceaccount.com",
+      "to": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "getAccessToken",
+      "role": "roles/iam.serviceAccountTokenCreator",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "to": "GCPSecret:projects/proj-pci/secrets/cardholder-db",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "to": "GCSBucket:corp-pci-backups",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "to": "arn:aws:iam::444444444444:role/FromGcpWif",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "wif",
+      "issuer": "accounts.google.com",
+      "confidence": "explicit",
+      "provider_hint": "aws"
+    },
+    {
+      "from": "arn:aws:iam::444444444444:role/FromGcpWif",
+      "to": "S3Bucket:corp-shared-tfstate",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
+      "to": "GCEInstance:bastion-dmz",
+      "rel": "CONTROLS",
+      "action": "compute.instances.setMetadata",
+      "confidence": "explicit"
+    },
+    {
+      "from": "GCEInstance:bastion-dmz",
+      "to": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    }
+  ],
+  "caller_arn": "host:workstation:alex-laptop"
+}

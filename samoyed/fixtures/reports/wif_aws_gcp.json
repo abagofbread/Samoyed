@@ -1,0 +1,346 @@
+{
+  "provider": "gcp",
+  "account_id": "proj-shared",
+  "scope_id": "gcp:project:proj-shared",
+  "source": "samoyed-fixture",
+  "description": "Multi-hop AWS↔GCP federation: leaked CI SA → impersonation → Cloud Build/Run → WIF into AWS → cross-account secrets",
+  "identities": [
+    {
+      "id": "gcp:serviceaccount:ci-bot@proj-shared.iam.gserviceaccount.com",
+      "name": "ci-bot",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "ci-bot@proj-shared.iam.gserviceaccount.com",
+      "is_caller": true,
+      "display_name": "ci-bot (leaked CI SA)"
+    },
+    {
+      "id": "gcp:serviceaccount:deployer@proj-shared.iam.gserviceaccount.com",
+      "name": "deployer",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "deployer@proj-shared.iam.gserviceaccount.com",
+      "display_name": "deployer"
+    },
+    {
+      "id": "gcp:serviceaccount:cloudbuild@proj-shared.iam.gserviceaccount.com",
+      "name": "cloudbuild",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "cloudbuild@proj-shared.iam.gserviceaccount.com",
+      "display_name": "Cloud Build SA",
+      "notes": "default Editor-class build identity"
+    },
+    {
+      "id": "gcp:serviceaccount:run-runtime@proj-shared.iam.gserviceaccount.com",
+      "name": "run-runtime",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "run-runtime@proj-shared.iam.gserviceaccount.com",
+      "display_name": "Cloud Run runtime"
+    },
+    {
+      "id": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "name": "wif-bridge",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "display_name": "WIF bridge SA"
+    },
+    {
+      "id": "gcp:serviceaccount:gke-payments@proj-app.iam.gserviceaccount.com",
+      "name": "gke-payments",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "gke-payments@proj-app.iam.gserviceaccount.com",
+      "project_id": "proj-app",
+      "display_name": "GKE payments WI SA"
+    },
+    {
+      "id": "kubernetes:serviceaccount:payments:api",
+      "name": "payments:api",
+      "kind": "ServiceAccount",
+      "provider": "kubernetes",
+      "display_name": "K8s SA payments/api"
+    },
+    {
+      "id": "arn:aws:iam::222222222222:role/GcpFederatedDeploy",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "222222222222",
+      "display_name": "GcpFederatedDeploy"
+    },
+    {
+      "id": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "222222222222",
+      "display_name": "ReleasePublisher"
+    },
+    {
+      "id": "arn:aws:iam::333333333333:role/ProdSecretsReader",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "333333333333",
+      "display_name": "ProdSecretsReader (cross-account)"
+    },
+    {
+      "id": "arn:aws:iam::333333333333:role/ProdDataAdmin",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "333333333333",
+      "display_name": "ProdDataAdmin"
+    }
+  ],
+  "resources": [
+    {
+      "id": "CloudBuild:projects/proj-shared/builds/release-pipeline",
+      "concept": "RuntimeBinding",
+      "type": "CloudBuild",
+      "name": "release-pipeline",
+      "project_id": "proj-shared"
+    },
+    {
+      "id": "CloudRunService:projects/proj-shared/locations/us-east1/services/artifact-sync",
+      "concept": "RuntimeBinding",
+      "type": "CloudRunService",
+      "name": "artifact-sync",
+      "project_id": "proj-shared"
+    },
+    {
+      "id": "GCSBucket:corp-shared-cicd-artifacts",
+      "concept": "DataStore",
+      "type": "GCSBucket",
+      "name": "corp-shared-cicd-artifacts",
+      "project_id": "proj-shared"
+    },
+    {
+      "id": "GCPSecret:projects/proj-shared/secrets/aws-oidc-client",
+      "concept": "SecretStore",
+      "type": "GCPSecret",
+      "name": "aws-oidc-client",
+      "project_id": "proj-shared"
+    },
+    {
+      "id": "GCPSecret:projects/proj-app/secrets/stripe-live",
+      "concept": "SecretStore",
+      "type": "GCPSecret",
+      "name": "stripe-live",
+      "project_id": "proj-app",
+      "high_value": true
+    },
+    {
+      "id": "GCSBucket:corp-pci-crown-jewel",
+      "concept": "DataStore",
+      "type": "GCSBucket",
+      "name": "corp-pci-crown-jewel",
+      "project_id": "proj-pci",
+      "sensitivity": "pci",
+      "high_value": true
+    },
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:333333333333:secret:prod/db/master",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "prod/db/master",
+      "account_id": "333333333333",
+      "high_value": true
+    },
+    {
+      "id": "S3Bucket:corp-prod-customer-exports",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "corp-prod-customer-exports",
+      "account_id": "333333333333",
+      "high_value": true
+    },
+    {
+      "id": "S3Bucket:corp-release-artifacts",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "corp-release-artifacts",
+      "account_id": "222222222222"
+    },
+    {
+      "id": "LambdaFunction:arn:aws:lambda:us-east-1:222222222222:function:promote-release",
+      "concept": "RuntimeBinding",
+      "type": "LambdaFunction",
+      "name": "promote-release",
+      "account_id": "222222222222"
+    },
+    {
+      "id": "ECRRepository:222222222222.dkr.ecr.us-east-1.amazonaws.com/payments-api",
+      "concept": "RegistryStore",
+      "type": "ECRRepository",
+      "name": "payments-api",
+      "account_id": "222222222222"
+    }
+  ],
+  "grants": [
+    {
+      "from": "gcp:serviceaccount:ci-bot@proj-shared.iam.gserviceaccount.com",
+      "to": "gcp:serviceaccount:deployer@proj-shared.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "getAccessToken",
+      "role": "roles/iam.serviceAccountTokenCreator",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:deployer@proj-shared.iam.gserviceaccount.com",
+      "to": "gcp:serviceaccount:cloudbuild@proj-shared.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "actAs",
+      "role": "roles/iam.serviceAccountUser",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:deployer@proj-shared.iam.gserviceaccount.com",
+      "to": "CloudBuild:projects/proj-shared/builds/release-pipeline",
+      "rel": "CONTROLS",
+      "action": "cloudbuild.builds.create",
+      "confidence": "explicit"
+    },
+    {
+      "from": "CloudBuild:projects/proj-shared/builds/release-pipeline",
+      "to": "gcp:serviceaccount:cloudbuild@proj-shared.iam.gserviceaccount.com",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:cloudbuild@proj-shared.iam.gserviceaccount.com",
+      "to": "GCSBucket:corp-shared-cicd-artifacts",
+      "rel": "WRITES",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:cloudbuild@proj-shared.iam.gserviceaccount.com",
+      "to": "CloudRunService:projects/proj-shared/locations/us-east1/services/artifact-sync",
+      "rel": "CONTROLS",
+      "action": "run.services.update",
+      "confidence": "explicit"
+    },
+    {
+      "from": "CloudRunService:projects/proj-shared/locations/us-east1/services/artifact-sync",
+      "to": "gcp:serviceaccount:run-runtime@proj-shared.iam.gserviceaccount.com",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:run-runtime@proj-shared.iam.gserviceaccount.com",
+      "to": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "getAccessToken",
+      "role": "roles/iam.serviceAccountTokenCreator",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "to": "GCPSecret:projects/proj-shared/secrets/aws-oidc-client",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "to": "arn:aws:iam::222222222222:role/GcpFederatedDeploy",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "wif",
+      "issuer": "accounts.google.com",
+      "confidence": "explicit",
+      "provider_hint": "aws"
+    },
+    {
+      "from": "arn:aws:iam::222222222222:role/GcpFederatedDeploy",
+      "to": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "to": "S3Bucket:corp-release-artifacts",
+      "rel": "WRITES",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "to": "ECRRepository:222222222222.dkr.ecr.us-east-1.amazonaws.com/payments-api",
+      "rel": "WRITES",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "to": "LambdaFunction:arn:aws:lambda:us-east-1:222222222222:function:promote-release",
+      "rel": "CONTROLS",
+      "action": "lambda:UpdateFunctionCode",
+      "confidence": "explicit"
+    },
+    {
+      "from": "LambdaFunction:arn:aws:lambda:us-east-1:222222222222:function:promote-release",
+      "to": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "to": "arn:aws:iam::333333333333:role/ProdSecretsReader",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit",
+      "notes": "cross-account STS"
+    },
+    {
+      "from": "arn:aws:iam::333333333333:role/ProdSecretsReader",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:333333333333:secret:prod/db/master",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::333333333333:role/ProdSecretsReader",
+      "to": "arn:aws:iam::333333333333:role/ProdDataAdmin",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::333333333333:role/ProdDataAdmin",
+      "to": "S3Bucket:corp-prod-customer-exports",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "kubernetes:serviceaccount:payments:api",
+      "to": "gcp:serviceaccount:gke-payments@proj-app.iam.gserviceaccount.com",
+      "rel": "PROJECTS_TO",
+      "mechanism": "wif",
+      "binding_type": "GKE_WI",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:gke-payments@proj-app.iam.gserviceaccount.com",
+      "to": "GCPSecret:projects/proj-app/secrets/stripe-live",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:cloudbuild@proj-shared.iam.gserviceaccount.com",
+      "to": "GCSBucket:corp-pci-crown-jewel",
+      "rel": "READS",
+      "confidence": "wildcard",
+      "notes": "over-broad storage.objectViewer on org"
+    },
+    {
+      "from": "gcp:serviceaccount:ci-bot@proj-shared.iam.gserviceaccount.com",
+      "to": "gcp:serviceaccount:ci-bot@proj-shared.iam.gserviceaccount.com",
+      "rel": "CONTROLS",
+      "action": "iam.serviceAccountKeys.create",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:ci-bot@proj-shared.iam.gserviceaccount.com",
+      "to": "aws:attack-outcome:administrator-access",
+      "rel": "CAN_PRIVESC_TO",
+      "confidence": "inferred",
+      "severity": "critical",
+      "source": "fixture",
+      "notes": "key create + WIF ladder reaches prod data admin"
+    }
+  ],
+  "caller_arn": "gcp:serviceaccount:ci-bot@proj-shared.iam.gserviceaccount.com"
+}

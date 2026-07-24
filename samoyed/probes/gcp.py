@@ -15,6 +15,7 @@ GCP_PROBE_CATALOG: list[ApiProbe] = [
     ApiProbe("cloudfunctions.functions.list", "List Cloud Functions", CapabilityType.READS, "CloudFunction", concept_type="RuntimeBinding"),
     ApiProbe("container.clusters.list", "List GKE clusters", CapabilityType.READS, "GKECluster", concept_type="OrchestrationScope", high_value=True),
     ApiProbe("artifactregistry.repositories.list", "List Artifact Registry repos", CapabilityType.READS, "ArtifactRegistry", concept_type="RegistryStore"),
+    ApiProbe("resourcemanager.projects.getIamPolicy", "Read project IAM policy", CapabilityType.READS, "IAMPolicy", concept_type="Entitlement", high_value=True),
 ]
 
 
@@ -47,11 +48,55 @@ def run_gcp_probe(cred: Any, probe: ApiProbe) -> ProbeResult:
                 "allowed",
                 resources=[{"email": sa.email, "name": sa.name} for sa in sas],
             )
+        if probe.operation == "resourcemanager.projects.getIamPolicy":
+            rm = cred.client("resourcemanager")
+            policy = rm.get_iam_policy(request={"resource": f"projects/{project}"})
+            return ProbeResult(
+                probe.operation, "allowed",
+                resources=[{"project_id": project, "binding_count": len(policy.bindings)}],
+            )
+        rest_endpoints = {
+            "compute.instances.list": (
+                f"https://compute.googleapis.com/compute/v1/projects/{project}/aggregated/instances",
+                "items",
+            ),
+            "cloudfunctions.functions.list": (
+                f"https://cloudfunctions.googleapis.com/v2/projects/{project}/locations/-/functions",
+                "functions",
+            ),
+            "container.clusters.list": (
+                f"https://container.googleapis.com/v1/projects/{project}/locations/-/clusters",
+                "clusters",
+            ),
+            "artifactregistry.repositories.list": (
+                f"https://artifactregistry.googleapis.com/v1/projects/{project}/locations/-/repositories",
+                "repositories",
+            ),
+        }
+        if probe.operation in rest_endpoints:
+            url, key = rest_endpoints[probe.operation]
+            resources = _rest_list(cred, url, key)
+            return ProbeResult(probe.operation, "allowed", resources=resources)
         return ProbeResult(probe.operation, "error", message="Unhandled GCP probe")
     except Exception as exc:
         if is_gcp_denied(exc):
             return ProbeResult(probe.operation, "denied", error_code="PermissionDenied", message=str(exc))
         return ProbeResult(probe.operation, "error", message=str(exc))
+
+
+def _rest_list(cred: Any, url: str, key: str) -> list[dict[str, Any]]:
+    from google.auth.transport.requests import AuthorizedSession
+
+    response = AuthorizedSession(cred.credentials()).get(url, timeout=30)
+    response.raise_for_status()
+    result = response.json().get(key, [])
+    if key == "items":
+        return [
+            {"name": instance.get("name"), "zone": zone}
+            for zone, payload in result.items()
+            for instance in payload.get("instances", [])
+        ]
+    return [{"name": value.get("name"), **({"id": value.get("id")} if value.get("id") else {})} for value in result]
 
 
 def gcp_probe_catalog(*, high_value_only: bool = False) -> list[ApiProbe]:
@@ -93,6 +138,18 @@ def artifacts_from_gcp_probes(
                 email = resource.get("email", "")
                 native_id = f"gcp:serviceaccount:{email}"
                 concept = ConceptType.IDENTITY
+            elif probe.resource_type in {"GCEInstance", "CloudFunction"}:
+                name = resource.get("name", "")
+                native_id = f"{probe.resource_type}:{name}"
+                concept = ConceptType.RUNTIME_BINDING
+            elif probe.resource_type == "GKECluster":
+                name = resource.get("name", "")
+                native_id = f"GKECluster:{name}"
+                concept = ConceptType.ORCHESTRATION_SCOPE
+            elif probe.resource_type == "ArtifactRegistry":
+                name = resource.get("name", "")
+                native_id = f"ArtifactRegistry:{name}"
+                concept = ConceptType.REGISTRY_STORE
             else:
                 continue
             yield ConceptArtifact(

@@ -62,7 +62,7 @@ def build_session_from_artifacts(
                 node.props["is_caller"] = True
 
     attack_edges = apply_attack_analysis(builder, provider=provider)
-    enrich_attack_surface(builder)
+    enrich_attack_surface(builder, provider=provider, session_store=session_store)
     inventory = (
         network
         if isinstance(network, NetworkInventory)

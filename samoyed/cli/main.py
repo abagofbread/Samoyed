@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -628,7 +629,7 @@ def cartography_status_cmd(
 
 @app.command("whoami")
 def whoami_cmd(
-    provider: str = typer.Option("aws", help="Cloud provider (aws | kubernetes | gcp | azure)"),
+    provider: Optional[str] = typer.Option(None, help="Cloud provider override (aws | kubernetes | gcp | azure)"),
     profile: Optional[str] = typer.Option(None, help="AWS profile name"),
     key_file: Optional[Path] = typer.Option(None, help="JSON key file"),
     region: Optional[str] = typer.Option(None, help="AWS region"),
@@ -640,7 +641,7 @@ def whoami_cmd(
 ) -> None:
     """Print caller identity for configured credentials."""
     cred = _load_provider_credential(
-        provider,
+        _resolve_provider(provider, profile=profile, key_file=key_file),
         profile=profile,
         key_file=key_file,
         region=region,
@@ -657,7 +658,7 @@ def whoami_cmd(
 
 @app.command("enum")
 def enum_cmd(
-    provider: str = typer.Option("aws", help="Cloud provider (aws | kubernetes | gcp | azure)"),
+    provider: Optional[str] = typer.Option(None, help="Cloud provider override (aws | kubernetes | gcp | azure)"),
     profile: Optional[str] = typer.Option(None, help="AWS profile name"),
     key_file: Optional[Path] = typer.Option(None, help="JSON key file"),
     region: Optional[str] = typer.Option(None, help="AWS region"),
@@ -679,7 +680,7 @@ def enum_cmd(
 ) -> None:
     """Run live enumeration and build attack-path graph."""
     cred = _load_provider_credential(
-        provider,
+        _resolve_provider(provider, profile=profile, key_file=key_file),
         profile=profile,
         key_file=key_file,
         region=region,
@@ -703,7 +704,7 @@ def enum_cmd(
 
 @app.command("probe")
 def probe_cmd(
-    provider: str = typer.Option("aws", help="Cloud provider (aws | gcp | azure)"),
+    provider: Optional[str] = typer.Option(None, help="Cloud provider override (aws | gcp | azure)"),
     profile: Optional[str] = typer.Option(None, help="AWS profile name"),
     key_file: Optional[Path] = typer.Option(None, help="JSON key file"),
     region: Optional[str] = typer.Option(None, help="AWS region"),
@@ -721,14 +722,14 @@ def probe_cmd(
     Use when keys cannot call IAM list/get APIs. Successful probes become graph edges.
     """
     if list_catalog:
-        prov = CloudProvider(provider)
+        prov = CloudProvider(_resolve_provider(provider, profile=profile, key_file=key_file))
         for probe in get_probe_catalog(prov, high_value_only=high_value_only):
             flag = " *" if probe.high_value else ""
             typer.echo(f"{probe.operation}{flag} — {probe.description}")
         return
 
     cred = _load_provider_credential(
-        provider,
+        _resolve_provider(provider, profile=profile, key_file=key_file),
         profile=profile,
         key_file=key_file,
         region=region,
@@ -890,6 +891,29 @@ def init_extension_cmd(
     """Scaffold a custom extension in .samoyed/."""
     path = init_extension(kind, name)
     typer.echo(f"Created {path}")
+
+
+def _resolve_provider(
+    provider: str | None, *, profile: str | None = None, key_file: Path | None = None
+) -> str:
+    """Prefer explicitly requested providers; otherwise detect GCP credentials safely."""
+    if provider and provider != "auto":
+        return provider
+    if profile:
+        return "aws"
+    if key_file and key_file.is_file():
+        try:
+            key_data = json.loads(key_file.read_text(encoding="utf-8"))
+            if key_data.get("type") == "service_account" and key_data.get("project_id"):
+                return "gcp"
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return "gcp"
+    adc_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    if adc_path.is_file():
+        return "gcp"
+    return "aws"
 
 
 def _load_provider_credential(provider: str, **kwargs):

@@ -113,6 +113,43 @@ FIXTURES: tuple[FixtureSpec, ...] = (
         ),
         tags=("aws", "terraform", "vpc-peering", "network", "cross-account", "alb", "s3"),
     ),
+    FixtureSpec(
+        id="corp-mesh-gcp",
+        connector="terraform",
+        filename="corp_mesh_gcp.tfstate",
+        description="Five-project GCP mesh: GCE bastion, Cloud Run, GCS crown jewel, SA impersonation, and WIF",
+        tags=("gcp", "terraform", "vpc-peering", "network", "cross-project", "cloud-run", "gcs", "wif"),
+    ),
+    FixtureSpec(
+        id="lab-gcp",
+        connector="iam-report",
+        filename="lab_gcp_leaked_credential.json",
+        description=(
+            "Leaked CI SA → TokenCreator/actAs → Cloud Run/Function/GCE → "
+            "cross-project PCI secrets and crown-jewel GCS"
+        ),
+        tags=("gcp", "leaked-credential", "iam", "paths", "cloud-run"),
+    ),
+    FixtureSpec(
+        id="intercloud-host-pivot",
+        connector="iam-report",
+        filename="intercloud_host_pivot.json",
+        description=(
+            "Compromised laptop → AWS + GCP creds → Lambda/CI and Cloud Function "
+            "IMDS chains → PCI secrets + WIF back into AWS shared services"
+        ),
+        tags=("aws", "gcp", "host", "intercloud", "wif"),
+    ),
+    FixtureSpec(
+        id="wif-aws-gcp",
+        connector="iam-report",
+        filename="wif_aws_gcp.json",
+        description=(
+            "Multi-hop federation: leaked CI → impersonation → Cloud Build/Run → "
+            "WIF into AWS → cross-account Secrets Manager/S3 (+ GKE WI side path)"
+        ),
+        tags=("aws", "gcp", "wif", "intercloud", "cloudbuild", "cross-account"),
+    ),
 )
 
 

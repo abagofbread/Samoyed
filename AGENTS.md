@@ -20,19 +20,38 @@ Samoyed models **network attack paths** without VPC/SG graph nodes. Collectors f
 
 - `The Internet -CAN_REACH->` internet-exposed compute
 - compute `-CAN_REACH->` compute (same VPC / peered, SG-lite)
-- compute `-VPC_PEERS-> Account:{id}` then unlabeled `BRIDGES_TO` into peer-account resources (best-effort graft from other sessions)
+- compute `-VPC_PEERS-> Account:{id}` / `Project:{id}` then unlabeled `BRIDGES_TO` into peer-scope resources (best-effort graft from other sessions)
 
-Sources: live AWS enum, Cartography, **Terraform tfstate** (primary offline path), `network-inventory` JSON, optional iam-report `"network"` block.
+Sources: live AWS/GCP enum, Cartography, **Terraform tfstate** (AWS `aws_*` and GCP `google_*`), `network-inventory` JSON, optional iam-report `"network"` block.
 
 ```bash
 samoyed import-fixture vpc-peering-aws   # small cross-account peer demo
 samoyed import-fixture corp-mesh-aws     # DMZ/App/PCI + shared/staging mesh (ALBs, buckets)
+samoyed import-fixture corp-mesh-gcp     # multi-project GCP mesh (tfstate)
 samoyed import-path ./infra/terraform.tfstate
 samoyed import-path ./network.json --attach-to <session>
 samoyed scenario can-reach-other-accounts
 ```
 
 UI: **Network Edges (All)** toolbar toggle (off by default; VPC_PEERS / BRIDGES_TO always shown).
+
+## GCP (live + Goat + inter-cloud)
+
+With ADC / `GOOGLE_APPLICATION_CREDENTIALS` / a SA JSON key, plain `samoyed enum` auto-selects GCP (no `--provider` required). Prefer sparse edges: concrete SA impersonation over `gcp:serviceaccount:*` wildcards.
+
+```bash
+# Starter lab (clone; .samoyed/ is gitignored — same pattern as AWSGoat)
+git clone https://github.com/ine-labs/GCPGoat.git .samoyed/GCPGoat
+samoyed import-path .samoyed/GCPGoat
+
+samoyed import-fixture lab-gcp
+samoyed import-fixture corp-mesh-gcp
+samoyed import-fixture intercloud-host-pivot
+samoyed import-fixture wif-aws-gcp
+samoyed scenario intercloud-federation --session-id <id>
+```
+
+Cross-cloud pivots (WIF / foreign `CAN_ASSUME_ROLE`) auto-search other sessions by `scope_id` and graft, or emit a stub ScopeBoundary when none match.
 
 ## Cartography connector
 

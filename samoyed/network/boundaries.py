@@ -44,37 +44,60 @@ def synthesize_network_boundaries(
             for subnet_id in placement.subnet_ids:
                 subnet_vpcs.setdefault(subnet_id, placement.vpc_id)
 
+    provider = (inventory.provider or "aws").lower()
+    provider_enum = CloudProvider.GCP if provider == "gcp" else CloudProvider.AWS
+    vpc_prefix = "gcp:vpc" if provider == "gcp" else "aws:vpc"
+    subnet_prefix = "gcp:subnet" if provider == "gcp" else "aws:subnet"
+
     vpc_node_ids: dict[str, str] = {}
     for vpc_id, account_id in sorted(vpc_accounts.items()):
-        native_id = f"aws:vpc:{vpc_id}"
+        native_id = f"{vpc_prefix}:{vpc_id}"
         existed = stable_id("NetworkBoundary", native_id) in builder.snapshot.nodes
         node_id = _ensure_vpc_boundary(
             builder,
             vpc_id=vpc_id,
             account_id=account_id,
             cidrs=list(inventory.vpc_cidrs.get(vpc_id) or []),
+            provider=provider_enum,
+            native_id=native_id,
         )
         vpc_node_ids[vpc_id] = node_id
         if not existed:
             stats["vpc_boundaries"] += 1
 
         if account_id:
-            account_node = ensure_account_boundary(builder, account_id)
-            if _tag_account_boundary(builder.snapshot, account_node, account_id):
-                stats["account_boundaries_tagged"] += 1
+            if provider == "gcp":
+                from samoyed.network.session_graft import ensure_scope_boundary
+
+                account_node = ensure_scope_boundary(
+                    builder, make_scope_id(CloudProvider.GCP, "project", account_id)
+                )
+                if _tag_scope_boundary(
+                    builder.snapshot, account_node, account_id, kind="project", provider=provider_enum
+                ):
+                    stats["account_boundaries_tagged"] += 1
+            else:
+                account_node = ensure_account_boundary(builder, account_id)
+                if _tag_account_boundary(builder.snapshot, account_node, account_id):
+                    stats["account_boundaries_tagged"] += 1
             if _add_hosted_in(builder, node_id, account_node):
                 stats["hosted_in_edges"] += 1
 
-    # Also tag any other account ScopeBoundary already present (session root).
+    # Also tag any other account/project ScopeBoundary already present (session root).
     for node_id, node in list(builder.snapshot.nodes.items()):
         if node.label != "ScopeBoundary":
             continue
         native = str(node.props.get("native_id") or "")
-        account_id = str(node.props.get("account_id") or "")
-        if native.startswith("aws:account:") or account_id:
-            if not account_id and native.startswith("aws:account:"):
+        account_id = str(node.props.get("account_id") or node.props.get("project_id") or "")
+        if native.startswith("aws:account:") or native.startswith("gcp:project:") or account_id:
+            if not account_id and ":" in native:
                 account_id = native.rsplit(":", 1)[-1]
-            if _tag_account_boundary(builder.snapshot, node_id, account_id):
+            if native.startswith("gcp:project:"):
+                if _tag_scope_boundary(
+                    builder.snapshot, node_id, account_id, kind="project", provider=CloudProvider.GCP
+                ):
+                    stats["account_boundaries_tagged"] += 1
+            elif _tag_account_boundary(builder.snapshot, node_id, account_id):
                 stats["account_boundaries_tagged"] += 1
 
     subnet_node_ids: dict[str, str] = {}
@@ -83,13 +106,15 @@ def synthesize_network_boundaries(
         if not vpc_node:
             continue
         account_id = vpc_accounts.get(vpc_id, "")
-        native_id = f"aws:subnet:{subnet_id}"
+        native_id = f"{subnet_prefix}:{subnet_id}"
         existed = stable_id("NetworkBoundary", native_id) in builder.snapshot.nodes
         node_id = _ensure_subnet_boundary(
             builder,
             subnet_id=subnet_id,
             vpc_id=vpc_id,
             account_id=account_id,
+            provider=provider_enum,
+            native_id=native_id,
         )
         subnet_node_ids[subnet_id] = node_id
         if not existed:
@@ -130,30 +155,37 @@ def _ensure_vpc_boundary(
     vpc_id: str,
     account_id: str,
     cidrs: list[str],
+    provider: CloudProvider = CloudProvider.AWS,
+    native_id: str | None = None,
 ) -> str:
-    native_id = f"aws:vpc:{vpc_id}"
+    native_id = native_id or f"aws:vpc:{vpc_id}"
     existing = stable_id("NetworkBoundary", native_id)
     if existing in builder.snapshot.nodes:
         node = builder.snapshot.nodes[existing]
         node.props.setdefault("boundary_kind", "vpc")
         if account_id:
+            key = "project_id" if provider == CloudProvider.GCP else "account_id"
+            node.props.setdefault(key, account_id)
             node.props.setdefault("account_id", account_id)
         if cidrs:
             node.props["cidrs"] = list(cidrs)
         node.props.setdefault("display_name", f"VPC {vpc_id}")
         return existing
+    props: dict[str, Any] = {
+        "display_name": f"VPC {vpc_id}",
+        "boundary_kind": "vpc",
+        "vpc_id": vpc_id,
+        "account_id": account_id,
+        "cidrs": list(cidrs),
+        "provider": provider.value,
+        "source": NETWORK_ENRICHMENT_SOURCE,
+    }
+    if provider == CloudProvider.GCP and account_id:
+        props["project_id"] = account_id
     return builder.add_concept_node(
         concept_type=ConceptType.NETWORK_BOUNDARY,
         native_id=native_id,
-        props={
-            "display_name": f"VPC {vpc_id}",
-            "boundary_kind": "vpc",
-            "vpc_id": vpc_id,
-            "account_id": account_id,
-            "cidrs": list(cidrs),
-            "provider": CloudProvider.AWS.value,
-            "source": NETWORK_ENRICHMENT_SOURCE,
-        },
+        props=props,
     )
 
 
@@ -163,8 +195,10 @@ def _ensure_subnet_boundary(
     subnet_id: str,
     vpc_id: str,
     account_id: str,
+    provider: CloudProvider = CloudProvider.AWS,
+    native_id: str | None = None,
 ) -> str:
-    native_id = f"aws:subnet:{subnet_id}"
+    native_id = native_id or f"aws:subnet:{subnet_id}"
     existing = stable_id("NetworkBoundary", native_id)
     if existing in builder.snapshot.nodes:
         node = builder.snapshot.nodes[existing]
@@ -172,37 +206,57 @@ def _ensure_subnet_boundary(
         node.props.setdefault("vpc_id", vpc_id)
         if account_id:
             node.props.setdefault("account_id", account_id)
+            if provider == CloudProvider.GCP:
+                node.props.setdefault("project_id", account_id)
         node.props.setdefault("display_name", f"Subnet {subnet_id}")
         return existing
+    props = {
+        "display_name": f"Subnet {subnet_id}",
+        "boundary_kind": "subnet",
+        "subnet_id": subnet_id,
+        "vpc_id": vpc_id,
+        "account_id": account_id,
+        "provider": provider.value,
+        "source": NETWORK_ENRICHMENT_SOURCE,
+    }
+    if provider == CloudProvider.GCP and account_id:
+        props["project_id"] = account_id
     return builder.add_concept_node(
         concept_type=ConceptType.NETWORK_BOUNDARY,
         native_id=native_id,
-        props={
-            "display_name": f"Subnet {subnet_id}",
-            "boundary_kind": "subnet",
-            "subnet_id": subnet_id,
-            "vpc_id": vpc_id,
-            "account_id": account_id,
-            "provider": CloudProvider.AWS.value,
-            "source": NETWORK_ENRICHMENT_SOURCE,
-        },
+        props=props,
     )
 
 
 def _tag_account_boundary(graph: GraphSnapshot, node_id: str, account_id: str) -> bool:
+    return _tag_scope_boundary(
+        graph, node_id, account_id, kind="account", provider=CloudProvider.AWS
+    )
+
+
+def _tag_scope_boundary(
+    graph: GraphSnapshot,
+    node_id: str,
+    identifier: str,
+    *,
+    kind: str,
+    provider: CloudProvider,
+) -> bool:
     node = graph.nodes.get(node_id)
     if node is None:
         return False
     changed = False
-    if node.props.get("boundary_kind") != "account":
-        node.props["boundary_kind"] = "account"
+    if node.props.get("boundary_kind") != kind:
+        node.props["boundary_kind"] = kind
         changed = True
-    if account_id and not node.props.get("account_id"):
-        node.props["account_id"] = account_id
+    id_key = "project_id" if kind == "project" else "account_id"
+    if identifier and not node.props.get(id_key):
+        node.props[id_key] = identifier
         changed = True
-    # Keep scope_id style native_ids consistent for UI gating.
-    if account_id and not node.props.get("native_id"):
-        node.props["native_id"] = make_scope_id(CloudProvider.AWS, "account", account_id)
+    if identifier and kind == "project":
+        node.props.setdefault("account_id", identifier)
+    if identifier and not node.props.get("native_id"):
+        node.props["native_id"] = make_scope_id(provider, kind, identifier)
         changed = True
     return changed
 

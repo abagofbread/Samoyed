@@ -76,6 +76,14 @@ class GcpCredential:
             from google.cloud import resourcemanager_v3
 
             return resourcemanager_v3.ProjectsClient(credentials=creds)
+        if service == "folders":
+            from google.cloud import resourcemanager_v3
+
+            return resourcemanager_v3.FoldersClient(credentials=creds)
+        if service == "organizations":
+            from google.cloud import resourcemanager_v3
+
+            return resourcemanager_v3.OrganizationsClient(credentials=creds)
         if service in {"storage", "gcs"}:
             from google.cloud import storage
 

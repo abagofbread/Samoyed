@@ -45,9 +45,13 @@ samoyed firing-range seed
 samoyed firing-range enum
 # See firing-range/README.md
 
-# Live GCP (service account JSON or ADC + pip install 'samoyed[gcp]')
-samoyed enum --provider gcp --key-file sa.json
-samoyed whoami --provider gcp
+# Live GCP (ADC / GOOGLE_APPLICATION_CREDENTIALS / SA JSON — auto-detected)
+# pip install 'samoyed[gcp]'
+samoyed enum
+samoyed whoami
+# Starter lab: git clone https://github.com/ine-labs/GCPGoat.git .samoyed/GCPGoat
+# samoyed import-path .samoyed/GCPGoat
+# samoyed import-fixture corp-mesh-gcp | lab-gcp | wif-aws-gcp | intercloud-host-pivot
 
 # Live Azure (az login or SP env vars + pip install 'samoyed[azure]')
 samoyed enum --provider azure

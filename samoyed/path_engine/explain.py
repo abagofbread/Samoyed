@@ -99,10 +99,19 @@ def _narrative(
     if step.rel_type == "PROJECTS_TO":
         binding = evidence.get("binding_type") or "cloud identity"
         if evidence.get("trust_validated"):
-            return f"{src_name} federates to {dst_name} via {binding} (OIDC trust validated)"
+            return f"{src_name} federates to {dst_name} via {binding} (trust validated)"
+        if evidence.get("mechanism") == "wif":
+            return f"{src_name} requests GCP Workload Identity federation to {dst_name} (IAM binding not validated)"
         return f"{src_name} projects to {dst_name} via {binding}"
     if step.rel_type == "CAN_ASSUME_ROLE":
+        mechanism = evidence.get("mechanism") or evidence.get("mechanisms")
+        if mechanism == "getAccessToken" or "gcp:iam.serviceAccounts.getAccessToken" in (mechanism or []):
+            return f"{src_name} can mint an access token as {dst_name}"
+        if mechanism == "sa-impersonation" or "gcp:iam.serviceAccounts.actAs" in (mechanism or []):
+            return f"{src_name} can impersonate or act as {dst_name}"
         return f"{src_name} can assume role {dst_name}"
+    if evidence.get("stub") or evidence.get("is_stub"):
+        return f"{src_name} can reach policy-boundary stub {dst_name} via {step.rel_type}; inventory resolution is pending"
     return f"{src_name} can reach {dst_name} via {step.rel_type}"
 
 

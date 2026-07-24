@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from samoyed.cloud.concepts import ConceptType
+from samoyed.cloud.concepts import CloudProvider, ConceptType
+from samoyed.cloud.providers import make_scope_id
 from samoyed.graph.builder import GraphBuilder, stable_id
 from samoyed.graph.enrichment import mark_enrichment_edges
 from samoyed.graph.model import GraphSnapshot
@@ -15,9 +16,9 @@ from samoyed.network.model import (
 )
 from samoyed.network.reachability import EdgeIntent, evaluate_reachability
 from samoyed.network.session_graft import (
-    ensure_account_boundary,
-    graft_account_session,
-    peer_account_ids,
+    ensure_scope_boundary,
+    graft_scope_session,
+    peer_scope_ids,
 )
 
 
@@ -57,13 +58,25 @@ def enrich_network_reachability(
     stats["hosted_in_edges"] = int(boundary_stats.get("hosted_in_edges") or 0)
     _ensure_internet_node(builder)
 
-    local_accounts = {p.account_id for p in merged.placements if p.account_id}
-    for account_id in peer_account_ids(merged, local_accounts):
-        ensure_account_boundary(builder, account_id)
+    provider = (merged.provider or "aws").lower()
+    if provider == "gcp":
+        local_scopes = {
+            make_scope_id(CloudProvider.GCP, "project", p.account_id)
+            for p in merged.placements
+            if p.account_id
+        }
+    else:
+        local_scopes = {
+            make_scope_id(CloudProvider.AWS, "account", p.account_id)
+            for p in merged.placements
+            if p.account_id
+        }
+    for scope_id in peer_scope_ids(merged, local_scopes):
+        ensure_scope_boundary(builder, scope_id)
         stats["account_boundaries"] += 1
-        graft = graft_account_session(
+        graft = graft_scope_session(
             builder,
-            account_id=account_id,
+            scope_id=scope_id,
             store=session_store,
             skip_session_id=builder.session_id,
         )
@@ -76,11 +89,12 @@ def enrich_network_reachability(
     intents = evaluate_reachability(merged)
     native_to_id = _native_id_index(builder.snapshot)
     for intent in intents:
-        if intent.rel_type == "VPC_PEERS" and intent.dst_native_id.startswith("aws:account:"):
-            account_id = intent.dst_native_id.split(":")[-1]
-            dst_id = ensure_account_boundary(builder, account_id)
+        if intent.rel_type == "VPC_PEERS" and (
+            intent.dst_native_id.startswith("aws:account:")
+            or intent.dst_native_id.startswith("gcp:project:")
+        ):
+            dst_id = ensure_scope_boundary(builder, intent.dst_native_id)
             native_to_id[intent.dst_native_id] = dst_id
-            native_to_id[f"aws:account:{account_id}"] = dst_id
         src_id = _resolve_native(builder, native_to_id, intent.src_native_id, intent)
         dst_id = _resolve_native(builder, native_to_id, intent.dst_native_id, intent)
         if not src_id or not dst_id:
@@ -181,9 +195,8 @@ def _resolve_native(
         return _ensure_internet_node(builder)
     if native_id in index:
         return index[native_id]
-    if native_id.startswith("aws:account:"):
-        account_id = native_id.split(":")[-1]
-        node_id = ensure_account_boundary(builder, account_id)
+    if native_id.startswith("aws:account:") or native_id.startswith("gcp:project:"):
+        node_id = ensure_scope_boundary(builder, native_id)
         index[native_id] = node_id
         return node_id
     # Create stub RuntimeBinding for inventory-only compute (e.g. remote account in same tfstate).
@@ -191,6 +204,9 @@ def _resolve_native(
         native_id.startswith("EC2Instance:")
         or native_id.startswith("LambdaFunction:")
         or native_id.startswith("ECSTask:")
+        or native_id.startswith("GCEInstance:")
+        or native_id.startswith("CloudRunService:")
+        or native_id.startswith("CloudFunction:")
     ):
         rtype = native_id.split(":", 1)[0]
         node_id = builder.add_concept_node(

@@ -6,7 +6,7 @@ from samoyed.path_engine.search import find_attack_paths
 
 
 class CanReachOtherAccountsScenario:
-    """Paths from a start that cross VPC peering into another account boundary."""
+    """Paths from a start that cross peering into another account or GCP project."""
 
     name = "can-reach-other-accounts"
 
@@ -35,7 +35,7 @@ def _path_crosses_account(graph: GraphSnapshot, path: PathResult) -> bool:
         if step.rel_type in {"VPC_PEERS", "BRIDGES_TO"}:
             return True
         evidence = step.evidence or {}
-        if evidence.get("remote_account_id") or evidence.get("boundary_crossing"):
+        if evidence.get("remote_account_id") or evidence.get("remote_project_id") or evidence.get("boundary_crossing"):
             return True
     end_id = path.node_ids[-1] if path.node_ids else None
     if not end_id:
@@ -47,4 +47,4 @@ def _path_crosses_account(graph: GraphSnapshot, path: PathResult) -> bool:
     if props.get("is_cross_account_boundary"):
         return True
     native = str(props.get("native_id") or "")
-    return native.startswith("aws:account:") and props.get("concept_type") == "ScopeBoundary"
+    return native.startswith(("aws:account:", "gcp:project:")) and props.get("concept_type") == "ScopeBoundary"

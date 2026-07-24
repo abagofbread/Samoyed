@@ -171,13 +171,23 @@ class AwsTrustEnumerator:
                     # OIDC provider ARNs are not STS principals — IRSA repair wires
                     # SA → PROJECTS_TO from trust Conditions instead.
                     if not is_oidc_provider_arn(p):
+                        edge_props: dict[str, Any] = {"role_arn": role_arn}
+                        src_id = p
+                        if _is_google_federated_principal(p):
+                            edge_props["mechanism"] = "wif"
+                            edge_props["issuer"] = "accounts.google.com"
+                            # Prefer a stable GCP SA id when the principal embeds an email.
+                            gcp_sa = _gcp_sa_from_federated(p, stmt)
+                            if gcp_sa:
+                                src_id = gcp_sa
+                                edge_props["provider_hint"] = "gcp"
                         edges.append(
                             ConceptEdge(
                                 rel_type="CAN_ASSUME_ROLE",
-                                src_native_id=p,
+                                src_native_id=src_id,
                                 target_native_id=role_arn,
                                 target_concept_type=ConceptType.IDENTITY,
-                                props={"role_arn": role_arn},
+                                props=edge_props,
                             )
                         )
                     yield ConceptArtifact(
@@ -219,6 +229,33 @@ def _extract_principals(principal: Any) -> list[str]:
                 out.append(str(val))
         return out
     return [str(principal)]
+
+
+def _is_google_federated_principal(principal: str) -> bool:
+    text = principal.lower()
+    return (
+        "accounts.google.com" in text
+        or "googleapis.com" in text
+        or text.startswith("gcp:serviceaccount:")
+    )
+
+
+def _gcp_sa_from_federated(principal: str, stmt: dict[str, Any]) -> str | None:
+    """Best-effort extract gcp:serviceaccount:email from WIF trust conditions."""
+    if principal.startswith("gcp:serviceaccount:"):
+        return principal
+    cond = stmt.get("Condition") or {}
+    values = cond.get("StringEquals") or cond.get("StringLike") or {}
+    if isinstance(values, dict):
+        for key, val in values.items():
+            key_l = str(key).lower()
+            if "attribute.email" in key_l or key_l.endswith(":sub") or "service_account" in key_l:
+                email = str(val)
+                if "@" in email and "gserviceaccount.com" in email:
+                    return f"gcp:serviceaccount:{email}"
+    if "@" in principal and "gserviceaccount.com" in principal:
+        return f"gcp:serviceaccount:{principal.split('/')[-1]}"
+    return None
 
 
 class AwsEntitlementEnumerator:

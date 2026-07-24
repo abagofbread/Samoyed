@@ -24,6 +24,9 @@ COMPUTE_RESOURCE_TYPES = frozenset(
         "ECSTask",
         "ECSService",
         "CloudFunction",
+        "CloudRunService",
+        "GCEInstance",
+        "CloudBuild",
         "CodeBuildProject",
         "CodePipeline",
     }
@@ -49,6 +52,7 @@ def enrich_attack_surface(
     builder: GraphBuilder,
     *,
     provider: CloudProvider | None = None,
+    session_store: Any | None = None,
 ) -> dict[str, int]:
     """Add compute escape surfaces and network exposure edges to the graph."""
     graph = builder.snapshot
@@ -61,8 +65,14 @@ def enrich_attack_surface(
     stats.update(enrich_k8s_deploy_pivot(builder))
     # OIDC trust Conditions → SA PROJECTS_TO (before token UNLOCKS / capability-glob).
     from samoyed.attack.irsa_trust import enrich_irsa_trust
+    from samoyed.attack.workload_identity import enrich_workload_identity
+    from samoyed.attack.cross_cloud_resolve import enrich_cross_cloud_resolve
 
     stats.update(enrich_irsa_trust(builder))
+    stats.update(enrich_workload_identity(builder))
+    stats.update(
+        enrich_cross_cloud_resolve(builder, session_store=session_store, local_provider=provider)
+    )
     # Materials + Secret:* UNLOCKS before capability-glob so vaults that yield
     # credentials (RDS_CREDS → aws-goat-db) are eligible for CONTROLS expansion.
     from samoyed.enrichment.impact import repair_credential_impact
@@ -94,10 +104,12 @@ def repair_blast_graph(builder: GraphBuilder) -> dict[str, int]:
     FEEDS exist so blast can reach named nodes without a separate enrich click.
     """
     from samoyed.attack.irsa_trust import enrich_irsa_trust
+    from samoyed.attack.workload_identity import enrich_workload_identity
     from samoyed.enrichment.impact import repair_credential_impact
 
     stats: dict[str, int] = {}
     stats.update(enrich_irsa_trust(builder))
+    stats.update(enrich_workload_identity(builder))
     # Materials + Secret:* → named targets first so capability-glob can bind
     # inventored vaults that UNLOCKS impact (e.g. RDS_CREDS → aws-goat-db).
     impact = repair_credential_impact(builder)

@@ -8,6 +8,7 @@ from typing import Any, Iterator
 from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge, Evidence
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.connectors._shared import aws_scope, build_session_from_artifacts, parse_json_payload
+from samoyed.cloud.providers import make_scope_id
 from samoyed.graph.builder import GraphBuilder
 from samoyed.network.model import NetworkInventory, NetworkPlacement, PeeringLink, SgIngressRule
 
@@ -45,17 +46,24 @@ def import_terraform(
         raise ValueError("No Terraform compute/network resources found")
 
     # Ensure at least a scope-linked placeholder identity when only network facts exist.
-    scope_id, scope_display = aws_scope(account_id)
+    provider = CloudProvider.GCP if inventory.provider == "gcp" else CloudProvider.AWS
+    scope_id, scope_display = (
+        gcp_scope(account_id) if provider == CloudProvider.GCP else aws_scope(account_id)
+    )
     if not artifacts:
         artifacts.append(
             ConceptArtifact(
                 concept_type=ConceptType.IDENTITY,
-                provider=CloudProvider.AWS,
-                native_id=f"arn:aws:iam::{account_id}:root",
+                provider=provider,
+                native_id=(
+                    f"gcp:serviceaccount:terraform@{account_id}.iam.gserviceaccount.com"
+                    if provider == CloudProvider.GCP
+                    else f"arn:aws:iam::{account_id}:root"
+                ),
                 scope_id=scope_id,
                 properties={
-                    "native_kind": "Root",
-                    "display_name": f"account-root:{account_id}",
+                    "native_kind": "Project" if provider == CloudProvider.GCP else "Root",
+                    "display_name": f"{'project' if provider == CloudProvider.GCP else 'account'}-root:{account_id}",
                     "account_id": account_id,
                     "source": "terraform",
                     "is_caller": True,
@@ -67,9 +75,9 @@ def import_terraform(
             artifacts.append(
                 ConceptArtifact(
                     concept_type=ConceptType.RUNTIME_BINDING,
-                    provider=CloudProvider.AWS,
+                    provider=provider,
                     native_id=placement.native_id,
-                    scope_id=make_scope_for_account(placement.account_id or account_id),
+                    scope_id=make_scope_for_account(placement.account_id or account_id, provider),
                     properties=_placement_props(placement),
                     evidence=Evidence("terraform:placement", {"native_id": placement.native_id}),
                 )
@@ -89,13 +97,13 @@ def import_terraform(
         scope_id=scope_id,
         scope_display=scope_display,
         caller_arn=resolved_caller,
-        provider=CloudProvider.AWS,
+        provider=provider,
         account_id=account_id,
         network=inventory,
         session_store=session_store,
     )
     meta["terraform_resource_count"] = len(artifacts)
-    meta["provider"] = CloudProvider.AWS.value
+    meta["provider"] = provider.value
     return builder, meta
 
 
@@ -151,12 +159,19 @@ def load_terraform_from_path(path: Path) -> dict[str, Any]:
     return {"version": 4, "resources": resources, "source": "terraform-hcl"}
 
 
-def make_scope_for_account(account_id: str) -> str:
-    return aws_scope(account_id or "unknown")[0]
+def gcp_scope(project_id: str) -> tuple[str, str]:
+    project_id = project_id or "unknown"
+    return make_scope_id(CloudProvider.GCP, "project", project_id), f"GCP project {project_id}"
+
+
+def make_scope_for_account(account_id: str, provider: CloudProvider = CloudProvider.AWS) -> str:
+    return (gcp_scope(account_id) if provider == CloudProvider.GCP else aws_scope(account_id))[0]
 
 
 def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[ConceptArtifact], str]:
     resources = list(state.get("resources") or [])
+    if any(str(resource.get("type") or "").startswith("google_") for resource in resources):
+        return _from_gcp_tfstate(state)
     inventory = NetworkInventory(provider="aws", source="terraform")
     artifacts: list[ConceptArtifact] = []
     account_id = "unknown"
@@ -678,6 +693,193 @@ def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Concept
     return inventory, deduped, account_id
 
 
+def _from_gcp_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[ConceptArtifact], str]:
+    """Extract portable GCP identity, workload, and network artifacts from tfstate."""
+    resources = list(state.get("resources") or [])
+    inventory = NetworkInventory(provider="gcp", source="terraform")
+    artifacts: list[ConceptArtifact] = []
+    project_id = "unknown"
+    entries: list[dict[str, Any]] = []
+    networks: dict[str, dict[str, Any]] = {}
+
+    for res in resources:
+        rtype = str(res.get("type") or "")
+        if not rtype.startswith("google_") or (res.get("mode") or "managed") not in {"managed", "data"}:
+            continue
+        for inst in res.get("instances") or [{"attributes": res.get("attributes") or {}}]:
+            attrs = inst.get("attributes") or inst.get("values") or {}
+            entry = {"type": rtype, "name": res.get("name"), "attrs": attrs}
+            entries.append(entry)
+            project_id = _gcp_project_id(attrs, project_id)
+            if rtype == "google_compute_network":
+                networks[str(attrs.get("id") or attrs.get("self_link") or res.get("name"))] = attrs
+
+    for network_id, attrs in networks.items():
+        cidr = attrs.get("ipv4_range") or attrs.get("cidr_block")
+        if cidr:
+            inventory.vpc_cidrs[network_id] = [str(cidr)]
+
+    for entry in entries:
+        rtype, attrs = entry["type"], entry["attrs"]
+        project = _gcp_project_id(attrs, project_id)
+        scope = make_scope_for_account(project, CloudProvider.GCP)
+        name = str(attrs.get("name") or entry["name"] or "unknown")
+
+        if rtype == "google_compute_subnetwork":
+            network = str(attrs.get("network") or "")
+            cidr = attrs.get("ip_cidr_range")
+            if network and cidr:
+                inventory.vpc_cidrs.setdefault(network, []).append(str(cidr))
+        elif rtype == "google_compute_firewall":
+            network = str(attrs.get("network") or "")
+            for allow in attrs.get("allow") or []:
+                if not isinstance(allow, dict):
+                    continue
+                inventory.sg_rules.append(SgIngressRule(
+                    sg_id=f"gcp-firewall:{name}", direction="ingress",
+                    cidrs=[str(x) for x in (attrs.get("source_ranges") or [])],
+                    from_port=None, to_port=None,
+                    protocol=str(allow.get("protocol") or "all"),
+                    referenced_sg_ids=[network] if network else [],
+                ))
+        elif rtype == "google_compute_network_peering":
+            local = str(attrs.get("network") or "")
+            remote = str(attrs.get("peer_network") or "")
+            remote_project = _gcp_project_from_ref(remote) or project
+            inventory.peerings.append(PeeringLink(
+                id=str(attrs.get("id") or name), status=str(attrs.get("state") or "ACTIVE").lower(),
+                local_vpc_id=local, remote_vpc_id=remote, local_account_id=project,
+                remote_account_id=remote_project,
+                local_cidrs=list(inventory.vpc_cidrs.get(local, [])),
+                remote_cidrs=list(inventory.vpc_cidrs.get(remote, [])),
+            ))
+        elif rtype == "google_service_account":
+            email = str(attrs.get("email") or f"{name}@{project}.iam.gserviceaccount.com")
+            artifacts.append(_gcp_identity(email, project, "ServiceAccount", "terraform:google_service_account"))
+        elif rtype == "google_compute_instance":
+            instance_id = str(attrs.get("id") or name)
+            native_id = f"GCEInstance:{instance_id}"
+            network_interfaces = attrs.get("network_interface") or []
+            iface = network_interfaces[0] if isinstance(network_interfaces, list) and network_interfaces else {}
+            if not isinstance(iface, dict):
+                iface = {}
+            network = str(iface.get("network") or attrs.get("network") or "")
+            subnet = iface.get("subnetwork") or attrs.get("subnetwork")
+            access = iface.get("access_config") or []
+            public_ip = (access[0].get("nat_ip") if isinstance(access, list) and access and isinstance(access[0], dict) else None)
+            private_ip = iface.get("network_ip") or attrs.get("network_ip")
+            placement = NetworkPlacement(native_id=native_id, account_id=project, vpc_id=network,
+                subnet_ids=[str(subnet)] if subnet else [], private_ips=[str(private_ip)] if private_ip else [],
+                public_ip=str(public_ip) if public_ip else None, sg_ids=[], resource_type="GCEInstance")
+            inventory.placements.append(placement)
+            sa = attrs.get("service_account") or []
+            sa = sa[0] if isinstance(sa, list) and sa else sa
+            email = sa.get("email") if isinstance(sa, dict) else sa
+            edges: list[ConceptEdge] = []
+            if email:
+                email = str(email)
+                artifacts.append(_gcp_identity(email, project, "ServiceAccount", "terraform:gce-service-account"))
+                edges.append(ConceptEdge("EXECUTES_AS", email, ConceptType.IDENTITY,
+                    props={"service_account": email, "resource_type": "GCEInstance"}))
+            props = _placement_props(placement)
+            props.update({"display_name": name, "instance_id": instance_id, "execution_service_account": email})
+            artifacts.append(ConceptArtifact(ConceptType.RUNTIME_BINDING, CloudProvider.GCP, native_id, scope, props,
+                Evidence("terraform:google_compute_instance", {"id": native_id}), edges=edges))
+        elif rtype in {"google_cloudfunctions_function", "google_cloudfunctions2_function", "google_cloud_run_v2_service", "google_cloud_run_service"}:
+            kind = "CloudFunction" if "cloudfunctions" in rtype else "CloudRunService"
+            native_id = f"{kind}:{attrs.get('id') or name}"
+            sa = attrs.get("service_account_email") or attrs.get("service_account")
+            template = attrs.get("template") or {}
+            if isinstance(template, list):
+                template = template[0] if template else {}
+            if isinstance(template, dict):
+                sa = sa or template.get("service_account")
+            edges = []
+            if sa:
+                sa = str(sa)
+                artifacts.append(_gcp_identity(sa, project, "ServiceAccount", f"terraform:{rtype}-service-account"))
+                edges.append(ConceptEdge("EXECUTES_AS", sa, ConceptType.IDENTITY, props={"resource_type": kind}))
+            artifacts.append(ConceptArtifact(ConceptType.RUNTIME_BINDING, CloudProvider.GCP, native_id, scope,
+                {"resource_type": kind, "display_name": name, "project_id": project, "execution_service_account": sa, "source": "terraform"},
+                Evidence(f"terraform:{rtype}", {"id": native_id}), edges=edges))
+        elif rtype == "google_storage_bucket":
+            bucket = str(attrs.get("name") or attrs.get("id") or name)
+            artifacts.append(ConceptArtifact(ConceptType.DATA_STORE, CloudProvider.GCP, f"GCSBucket:{bucket}", scope,
+                {"resource_type": "GCSBucket", "bucket_name": bucket, "display_name": bucket, "project_id": project, "source": "terraform"},
+                Evidence("terraform:google_storage_bucket", {"bucket": bucket})))
+        elif rtype == "google_secret_manager_secret":
+            secret = str(attrs.get("secret_id") or attrs.get("name") or name)
+            artifacts.append(ConceptArtifact(ConceptType.SECRET_STORE, CloudProvider.GCP, f"GCPSecret:{project}:{secret}", scope,
+                {"resource_type": "GCPSecret", "secret_id": secret, "display_name": secret, "project_id": project, "source": "terraform"},
+                Evidence("terraform:google_secret_manager_secret", {"secret": secret})))
+        elif rtype in {"google_iam_workload_identity_pool", "google_iam_workload_identity_pool_provider"}:
+            native_id = f"GCPWIF:{attrs.get('id') or name}"
+            artifacts.append(ConceptArtifact(ConceptType.TRUST, CloudProvider.GCP, native_id, scope,
+                {"native_kind": "WorkloadIdentityPoolProvider" if rtype.endswith("_provider") else "WorkloadIdentityPool",
+                 "display_name": name, "project_id": project, "source": "terraform"},
+                Evidence(f"terraform:{rtype}", {"id": native_id})))
+        elif rtype in {"google_project_iam_binding", "google_project_iam_member", "google_service_account_iam_member"}:
+            role = str(attrs.get("role") or "")
+            members = attrs.get("members") or [attrs.get("member")]
+            target_sa = str(attrs.get("service_account_id") or "")
+            for member in members:
+                if not member:
+                    continue
+                principal = _gcp_principal(str(member))
+                artifacts.append(_gcp_identity(principal, project, "Principal", "terraform:gcp-iam-member"))
+                target = _gcp_principal(target_sa) if target_sa else principal
+                edges = []
+                if "serviceAccountTokenCreator" in role or "workloadIdentityUser" in role or rtype == "google_service_account_iam_member":
+                    edges.append(ConceptEdge("CAN_ASSUME_ROLE", target, ConceptType.IDENTITY, props={"role": role, "mechanism": "gcp-iam"}))
+                artifacts.append(ConceptArtifact(ConceptType.ENTITLEMENT, CloudProvider.GCP,
+                    f"terraform:gcp-iam:{principal}:{role}:{target}", scope,
+                    {"principal": principal, "role": role, "source": "terraform"},
+                    Evidence(f"terraform:{rtype}", {"role": role}), edges=edges))
+
+    return inventory, _dedupe_artifacts(artifacts), project_id
+
+
+def _gcp_project_id(attrs: dict[str, Any], fallback: str = "unknown") -> str:
+    project = attrs.get("project")
+    if project:
+        return str(project)
+    for value in (attrs.get("email"), attrs.get("service_account_email"), attrs.get("service_account_id")):
+        match = re.search(r"@([a-z0-9-]+)\.iam\.gserviceaccount\.com", str(value or ""))
+        if match:
+            return match.group(1)
+    return fallback
+
+
+def _gcp_project_from_ref(ref: str) -> str | None:
+    match = re.search(r"projects/([^/]+)", ref)
+    return match.group(1) if match else None
+
+
+def _gcp_principal(value: str) -> str:
+    value = value.removeprefix("serviceAccount:").removeprefix("user:").removeprefix("principal://")
+    return value if value else "gcp:unknown-principal"
+
+
+def _gcp_identity(native_id: str, project: str, kind: str, source: str) -> ConceptArtifact:
+    return ConceptArtifact(ConceptType.IDENTITY, CloudProvider.GCP, native_id,
+        make_scope_for_account(project, CloudProvider.GCP),
+        {"native_kind": kind, "display_name": native_id, "project_id": project, "source": "terraform"},
+        Evidence(source, {"principal": native_id}))
+
+
+def _dedupe_artifacts(artifacts: list[ConceptArtifact]) -> list[ConceptArtifact]:
+    result: list[ConceptArtifact] = []
+    by_native: dict[str, ConceptArtifact] = {}
+    for artifact in artifacts:
+        if artifact.concept_type == ConceptType.ENTITLEMENT or artifact.native_id not in by_native:
+            result.append(artifact)
+            by_native[artifact.native_id] = artifact
+        else:
+            by_native[artifact.native_id].edges.extend(artifact.edges)
+            by_native[artifact.native_id].properties.update(artifact.properties)
+    return result
+
+
 def _iter_policy_statements(doc: dict[str, Any]) -> list[dict[str, Any]]:
     stmt = doc.get("Statement") or []
     if isinstance(stmt, dict):
@@ -752,7 +954,7 @@ def _parse_tf_resources_light(path: Path) -> list[dict[str, Any]]:
     text = path.read_text(encoding="utf-8")
     resources: list[dict[str, Any]] = []
     pattern = re.compile(
-        r'resource\s+"(?P<type>aws_[^"]+)"\s+"(?P<name>[^"]+)"\s*\{(?P<body>.*?)\n\}',
+        r'resource\s+"(?P<type>(?:aws|google)_[^"]+)"\s+"(?P<name>[^"]+)"\s*\{(?P<body>.*?)\n\}',
         re.DOTALL,
     )
     for match in pattern.finditer(text):
@@ -771,6 +973,14 @@ def _parse_tf_resources_light(path: Path) -> list[dict[str, Any]]:
             "function_name",
             "role",
             "iam_instance_profile",
+            "project",
+            "network",
+            "peer_network",
+            "ip_cidr_range",
+            "name",
+            "email",
+            "service_account_email",
+            "secret_id",
         ):
             m = re.search(rf'{key}\s*=\s*"([^"]+)"', body)
             if m:

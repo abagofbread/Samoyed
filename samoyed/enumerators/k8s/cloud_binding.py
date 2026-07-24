@@ -67,13 +67,32 @@ class K8sCloudBindingEnumerator:
 
                 if gcp_sa := annotations.get(GKE_ANNOTATION):
                     target = f"gcp:serviceaccount:{gcp_sa}"
+                    yield ConceptArtifact(
+                        concept_type=ConceptType.IDENTITY,
+                        provider=CloudProvider.GCP,
+                        native_id=target,
+                        scope_id=ctx.scope.scope_id,
+                        properties={
+                            "native_kind": "ServiceAccount",
+                            "email": gcp_sa,
+                            "display_name": gcp_sa,
+                            "projected": True,
+                            "projected_reason": "gke-workload-identity",
+                        },
+                        evidence=Evidence("core/v1:serviceaccounts:annotation", {"annotation": GKE_ANNOTATION}),
+                    )
                     edges.append(
                         ConceptEdge(
                             rel_type="PROJECTS_TO",
                             src_native_id=sa_id,
                             target_native_id=target,
                             target_concept_type=ConceptType.IDENTITY,
-                            props={"binding_type": "WorkloadIdentity", "annotation": GKE_ANNOTATION},
+                            props={
+                                "binding_type": "WorkloadIdentity",
+                                "annotation": GKE_ANNOTATION,
+                                "trust_validated": False,
+                                "mechanism": "wif",
+                            },
                         )
                     )
                     yield ConceptArtifact(

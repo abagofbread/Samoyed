@@ -19,6 +19,9 @@ RUNTIME_RESOURCE_TYPES = frozenset(
         "ECSTask",
         "ECSService",
         "CloudFunction",
+        "CloudRunService",
+        "GCEInstance",
+        "CloudBuild",
     }
 )
 
@@ -441,6 +444,12 @@ def _resolve_targets(
         # Wise UFC / code takeover: only roles of runtimes this principal can *mutate*.
         # Never union with every inventored EXECUTES_AS role in the account.
         via_control = _execution_roles_via_controlled_runtimes(graph, start_id, exclude=start_id)
+        if provider == CloudProvider.GCP:
+            # GCP actAs / TokenCreator grants are emitted as concrete
+            # CAN_ASSUME_ROLE edges. Treat them as PassRole equivalents and include
+            # any inventored workload that actually executes as that SA.
+            gcp_targets = _gcp_service_account_targets(graph, start_id, exclude=start_id)
+            via_control = _dedupe_keep_order(via_control + gcp_targets)
         preferred = _prefer_privileged_targets(graph, via_control, exclude=start_id)
         return preferred or via_control
 
@@ -588,6 +597,24 @@ def _execution_roles_via_controlled_runtimes(
             # Stub/pattern control → inventored runtimes with intersecting scope
             for runtime_id in _inventored_runtimes_matching_control(graph, dst, props):
                 _roles_of_runtime(runtime_id)
+    return out
+
+
+def _gcp_service_account_targets(
+    graph: GraphSnapshot, start_id: str, *, exclude: str
+) -> list[str]:
+    assumable = [
+        dst
+        for dst, rel, _props in graph.adjacency.get(start_id, [])
+        if rel == "CAN_ASSUME_ROLE" and dst != exclude and dst in graph.nodes
+    ]
+    out = list(assumable)
+    for runtime_id, runtime in graph.nodes.items():
+        if not _is_runtime_like_node(runtime_id, graph):
+            continue
+        for identity_id, rel, _props in graph.adjacency.get(runtime_id, []):
+            if rel == "EXECUTES_AS" and identity_id in assumable and identity_id not in out:
+                out.append(identity_id)
     return out
 
 

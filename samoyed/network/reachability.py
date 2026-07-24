@@ -139,7 +139,10 @@ def _intents_for_peering(
     cross_account = bool(local_account and remote_account and local_account != remote_account)
 
     if cross_account:
-        account_native = f"aws:account:{remote_account}"
+        if (inventory.provider or "aws").lower() == "gcp":
+            account_native = f"gcp:project:{remote_account}"
+        else:
+            account_native = f"aws:account:{remote_account}"
         peers_props = {
             "peering_id": peering.id,
             "local_vpc_id": local_vpc,

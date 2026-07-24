@@ -115,8 +115,11 @@ def _has_aws(session: SessionRecord) -> bool:
 
 
 def _has_gcp(session: SessionRecord) -> bool:
-    return session.provider.value == "gcp" or any(
-        str(n.props.get("native_id", "")).startswith("gcp:") for n in session.snapshot.nodes.values()
+    inventory = session.metadata.get("network_inventory") or {}
+    return session.provider.value == "gcp" or inventory.get("provider") == "gcp" or any(
+        n.props.get("provider") == "gcp"
+        or str(n.props.get("native_id", "")).startswith(("gcp:", "GCSBucket:", "GCPSecret:"))
+        for n in session.snapshot.nodes.values()
     )
 
 
@@ -235,6 +238,30 @@ def suggest_searches(store: SessionStore, session_id: str, *, limit: int = 10) -
                 "description": "IAM blast radius from compromised SA",
                 "mode": "scenario",
                 "scenario": "leaked-credential",
+                "session_id": session_id,
+            },
+        )
+        if _has_network_peering(session):
+            ranked.insert(
+                0,
+                {
+                    "id": "gcp-cross-project-peering",
+                    "title": "Can reach other projects",
+                    "description": "Network peering paths into peer GCP projects",
+                    "mode": "scenario",
+                    "scenario": "can-reach-other-accounts",
+                    "session_id": session_id,
+                },
+            )
+    if _has_aws(session) and _has_gcp(session):
+        ranked.insert(
+            0,
+            {
+                "id": "intercloud-federation",
+                "title": "Cross-cloud federation paths",
+                "description": "Blast-radius paths that cross AWS and GCP identity boundaries",
+                "mode": "scenario",
+                "scenario": "intercloud-federation",
                 "session_id": session_id,
             },
         )
