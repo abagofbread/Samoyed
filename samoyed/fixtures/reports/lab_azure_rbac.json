@@ -1,14 +1,16 @@
 {
   "account_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "provider": "azure",
-  "scope_id": "azure:scope:subscription:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "scope_id": "azure:subscription:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "scope_display": "Azure subscription a1b2c3d4…",
   "source": "samoyed-client",
   "collected_via": "fixture-export",
   "scenario": "azure-rbac-lab",
   "metadata": {
-    "description": "Leaked dev CI SP → dev KV + web app control → managed identity → prod PII secret",
-    "fixture_id": "lab-azure"
+    "description": "Leaked CI SP → Website Contributor → WebApp MI → prod KV; parallel Automation Owner escalate",
+    "fixture_id": "lab-azure",
+    "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "tenant_id": "eeeeeeee-1111-2222-3333-444444444444"
   },
   "identities": [
     {
@@ -18,14 +20,24 @@
       "display_name": "sp-ci-deploy-dev",
       "provider": "azure",
       "client_id": "3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
-      "is_caller": true
+      "is_caller": true,
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     },
     {
       "id": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
       "name": "mi-marketing-api",
       "kind": "ManagedIdentity",
       "display_name": "mi-marketing-api",
-      "provider": "azure"
+      "provider": "azure",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "azure:managedidentity:aaaa1111-bbbb-2222-cccc-333333333333",
+      "name": "mi-automation-runner",
+      "kind": "ManagedIdentity",
+      "display_name": "mi-automation-runner",
+      "provider": "azure",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     }
   ],
   "resources": [
@@ -34,7 +46,15 @@
       "concept": "DataStore",
       "type": "StorageAccount",
       "name": "corpartifactsdev",
-      "display_name": "corpartifactsdev"
+      "display_name": "corpartifactsdev",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "KeyVault:corp-kv-dev",
+      "concept": "SecretStore",
+      "type": "KeyVault",
+      "name": "corp-kv-dev",
+      "display_name": "corp-kv-dev"
     },
     {
       "id": "KeyVaultSecret:corp-kv-dev/api-hubspot-sandbox",
@@ -44,13 +64,22 @@
       "display_name": "corp-kv-dev/api-hubspot-sandbox"
     },
     {
+      "id": "KeyVault:corp-kv-prod",
+      "concept": "SecretStore",
+      "type": "KeyVault",
+      "name": "corp-kv-prod",
+      "display_name": "corp-kv-prod",
+      "environment": "prod"
+    },
+    {
       "id": "KeyVaultSecret:corp-kv-prod/customer-pii-export",
       "concept": "SecretStore",
       "type": "KeyVaultSecret",
       "name": "customer-pii-export",
       "display_name": "corp-kv-prod/customer-pii-export",
       "environment": "prod",
-      "sensitivity": "pii"
+      "sensitivity": "pii",
+      "is_high_value": true
     },
     {
       "id": "WebApp:marketing-api",
@@ -58,7 +87,17 @@
       "type": "WebApp",
       "name": "marketing-api",
       "display_name": "marketing-api",
-      "execution_role_arn": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333"
+      "execution_role_arn": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "AutomationAccount:corp-ops-aa",
+      "concept": "RuntimeBinding",
+      "type": "AutomationAccount",
+      "name": "corp-ops-aa",
+      "display_name": "corp-ops-aa",
+      "execution_role_arn": "azure:managedidentity:aaaa1111-bbbb-2222-cccc-333333333333",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     }
   ],
   "grants": [
@@ -91,6 +130,24 @@
       "to": "KeyVaultSecret:corp-kv-prod/customer-pii-export",
       "rel": "READS",
       "role": "Key Vault Secrets User"
+    },
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "AutomationAccount:corp-ops-aa",
+      "rel": "CONTROLS",
+      "role": "Automation Contributor"
+    },
+    {
+      "from": "AutomationAccount:corp-ops-aa",
+      "to": "azure:managedidentity:aaaa1111-bbbb-2222-cccc-333333333333",
+      "rel": "EXECUTES_AS",
+      "source": "automation-managed-identity"
+    },
+    {
+      "from": "azure:managedidentity:aaaa1111-bbbb-2222-cccc-333333333333",
+      "to": "azure:subscription:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "rel": "CONTROLS",
+      "role": "Owner"
     }
   ],
   "caller_arn": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd"

@@ -233,7 +233,6 @@ def test_host_compromise_sso_cache_three_hop_chain(tmp_path, monkeypatch):
         for p in paths
         if [s.rel_type for s in p.steps] == ["CAN_PRIVESC_TO", "CAN_ASSUME_ROLE", "READS"]
         or [s.rel_type for s in p.steps] == ["CAN_STEAL_CREDS_FROM", "CAN_ASSUME_ROLE", "READS"]
-        or [s.rel_type for s in p.steps] == ["STORES_CREDS_FOR", "CAN_ASSUME_ROLE", "READS"]
     ]
     assert sso_paths, "expected SSO-cache → assume-role → secret chain"
     assert len(sso_paths[0].steps) == 3

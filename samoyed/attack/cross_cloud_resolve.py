@@ -5,9 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from samoyed.cloud.concepts import CloudProvider
-from samoyed.cloud.providers import make_scope_id, parse_scope_id
+from samoyed.cloud.providers import make_scope_id, normalize_scope_id, parse_scope_id
 from samoyed.graph.builder import GraphBuilder
 from samoyed.network.session_graft import resolve_scope_or_stub
+
+_CROSS_CLOUD_MECHANISMS = frozenset(
+    {"wif", "oidc-federation", "synced-identity", "cross-cloud", "add-secret"}
+)
 
 
 def enrich_cross_cloud_resolve(
@@ -24,12 +28,18 @@ def enrich_cross_cloud_resolve(
     local_scope = ""
     for node in builder.snapshot.nodes.values():
         if node.label == "ScopeBoundary" and node.props.get("native_id"):
-            local_scope = str(node.props["native_id"])
+            local_scope = normalize_scope_id(str(node.props["native_id"]))
             break
 
     seen: set[str] = set()
     for edge in list(builder.snapshot.edges):
-        if edge.rel_type not in {"CAN_ASSUME_ROLE", "PROJECTS_TO", "BRIDGES_TO", "VPC_PEERS"}:
+        if edge.rel_type not in {
+            "CAN_ASSUME_ROLE",
+            "PROJECTS_TO",
+            "BRIDGES_TO",
+            "VPC_PEERS",
+            "MEMBER_OF",
+        }:
             continue
         dst = builder.snapshot.nodes.get(edge.dst_id)
         if dst is None:
@@ -49,7 +59,8 @@ def enrich_cross_cloud_resolve(
             scope_id=scope_id,
             store=session_store,
             skip_session_id=builder.session_id,
-            is_cross_cloud=is_cross_cloud or bool(edge.props.get("mechanism") in {"wif", "oidc-federation"}),
+            is_cross_cloud=is_cross_cloud
+            or bool(edge.props.get("mechanism") in _CROSS_CLOUD_MECHANISMS),
         )
         stats["cross_cloud_resolved"] += 1
         if result.get("stub"):
@@ -110,7 +121,34 @@ def _foreign_scope(
             return make_scope_id(CloudProvider.AWS, "account", parts[4])
         return None
 
-    scope_prop = str(props.get("scope_id") or "")
+    subscription_id = str(props.get("subscription_id") or "")
+    tenant_id = str(props.get("tenant_id") or "")
+    azure_native = (
+        native.startswith("azure:")
+        or provider_hint == "azure"
+        or native.startswith(
+            (
+                "StorageAccount:",
+                "KeyVault:",
+                "KeyVaultSecret:",
+                "AzureVM:",
+                "WebApp:",
+                "FunctionApp:",
+                "AutomationAccount:",
+                "AcrRegistry:",
+            )
+        )
+    )
+    if azure_native:
+        if subscription_id:
+            return make_scope_id(CloudProvider.AZURE, "subscription", subscription_id)
+        if tenant_id:
+            return make_scope_id(CloudProvider.AZURE, "tenant", tenant_id)
+        if local_provider != CloudProvider.AZURE and local_scope.startswith("azure:"):
+            return local_scope
+        return None
+
+    scope_prop = normalize_scope_id(str(props.get("scope_id") or ""))
     if scope_prop and scope_prop != local_scope:
         return scope_prop
     return None

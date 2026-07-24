@@ -83,10 +83,9 @@ TRAVERSABLE_REL_TYPES = frozenset(
         "PROJECTS_TO",
         "HOSTED_IN",
         "CAN_PRIVESC_TO",
-        "LOGGED_IN_AS",
-        "STORES_CREDS_FOR",
         "CAN_STEAL_CREDS_FROM",
         "HAS_MATERIAL",
         "UNLOCKS",
+        "MEMBER_OF",
     }
 )

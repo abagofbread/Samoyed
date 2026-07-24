@@ -1,0 +1,30 @@
+{
+  "enrichment_version": 1,
+  "collector": "static-grand-tri-cloud-azure",
+  "collector_mode": "static",
+  "collected_at": "2026-07-24T18:10:00+00:00",
+  "lab_fixture": "grand-tri-cloud",
+  "description": "Workstation has a stale SAS URL dead-end (no further cloud identity).",
+  "bindings": [
+    {
+      "target_ref": "AzureVM:/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-dmz/providers/Microsoft.Compute/virtualMachines/vm-ws-alice",
+      "materials": [
+        {
+          "kind": "api_key",
+          "locator": "C:/Users/alice/AppData/Roaming/slack/token",
+          "confidence": "inferred",
+          "evidence": {
+            "file": "slack/token",
+            "match": "xoxp-FIXTURE"
+          },
+          "impact_targets": [
+            {
+              "kind": "external_service",
+              "name": "slack-workspace-deadend"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

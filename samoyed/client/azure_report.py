@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from samoyed.cloud.capabilities import map_azure_role
 from samoyed.cloud.providers import make_scope_id
 from samoyed.credentials.azure import AzureCredential
 from samoyed.enumerators.azure.helpers import is_azure_denied
-
-_STORAGE_RE = re.compile(r"/providers/Microsoft\.Storage/storageAccounts/([^/]+)", re.I)
-_KEYVAULT_RE = re.compile(r"/providers/Microsoft\.KeyVault/vaults/([^/]+)", re.I)
-_WEBAPP_RE = re.compile(r"/providers/Microsoft\.Web/sites/([^/]+)", re.I)
+from samoyed.enumerators.azure.targets import resource_group_from_id, targets_for_assignment
 
 
 def collect_azure_iam_report(credentials: AzureCredential) -> dict[str, Any]:
@@ -67,7 +63,7 @@ def _collect_storage(credentials: AzureCredential, resources: dict[str, dict[str
     for account in accounts:
         name = account.name
         native_id = f"StorageAccount:{name}"
-        rg = _resource_group_from_id(account.id)
+        rg = resource_group_from_id(account.id)
         resources[native_id] = {
             "id": native_id,
             "concept": "DataStore",
@@ -100,7 +96,7 @@ def _collect_key_vaults(credentials: AzureCredential, resources: dict[str, dict[
             "display_name": vault_name,
             "vault_name": vault_name,
             "vault_uri": vault_uri,
-            "resource_group": _resource_group_from_id(vault.id),
+            "resource_group": resource_group_from_id(vault.id),
         }
         if not vault_uri:
             continue
@@ -161,6 +157,7 @@ def _collect_role_assignments(
             return
         raise
 
+    inventored = set(resources.keys())
     for assignment in assignments:
         rname = role_name(assignment.role_definition_id)
         mapping = map_azure_role(rname)
@@ -175,7 +172,7 @@ def _collect_role_assignments(
             display_name=principal_native,
             subscription_id=credentials.subscription_id,
         )
-        targets = _targets_for_assignment(assignment.scope, rname, mapping, resources)
+        targets = targets_for_assignment(assignment.scope, mapping, inventored)
         for target_id, rel in targets:
             grants.append(
                 {
@@ -187,57 +184,6 @@ def _collect_role_assignments(
                     "source": "authorization.roleAssignments.list",
                 }
             )
-
-
-def _targets_for_assignment(
-    scope: str,
-    role_name: str,
-    mapping: Any,
-    resources: dict[str, dict[str, Any]],
-) -> list[tuple[str, str]]:
-    rel = mapping.capability.value
-    targets: list[tuple[str, str]] = []
-
-    storage_match = _STORAGE_RE.search(scope or "")
-    if storage_match:
-        sid = f"StorageAccount:{storage_match.group(1)}"
-        if sid in resources:
-            targets.append((sid, rel))
-
-    kv_match = _KEYVAULT_RE.search(scope or "")
-    if kv_match:
-        vault_name = kv_match.group(1)
-        kid = f"KeyVault:{vault_name}"
-        if kid in resources:
-            targets.append((kid, rel))
-        if mapping.resource_type == "KeyVaultSecret":
-            prefix = f"KeyVaultSecret:{vault_name}/"
-            for rid in resources:
-                if rid.startswith(prefix):
-                    targets.append((rid, rel))
-
-    web_match = _WEBAPP_RE.search(scope or "")
-    if web_match:
-        wid = f"WebApp:{web_match.group(1)}"
-        targets.append((wid, rel))
-
-    if not targets and mapping.resource_type:
-        targets.append((f"{mapping.resource_type}:*", rel))
-    elif not targets:
-        targets.append((scope or "azure:scope:subscription", rel))
-
-    return targets
-
-
-def _resource_group_from_id(arm_id: str | None) -> str | None:
-    if not arm_id:
-        return None
-    parts = arm_id.split("/")
-    try:
-        idx = parts.index("resourceGroups")
-        return parts[idx + 1]
-    except (ValueError, IndexError):
-        return None
 
 
 def _identity(

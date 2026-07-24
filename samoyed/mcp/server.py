@@ -386,6 +386,17 @@ def run_scenario(
     return json.dumps(payload, indent=2, default=str)
 
 
+@mcp.tool()
+def describe_intercloud_paths(session_id: str | None = None) -> str:
+    """
+    Map cross-cloud ScopeBoundaries, WIF/OIDC/synced-identity bridges, peer grafts,
+    and top attack paths from caller/compromised. session_id optional.
+    """
+    from samoyed.attack.intercloud_map import describe_intercloud_paths as _describe
+
+    return json.dumps(_describe(SESSION_STORE, session_id=session_id), indent=2, default=str)
+
+
 @mcp.resource("samoyed://ontology")
 def ontology_resource() -> str:
     """Cloud/orchestration concept taxonomy."""

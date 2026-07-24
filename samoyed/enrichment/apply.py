@@ -661,7 +661,9 @@ def _resolve_binding_target(
         hit = resolve_node_ref(graph, ref, prefer_concepts=_HOST_PREFER)
         if hit and _is_host_like(graph, hit):
             return hit
-        # Allow Identity only when the ref explicitly looks like a host alias? No.
+        # Harvested cloud keys may sit on a role/SA principal (post-assume story).
+        if hit and _is_identity_material_target(graph, hit, ref):
+            return hit
 
     # Exactly one compromised / scenario-start host in the session.
     starts = [
@@ -700,6 +702,29 @@ def _is_host_like(graph: GraphSnapshot, node_id: str) -> bool:
             "comput",
         )
     )
+
+
+def _is_identity_material_target(graph: GraphSnapshot, node_id: str, ref: str) -> bool:
+    """True when ``ref`` uniquely names an Identity principal (role ARN, SA email, etc.)."""
+    node = graph.nodes.get(node_id)
+    if not node:
+        return False
+    if str(node.props.get("concept_type") or "") != "Identity":
+        return False
+    native = str(node.props.get("native_id") or "")
+    arn = str(node.props.get("arn") or "")
+    email = str(node.props.get("email") or "")
+    ref_norm = ref.strip()
+    if not ref_norm or not native:
+        return False
+    if ref_norm in {native, arn, email}:
+        return True
+    # Allow bare role/SA name only when it uniquely suffixes the native id.
+    if "/" in native and native.rsplit("/", 1)[-1] == ref_norm:
+        return True
+    if "@" in native and native == ref_norm:
+        return True
+    return False
 
 
 def _binding_is_unbound(binding: dict[str, Any]) -> bool:

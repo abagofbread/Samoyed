@@ -82,6 +82,42 @@ class AzureCredential:
             from azure.mgmt.resource import SubscriptionClient
 
             return SubscriptionClient(cred)
+        if service in {"compute", "vm"}:
+            from azure.mgmt.compute import ComputeManagementClient
+
+            return ComputeManagementClient(cred, sub)
+        if service in {"network"}:
+            from azure.mgmt.network import NetworkManagementClient
+
+            return NetworkManagementClient(cred, sub)
+        if service in {"msi", "managedidentity"}:
+            try:
+                from azure.mgmt.msi import ManagedServiceIdentityClient
+            except ImportError as exc:
+                raise ImportError(
+                    "Install azure-mgmt-msi for managed identity enumeration: pip install 'samoyed[azure]'"
+                ) from exc
+            return ManagedServiceIdentityClient(cred, sub)
+        if service in {"web", "appservice"}:
+            from azure.mgmt.web import WebSiteManagementClient
+
+            return WebSiteManagementClient(cred, sub)
+        if service in {"automation"}:
+            try:
+                from azure.mgmt.automation import AutomationClient
+            except ImportError as exc:
+                raise ImportError(
+                    "Install azure-mgmt-automation for Automation accounts: pip install 'samoyed[azure]'"
+                ) from exc
+            return AutomationClient(cred, sub)
+        if service in {"containerregistry", "acr"}:
+            try:
+                from azure.mgmt.containerregistry import ContainerRegistryManagementClient
+            except ImportError as exc:
+                raise ImportError(
+                    "Install azure-mgmt-containerregistry for ACR enumeration"
+                ) from exc
+            return ContainerRegistryManagementClient(cred, sub)
         raise ValueError(f"Unknown Azure service: {service}")
 
     def get_caller_identity(self) -> dict[str, Any]:
@@ -122,3 +158,7 @@ class AzureCredential:
 
 def sp_native_id(client_id: str) -> str:
     return f"azure:serviceprincipal:{client_id}"
+
+
+def mi_native_id(principal_id: str) -> str:
+    return f"azure:managedidentity:{principal_id}"

@@ -119,9 +119,8 @@ _IDENTITY_CHAIN_RELS = frozenset(
     {
         "EXECUTES_AS",
         "CAN_ASSUME_ROLE",
+        "MEMBER_OF",
         "PROJECTS_TO",
-        "LOGGED_IN_AS",
-        "STORES_CREDS_FOR",
         "CAN_STEAL_CREDS_FROM",
         "HAS_MATERIAL",
         "UNLOCKS",

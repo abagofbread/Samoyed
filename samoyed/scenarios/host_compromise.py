@@ -15,9 +15,9 @@ class HostCompromiseScenario:
             start_node_id=start_node_id,
             max_depth=8,
         )
-        # Include paths through stolen cloud identities (LOGGED_IN_AS / STORES_CREDS_FOR)
+        # Include paths through stolen cloud identities (CAN_STEAL_CREDS_FROM)
         for dst_id, rel, _props in graph.adjacency.get(start_node_id, []):
-            if rel not in {"LOGGED_IN_AS", "STORES_CREDS_FOR"}:
+            if rel != "CAN_STEAL_CREDS_FROM":
                 continue
             paths.extend(
                 get_blast_radius(

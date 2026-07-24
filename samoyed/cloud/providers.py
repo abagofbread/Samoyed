@@ -8,7 +8,19 @@ def make_scope_id(provider: CloudProvider, kind: str, identifier: str) -> str:
     return f"{provider.value}:{kind}:{identifier}"
 
 
+def normalize_scope_id(scope_id: str) -> str:
+    """Canonicalize known legacy scope_id shapes.
+
+    Historically some Azure fixtures used ``azure:scope:subscription:{id}``;
+    live enum emits ``azure:subscription:{id}``.
+    """
+    if scope_id.startswith("azure:scope:"):
+        return "azure:" + scope_id[len("azure:scope:") :]
+    return scope_id
+
+
 def parse_scope_id(scope_id: str) -> tuple[CloudProvider | None, str, str]:
+    scope_id = normalize_scope_id(scope_id)
     parts = scope_id.split(":", 2)
     if len(parts) != 3:
         return None, "", scope_id

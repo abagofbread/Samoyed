@@ -56,20 +56,10 @@
     {
       "from": "host:workstation:bob-laptop",
       "to": "azure:user:bob@corp.com",
-      "rel": "LOGGED_IN_AS",
-      "confidence": "explicit"
-    },
-    {
-      "from": "host:workstation:bob-laptop",
-      "to": "azure:user:bob@corp.com",
       "rel": "CAN_STEAL_CREDS_FROM",
       "action": "host:interactive-session",
-      "confidence": "explicit"
-    },
-    {
-      "from": "host:workstation:bob-laptop",
-      "to": "arn:aws:iam::111111111111:user/dev-bob",
-      "rel": "STORES_CREDS_FOR",
+      "session_type": "interactive",
+      "mechanism": "lsass-mimikatz",
       "confidence": "explicit"
     },
     {
@@ -77,6 +67,8 @@
       "to": "arn:aws:iam::111111111111:user/dev-bob",
       "rel": "CAN_STEAL_CREDS_FROM",
       "action": "host:credential-store",
+      "store_type": "aws-cli-credentials",
+      "path_hint": "~/.aws/credentials",
       "confidence": "explicit"
     },
     {

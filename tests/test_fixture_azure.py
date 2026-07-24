@@ -68,8 +68,20 @@ def test_lab_azure_sp_reaches_prod_pii_via_webapp_mi(tmp_path, monkeypatch):
     )
     paths = find_attack_paths(snapshot, start_node_id=start, end_node_id=target, max_depth=10)
     assert paths, "SP should reach prod PII via web app control → MI → KV read"
+    assert len(paths[0].steps) >= 3, paths[0].steps
+    assert len(paths[0].node_ids) >= 4
     rels = [s.rel_type for s in paths[0].steps]
-    assert "CONTROLS" in rels or "EXECUTES_AS" in rels
+    assert "CONTROLS" in rels
+    assert "EXECUTES_AS" in rels or "CAN_ESCAPE_TO" in rels
+    assert "READS" in rels
+
+
+def test_lab_azure_scope_id_canonical(tmp_path, monkeypatch):
+    record, snapshot, _ = _load_azure_lab(tmp_path, monkeypatch, "azure-scope")
+    assert record.scope_id == "azure:subscription:a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    natives = {n.props.get("native_id") for n in snapshot.nodes.values()}
+    assert "AutomationAccount:corp-ops-aa" in natives
+    assert "WebApp:marketing-api" in natives
 
 
 def test_import_azure_sample_via_api(tmp_path, monkeypatch):

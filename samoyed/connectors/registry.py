@@ -49,6 +49,12 @@ CONNECTORS: dict[str, dict[str, Any]] = {
         "accept": "",
         "file_import": False,
     },
+    "bloodhound": {
+        "label": "BloodHound / AzureHound / SharpHound",
+        "description": "BloodHound CE JSON (SharpHound/AzureHound meta+data or OpenGraph nodes/edges)",
+        "accept": ".json",
+        "file_import": True,
+    },
 }
 
 
@@ -92,6 +98,12 @@ def import_report(
         from samoyed.connectors.network_inventory.importer import import_network_inventory
 
         return import_network_inventory(
+            payload, session_id=session_id, caller_arn=caller_arn, session_store=session_store
+        )
+    if connector_id == "bloodhound":
+        from samoyed.connectors.bloodhound.importer import import_bloodhound
+
+        return import_bloodhound(
             payload, session_id=session_id, caller_arn=caller_arn, session_store=session_store
         )
     raise ValueError(f"Unknown connector: {connector_id}")

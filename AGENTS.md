@@ -28,10 +28,14 @@ Sources: live AWS/GCP enum, Cartography, **Terraform tfstate** (AWS `aws_*` and 
 samoyed import-fixture vpc-peering-aws   # small cross-account peer demo
 samoyed import-fixture corp-mesh-aws     # DMZ/App/PCI + shared/staging mesh (ALBs, buckets)
 samoyed import-fixture corp-mesh-gcp     # multi-project GCP mesh (tfstate)
+samoyed import-fixture grand-tri-cloud   # corp-mesh-aws patient-zero → GCP/Azure (tf + enrichment autoload)
+# or: samoyed import-path samoyed/fixtures/labs/grand-tri-cloud
 samoyed import-path ./infra/terraform.tfstate
 samoyed import-path ./network.json --attach-to <session>
 samoyed scenario can-reach-other-accounts
 ```
+
+`import-path` on a directory merges all `*.tfstate` and auto-applies companion `enrichment.json` / `*.enrichment.json` files found under the tree (used by `grand-tri-cloud`).
 
 UI: **Network Edges (All)** toolbar toggle (off by default; VPC_PEERS / BRIDGES_TO always shown).
 
@@ -52,6 +56,39 @@ samoyed scenario intercloud-federation --session-id <id>
 ```
 
 Cross-cloud pivots (WIF / foreign `CAN_ASSUME_ROLE`) auto-search other sessions by `scope_id` and graft, or emit a stub ScopeBoundary when none match.
+
+## Azure (live + Goat + BloodHound + inter-cloud)
+
+With `AZURE_SUBSCRIPTION_ID` + `az login` / SP env vars / SP JSON key file, plain `samoyed enum` auto-selects Azure (no `--provider` required). Install `pip install 'samoyed[azure]'`.
+
+```bash
+# Live
+samoyed enum
+samoyed whoami
+samoyed collect-azure-report
+
+# Starter lab (clone; .samoyed/ is gitignored)
+git clone https://github.com/ine-labs/AzureGoat.git .samoyed/AzureGoat
+samoyed import-path .samoyed/AzureGoat
+
+# Bundled fixtures
+samoyed import-fixture lab-azure
+samoyed import-fixture corp-mesh-azure
+samoyed import-fixture wif-aws-azure
+samoyed import-fixture wif-gcp-azure
+samoyed import-fixture intercloud-tri-cloud
+samoyed import-fixture grand-tri-cloud   # terraform mesh + per-env enrichment.json (autoload)
+samoyed import-fixture bloodhound-entra-lab
+samoyed import-fixture hybrid-mimikatz-entra
+
+# AzureHound / SharpHound CE JSON → ConceptArtifact pipeline
+samoyed import-bloodhound ./azurehound.json
+
+samoyed scenario intercloud-federation --session-id <id>
+samoyed intercloud-map --session-id <id>
+```
+
+`intercloud-map` (CLI + MCP `describe_intercloud_paths`) lists ScopeBoundaries, WIF/OIDC/synced-identity bridges, auto-grafts peer sessions, and returns top paths from caller/compromised. Entra group hops use `MEMBER_OF`; Mimikatz / cached-cred host theft uses a single `CAN_STEAL_CREDS_FROM` edge (session vs store distinguished by props).
 
 ## Cartography connector
 
@@ -126,6 +163,7 @@ class MyInternalApiEnumerator:
 - `list_markings`, `mark_nodes`, `mark_from_alert` — declare compromised starts and crown-jewel targets
 - `find_attack_paths`, `get_blast_radius`
 - `search_nodes`, `run_scenario` (incl. `can-reach-other-accounts` for VPC peering)
+- `describe_intercloud_paths` — ScopeBoundaries, WIF bridges, grafts, top cross-cloud paths
 - Resource: `samoyed://ontology`
 
 Mark nodes over MCP (session_id optional — defaults to most recent):

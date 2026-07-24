@@ -89,6 +89,10 @@ def graft_scope_session(
             props.setdefault("account_id", identifier)
         if kind == "project" and identifier:
             props.setdefault("project_id", identifier)
+        if kind == "subscription" and identifier:
+            props.setdefault("subscription_id", identifier)
+        if kind == "tenant" and identifier:
+            props.setdefault("tenant_id", identifier)
         if provider is not None:
             props.setdefault("provider", provider.value)
         builder.snapshot.add_node(GraphNode(node_id=node_id, label=node.label, props=props))
@@ -149,6 +153,10 @@ def ensure_scope_boundary(
             node.props.setdefault("account_id", identifier)
         if kind == "project" and identifier:
             node.props.setdefault("project_id", identifier)
+        if kind == "subscription" and identifier:
+            node.props.setdefault("subscription_id", identifier)
+        if kind == "tenant" and identifier:
+            node.props.setdefault("tenant_id", identifier)
         if stub:
             node.props["stub"] = True
         if is_cross_cloud:
@@ -157,6 +165,12 @@ def ensure_scope_boundary(
 
     if kind == "project":
         display = f"Project:{identifier}" if identifier else scope_id
+        cross_account = False
+    elif kind == "subscription":
+        display = f"Subscription:{identifier}" if identifier else scope_id
+        cross_account = True
+    elif kind == "tenant":
+        display = f"Tenant:{identifier}" if identifier else scope_id
         cross_account = False
     else:
         display = f"Account:{identifier}" if identifier else scope_id
@@ -176,6 +190,12 @@ def ensure_scope_boundary(
     if kind == "project" and identifier:
         props["project_id"] = identifier
         props["is_cross_project_boundary"] = True
+    if kind == "subscription" and identifier:
+        props["subscription_id"] = identifier
+        props["is_cross_subscription_boundary"] = True
+    if kind == "tenant" and identifier:
+        props["tenant_id"] = identifier
+        props["is_cross_tenant_boundary"] = True
     if stub:
         props["stub"] = True
     if is_cross_cloud:
@@ -224,7 +244,7 @@ def resolve_scope_or_stub(
 
 
 def peer_scope_ids(inventory: NetworkInventory, local_scope_ids: set[str]) -> set[str]:
-    """Peer scope ids (accounts or projects) referenced by inventory peerings."""
+    """Peer scope ids (accounts, projects, or subscriptions) referenced by inventory peerings."""
     provider = (inventory.provider or "aws").lower()
     peers: set[str] = set()
     for peering in inventory.peerings:
@@ -235,6 +255,8 @@ def peer_scope_ids(inventory: NetworkInventory, local_scope_ids: set[str]) -> se
                 continue
             if provider == "gcp":
                 scope_id = make_scope_id(CloudProvider.GCP, "project", account)
+            elif provider == "azure":
+                scope_id = make_scope_id(CloudProvider.AZURE, "subscription", account)
             else:
                 scope_id = make_scope_id(CloudProvider.AWS, "account", account)
             if scope_id not in local_scope_ids:
@@ -276,6 +298,14 @@ def _scope_match_score(
             score += 10
         if str(meta.get("gcp_project_id") or "") == identifier:
             score += 8
+    if kind == "subscription":
+        if str(meta.get("subscription_id") or "") == identifier:
+            score += 10
+        if str(meta.get("account_id") or "") == identifier:
+            score += 8
+    if kind == "tenant":
+        if str(meta.get("tenant_id") or "") == identifier:
+            score += 10
     sess_provider = getattr(session, "provider", None)
     if provider is not None and sess_provider is not None:
         prov_val = getattr(sess_provider, "value", sess_provider)
@@ -293,6 +323,12 @@ def _scope_match_score(
             score += 3
             break
         if kind == "project" and str(props.get("project_id") or "") == identifier:
+            score += 3
+            break
+        if kind == "subscription" and str(props.get("subscription_id") or "") == identifier:
+            score += 3
+            break
+        if kind == "tenant" and str(props.get("tenant_id") or "") == identifier:
             score += 3
             break
         native = str(props.get("native_id") or "")

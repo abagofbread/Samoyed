@@ -29,6 +29,10 @@ COMPUTE_RESOURCE_TYPES = frozenset(
         "CloudBuild",
         "CodeBuildProject",
         "CodePipeline",
+        "AzureVM",
+        "WebApp",
+        "FunctionApp",
+        "AutomationAccount",
     }
 )
 

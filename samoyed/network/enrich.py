@@ -13,6 +13,7 @@ from samoyed.network.model import (
     NETWORK_ENRICHMENT_SOURCE,
     NetworkInventory,
     inventory_from_node_props,
+    resolve_placement_provider,
 )
 from samoyed.network.reachability import EdgeIntent, evaluate_reachability
 from samoyed.network.session_graft import (
@@ -58,19 +59,19 @@ def enrich_network_reachability(
     stats["hosted_in_edges"] = int(boundary_stats.get("hosted_in_edges") or 0)
     _ensure_internet_node(builder)
 
-    provider = (merged.provider or "aws").lower()
-    if provider == "gcp":
-        local_scopes = {
-            make_scope_id(CloudProvider.GCP, "project", p.account_id)
-            for p in merged.placements
-            if p.account_id
-        }
-    else:
-        local_scopes = {
-            make_scope_id(CloudProvider.AWS, "account", p.account_id)
-            for p in merged.placements
-            if p.account_id
-        }
+    local_scopes: set[str] = set()
+    for placement in merged.placements:
+        if not placement.account_id:
+            continue
+        provider = resolve_placement_provider(placement, inventory_provider=merged.provider)
+        if provider == "gcp":
+            local_scopes.add(make_scope_id(CloudProvider.GCP, "project", placement.account_id))
+        elif provider == "azure":
+            local_scopes.add(
+                make_scope_id(CloudProvider.AZURE, "subscription", placement.account_id)
+            )
+        else:
+            local_scopes.add(make_scope_id(CloudProvider.AWS, "account", placement.account_id))
     for scope_id in peer_scope_ids(merged, local_scopes):
         ensure_scope_boundary(builder, scope_id)
         stats["account_boundaries"] += 1
@@ -92,6 +93,7 @@ def enrich_network_reachability(
         if intent.rel_type == "VPC_PEERS" and (
             intent.dst_native_id.startswith("aws:account:")
             or intent.dst_native_id.startswith("gcp:project:")
+            or intent.dst_native_id.startswith("azure:subscription:")
         ):
             dst_id = ensure_scope_boundary(builder, intent.dst_native_id)
             native_to_id[intent.dst_native_id] = dst_id
@@ -195,7 +197,11 @@ def _resolve_native(
         return _ensure_internet_node(builder)
     if native_id in index:
         return index[native_id]
-    if native_id.startswith("aws:account:") or native_id.startswith("gcp:project:"):
+    if (
+        native_id.startswith("aws:account:")
+        or native_id.startswith("gcp:project:")
+        or native_id.startswith("azure:subscription:")
+    ):
         node_id = ensure_scope_boundary(builder, native_id)
         index[native_id] = node_id
         return node_id
@@ -207,6 +213,9 @@ def _resolve_native(
         or native_id.startswith("GCEInstance:")
         or native_id.startswith("CloudRunService:")
         or native_id.startswith("CloudFunction:")
+        or native_id.startswith("AzureVM:")
+        or native_id.startswith("WebApp:")
+        or native_id.startswith("FunctionApp:")
     ):
         rtype = native_id.split(":", 1)[0]
         node_id = builder.add_concept_node(

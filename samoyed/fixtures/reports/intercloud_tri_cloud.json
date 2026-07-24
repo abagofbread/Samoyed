@@ -1,0 +1,257 @@
+{
+  "provider": "aws",
+  "account_id": "111111111111",
+  "scope_id": "aws:account:111111111111",
+  "source": "samoyed-fixture",
+  "description": "Compromised CI host with AWS + GCP + Azure creds; blast path touches all three providers via WIF bridges",
+  "identities": [
+    {
+      "id": "arn:aws:iam::111111111111:user/ci-bot",
+      "kind": "User",
+      "provider": "aws",
+      "display_name": "ci-bot"
+    },
+    {
+      "id": "arn:aws:iam::111111111111:role/CICDDeploy",
+      "kind": "Role",
+      "provider": "aws",
+      "display_name": "CICDDeploy"
+    },
+    {
+      "id": "arn:aws:iam::444444444444:role/FromAzureWif",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "444444444444",
+      "display_name": "FromAzureWif"
+    },
+    {
+      "id": "gcp:serviceaccount:ci-runner@proj-shared.iam.gserviceaccount.com",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "ci-runner@proj-shared.iam.gserviceaccount.com",
+      "project_id": "proj-shared",
+      "display_name": "ci-runner"
+    },
+    {
+      "id": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "project_id": "proj-shared",
+      "display_name": "WIF bridge SA"
+    },
+    {
+      "id": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "kind": "ServicePrincipal",
+      "provider": "azure",
+      "client_id": "3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "display_name": "sp-ci-deploy-dev",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "kind": "ManagedIdentity",
+      "provider": "azure",
+      "display_name": "mi-release-runner",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    }
+  ],
+  "resources": [
+    {
+      "id": "host:workstation:ci-runner-box",
+      "concept": "Workload",
+      "type": "CompromisedHost",
+      "name": "CI runner box",
+      "display_name": "CI runner box",
+      "is_scenario_start": true
+    },
+    {
+      "id": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:promote-release",
+      "concept": "RuntimeBinding",
+      "type": "LambdaFunction",
+      "name": "promote-release"
+    },
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:444444444444:secret:shared/pagerduty",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "shared/pagerduty",
+      "account_id": "444444444444",
+      "high_value": true
+    },
+    {
+      "id": "S3Bucket:corp-shared-tfstate",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "corp-shared-tfstate",
+      "account_id": "444444444444",
+      "high_value": true
+    },
+    {
+      "id": "CloudFunction:projects/proj-shared/locations/us-east1/functions/webhook-relay",
+      "concept": "RuntimeBinding",
+      "type": "CloudFunction",
+      "name": "webhook-relay",
+      "project_id": "proj-shared"
+    },
+    {
+      "id": "GCPSecret:projects/proj-shared/secrets/azure-oidc-client",
+      "concept": "SecretStore",
+      "type": "GCPSecret",
+      "name": "azure-oidc-client",
+      "project_id": "proj-shared"
+    },
+    {
+      "id": "GCSBucket:corp-shared-cicd-artifacts",
+      "concept": "DataStore",
+      "type": "GCSBucket",
+      "name": "corp-shared-cicd-artifacts",
+      "project_id": "proj-shared"
+    },
+    {
+      "id": "WebApp:release-api",
+      "concept": "RuntimeBinding",
+      "type": "WebApp",
+      "name": "release-api",
+      "display_name": "release-api",
+      "execution_role_arn": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "KeyVaultSecret:corp-kv-prod/customer-pii-export",
+      "concept": "SecretStore",
+      "type": "KeyVaultSecret",
+      "name": "customer-pii-export",
+      "display_name": "corp-kv-prod/customer-pii-export",
+      "environment": "prod",
+      "sensitivity": "pii",
+      "high_value": true,
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    }
+  ],
+  "grants": [
+    {
+      "from": "host:workstation:ci-runner-box",
+      "to": "arn:aws:iam::111111111111:user/ci-bot",
+      "rel": "CAN_STEAL_CREDS_FROM",
+      "action": "host:credential-store",
+      "mechanism": "aws-cli-cache",
+      "store_type": "aws-cli-credentials",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:ci-runner-box",
+      "to": "gcp:serviceaccount:ci-runner@proj-shared.iam.gserviceaccount.com",
+      "rel": "CAN_STEAL_CREDS_FROM",
+      "action": "host:credential-store",
+      "mechanism": "gcloud-application-default-credentials",
+      "store_type": "gcp-application-default",
+      "confidence": "explicit"
+    },
+    {
+      "from": "host:workstation:ci-runner-box",
+      "to": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "rel": "CAN_STEAL_CREDS_FROM",
+      "action": "host:credential-store",
+      "mechanism": "azure-cli-token-cache",
+      "store_type": "azure-cli-token-cache",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:user/ci-bot",
+      "to": "arn:aws:iam::111111111111:role/CICDDeploy",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::111111111111:role/CICDDeploy",
+      "to": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:promote-release",
+      "rel": "CONTROLS",
+      "action": "lambda:UpdateFunctionCode",
+      "confidence": "explicit"
+    },
+    {
+      "from": "LambdaFunction:arn:aws:lambda:us-east-1:111111111111:function:promote-release",
+      "to": "arn:aws:iam::111111111111:role/CICDDeploy",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:ci-runner@proj-shared.iam.gserviceaccount.com",
+      "to": "CloudFunction:projects/proj-shared/locations/us-east1/functions/webhook-relay",
+      "rel": "CONTROLS",
+      "action": "cloudfunctions.functions.update",
+      "confidence": "explicit"
+    },
+    {
+      "from": "CloudFunction:projects/proj-shared/locations/us-east1/functions/webhook-relay",
+      "to": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "to": "GCPSecret:projects/proj-shared/secrets/azure-oidc-client",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "to": "GCSBucket:corp-shared-cicd-artifacts",
+      "rel": "WRITES",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:wif-bridge@proj-shared.iam.gserviceaccount.com",
+      "to": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "wif",
+      "issuer": "accounts.google.com",
+      "confidence": "explicit",
+      "provider_hint": "azure"
+    },
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "WebApp:release-api",
+      "rel": "CONTROLS",
+      "role": "Website Contributor",
+      "confidence": "explicit"
+    },
+    {
+      "from": "WebApp:release-api",
+      "to": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "rel": "EXECUTES_AS",
+      "source": "webapp-managed-identity",
+      "confidence": "explicit"
+    },
+    {
+      "from": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "to": "KeyVaultSecret:corp-kv-prod/customer-pii-export",
+      "rel": "READS",
+      "role": "Key Vault Secrets User",
+      "confidence": "explicit"
+    },
+    {
+      "from": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "to": "arn:aws:iam::444444444444:role/FromAzureWif",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "wif",
+      "issuer": "https://login.microsoftonline.com/eeeeeeee-1111-2222-3333-444444444444/v2.0",
+      "confidence": "explicit",
+      "provider_hint": "aws"
+    },
+    {
+      "from": "arn:aws:iam::444444444444:role/FromAzureWif",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:444444444444:secret:shared/pagerduty",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::444444444444:role/FromAzureWif",
+      "to": "S3Bucket:corp-shared-tfstate",
+      "rel": "READS",
+      "confidence": "explicit"
+    }
+  ],
+  "caller_arn": "host:workstation:ci-runner-box"
+}

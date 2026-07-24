@@ -240,7 +240,7 @@ def stored_identity_nodes(graph: GraphSnapshot, start_id: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for dst_id, rel, _props in graph.adjacency.get(start_id, []):
-        if rel not in {"LOGGED_IN_AS", "STORES_CREDS_FOR", "CAN_STEAL_CREDS_FROM"}:
+        if rel != "CAN_STEAL_CREDS_FROM":
             continue
         if dst_id not in seen:
             seen.add(dst_id)

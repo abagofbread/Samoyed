@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "source_kind": "AZBase",
+    "tenant_id": "11111111-2222-3333-4444-555555555555"
+  },
+  "graph": {
+    "nodes": [
+      {
+        "id": "aaaaaaaa-0000-0000-0000-000000000003",
+        "kinds": ["AZUser", "AZBase"],
+        "properties": {
+          "name": "ci-bot@contoso.onmicrosoft.com",
+          "displayname": "CI Bot",
+          "tenantid": "11111111-2222-3333-4444-555555555555"
+        }
+      },
+      {
+        "id": "bbbbbbbb-0000-0000-0000-000000000010",
+        "kinds": ["AZGroup", "AZBase"],
+        "properties": {
+          "name": "App Administrators",
+          "displayname": "App Administrators",
+          "tenantid": "11111111-2222-3333-4444-555555555555"
+        }
+      },
+      {
+        "id": "cccccccc-0000-0000-0000-000000000020",
+        "kinds": ["AZServicePrincipal", "AZBase"],
+        "properties": {
+          "name": "corp-automation-sp",
+          "displayname": "Corp Automation SP",
+          "appid": "cccccccc-0000-0000-0000-000000000020",
+          "tenantid": "11111111-2222-3333-4444-555555555555"
+        }
+      },
+      {
+        "id": "dddddddd-0000-0000-0000-000000000090",
+        "kinds": ["AZRole", "AZBase"],
+        "properties": {
+          "name": "Global Administrator",
+          "displayname": "Global Administrator",
+          "tenantid": "11111111-2222-3333-4444-555555555555"
+        }
+      },
+      {
+        "id": "ffffffff-0000-0000-0000-000000000099",
+        "kinds": ["AZTenant", "AZBase"],
+        "properties": {
+          "name": "contoso.onmicrosoft.com",
+          "displayname": "Contoso",
+          "tenantid": "11111111-2222-3333-4444-555555555555"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "kind": "AZMemberOf",
+        "start": { "match_by": "id", "value": "aaaaaaaa-0000-0000-0000-000000000003" },
+        "end": { "match_by": "id", "value": "bbbbbbbb-0000-0000-0000-000000000010" }
+      },
+      {
+        "kind": "AZAddSecret",
+        "start": { "match_by": "id", "value": "bbbbbbbb-0000-0000-0000-000000000010" },
+        "end": { "match_by": "id", "value": "cccccccc-0000-0000-0000-000000000020" }
+      },
+      {
+        "kind": "AZMGGrantRole",
+        "start": { "match_by": "id", "value": "cccccccc-0000-0000-0000-000000000020" },
+        "end": { "match_by": "id", "value": "dddddddd-0000-0000-0000-000000000090" }
+      },
+      {
+        "kind": "AZGlobalAdmin",
+        "start": { "match_by": "id", "value": "dddddddd-0000-0000-0000-000000000090" },
+        "end": { "match_by": "id", "value": "ffffffff-0000-0000-0000-000000000099" }
+      },
+      {
+        "kind": "AZContains",
+        "start": { "match_by": "id", "value": "ffffffff-0000-0000-0000-000000000099" },
+        "end": { "match_by": "id", "value": "aaaaaaaa-0000-0000-0000-000000000003" }
+      },
+      {
+        "kind": "TotallyUnknownKind",
+        "start": { "match_by": "id", "value": "aaaaaaaa-0000-0000-0000-000000000003" },
+        "end": { "match_by": "id", "value": "cccccccc-0000-0000-0000-000000000020" }
+      }
+    ]
+  }
+}

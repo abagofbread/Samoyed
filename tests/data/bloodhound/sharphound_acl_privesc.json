@@ -1,0 +1,75 @@
+{
+  "files": [
+    {
+      "meta": {
+        "methods": 127999,
+        "type": "users",
+        "count": 2,
+        "version": 5
+      },
+      "data": [
+        {
+          "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-1201",
+          "Properties": {
+            "name": "HELPOPS@CONTOSO.LOCAL",
+            "domain": "CONTOSO.LOCAL",
+            "displayname": "Helpdesk Ops",
+            "samaccountname": "helpops"
+          },
+          "Aces": [],
+          "MemberOf": []
+        },
+        {
+          "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-1202",
+          "Properties": {
+            "name": "JANE@CONTOSO.LOCAL",
+            "domain": "CONTOSO.LOCAL",
+            "displayname": "Jane Privileged",
+            "samaccountname": "jane"
+          },
+          "Aces": [
+            {
+              "PrincipalSID": "S-1-5-21-1111111111-2222222222-3333333333-1201",
+              "PrincipalType": "User",
+              "RightName": "ForceChangePassword",
+              "IsInherited": false
+            }
+          ],
+          "MemberOf": []
+        }
+      ]
+    },
+    {
+      "meta": {
+        "methods": 127999,
+        "type": "domains",
+        "count": 1,
+        "version": 5
+      },
+      "data": [
+        {
+          "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333",
+          "Properties": {
+            "name": "CONTOSO.LOCAL",
+            "domain": "CONTOSO.LOCAL",
+            "displayname": "contoso.local"
+          },
+          "Aces": [
+            {
+              "PrincipalSID": "S-1-5-21-1111111111-2222222222-3333333333-1202",
+              "PrincipalType": "User",
+              "RightName": "GetChanges",
+              "IsInherited": false
+            },
+            {
+              "PrincipalSID": "S-1-5-21-1111111111-2222222222-3333333333-1202",
+              "PrincipalType": "User",
+              "RightName": "GetChangesAll",
+              "IsInherited": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

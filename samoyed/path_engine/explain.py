@@ -59,11 +59,15 @@ def _narrative(
         )
     if step.rel_type == "EXECUTES_AS":
         return f"{src_name} runs as {dst_name} (execution role / instance profile)"
-    if step.rel_type == "LOGGED_IN_AS":
-        return f"{src_name} has interactive session for {dst_name} (token theft / mimikatz)"
-    if step.rel_type == "STORES_CREDS_FOR":
-        return f"{src_name} stores cached credentials for {dst_name}"
+    if step.rel_type == "MEMBER_OF":
+        return f"{src_name} is a member of {dst_name}"
     if step.rel_type == "CAN_STEAL_CREDS_FROM":
+        store = evidence.get("store_type") or evidence.get("path_hint")
+        if evidence.get("session_type") or evidence.get("mechanism") == "lsass-mimikatz":
+            return f"{src_name} can steal interactive-session credentials for {dst_name} (token theft / mimikatz)"
+        if store:
+            where = evidence.get("path_hint") or evidence.get("store_type")
+            return f"{src_name} can harvest cached credentials for {dst_name} ({where})"
         return f"{src_name} can harvest credentials for {dst_name} from disk or memory"
     if step.rel_type == "HAS_MATERIAL":
         dst_finding = ""

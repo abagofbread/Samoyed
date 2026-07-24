@@ -155,21 +155,19 @@
     {
       "from": "host:workstation:alex-laptop",
       "to": "arn:aws:iam::111111111111:user/dev-alex",
-      "rel": "STORES_CREDS_FOR",
-      "confidence": "explicit"
-    },
-    {
-      "from": "host:workstation:alex-laptop",
-      "to": "arn:aws:iam::111111111111:user/dev-alex",
       "rel": "CAN_STEAL_CREDS_FROM",
       "action": "host:credential-store",
       "mechanism": "aws-cli-cache",
+      "store_type": "aws-cli-credentials",
       "confidence": "explicit"
     },
     {
       "from": "host:workstation:alex-laptop",
       "to": "gcp:user:alex@corp.com",
-      "rel": "LOGGED_IN_AS",
+      "rel": "CAN_STEAL_CREDS_FROM",
+      "action": "host:interactive-session",
+      "session_type": "interactive",
+      "mechanism": "lsass-mimikatz",
       "confidence": "explicit"
     },
     {
@@ -178,12 +176,7 @@
       "rel": "CAN_STEAL_CREDS_FROM",
       "action": "host:credential-store",
       "mechanism": "gcloud-application-default-credentials",
-      "confidence": "explicit"
-    },
-    {
-      "from": "host:workstation:alex-laptop",
-      "to": "gcp:serviceaccount:alex-dev@proj-app.iam.gserviceaccount.com",
-      "rel": "STORES_CREDS_FOR",
+      "store_type": "gcp-application-default",
       "confidence": "explicit"
     },
     {

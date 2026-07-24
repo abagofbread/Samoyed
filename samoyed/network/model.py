@@ -19,6 +19,7 @@ class NetworkPlacement:
     sg_ids: list[str] = field(default_factory=list)
     exposed_internet: bool = False
     resource_type: str = ""
+    provider: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -31,6 +32,7 @@ class NetworkPlacement:
             "sg_ids": list(self.sg_ids),
             "exposed_internet": self.exposed_internet,
             "resource_type": self.resource_type,
+            "provider": self.provider,
         }
 
     @classmethod
@@ -45,6 +47,7 @@ class NetworkPlacement:
             sg_ids=[str(x) for x in (data.get("sg_ids") or [])],
             exposed_internet=bool(data.get("exposed_internet")),
             resource_type=str(data.get("resource_type") or ""),
+            provider=str(data.get("provider") or ""),
         )
 
 
@@ -58,6 +61,7 @@ class PeeringLink:
     remote_account_id: str = ""
     local_cidrs: list[str] = field(default_factory=list)
     remote_cidrs: list[str] = field(default_factory=list)
+    provider: str = ""
 
     @property
     def is_active(self) -> bool:
@@ -73,6 +77,7 @@ class PeeringLink:
             "remote_account_id": self.remote_account_id,
             "local_cidrs": list(self.local_cidrs),
             "remote_cidrs": list(self.remote_cidrs),
+            "provider": self.provider,
         }
 
     @classmethod
@@ -86,6 +91,7 @@ class PeeringLink:
             remote_account_id=str(data.get("remote_account_id") or ""),
             local_cidrs=[str(x) for x in (data.get("local_cidrs") or [])],
             remote_cidrs=[str(x) for x in (data.get("remote_cidrs") or [])],
+            provider=str(data.get("provider") or ""),
         )
 
 
@@ -195,9 +201,15 @@ class NetworkInventory:
             prev = set(vpc_cidrs.get(vpc_id, []))
             prev.update(cidrs)
             vpc_cidrs[vpc_id] = sorted(prev)
+        left = (self.provider or "").lower()
+        right = (other.provider or "").lower()
+        if left and right and left != right and {left, right} != {"", "multi"}:
+            merged_provider = "multi"
+        else:
+            merged_provider = left or right or "aws"
         return NetworkInventory(
             version=max(self.version, other.version),
-            provider=self.provider or other.provider,
+            provider=merged_provider,
             placements=list(by_native.values()),
             peerings=list(peering_ids.values()),
             sg_rules=list(sg_keys.values()),
@@ -231,6 +243,7 @@ def _merge_placement(a: NetworkPlacement, b: NetworkPlacement) -> NetworkPlaceme
         sg_ids=sorted(set(a.sg_ids) | set(b.sg_ids)),
         exposed_internet=a.exposed_internet or b.exposed_internet,
         resource_type=a.resource_type or b.resource_type,
+        provider=a.provider or b.provider,
     )
 
 
@@ -260,6 +273,60 @@ def inventory_from_node_props(nodes: Iterable[Any]) -> NetworkInventory:
                 sg_ids=[str(x) for x in sg_ids],
                 exposed_internet=bool(props.get("exposed_internet")),
                 resource_type=str(props.get("resource_type") or ""),
+                provider=str(props.get("provider") or ""),
             )
         )
     return NetworkInventory(placements=placements, source="node-props")
+
+
+def resolve_placement_provider(
+    placement: NetworkPlacement,
+    *,
+    inventory_provider: str = "",
+) -> str:
+    """Resolve cloud provider for a placement (explicit → inferred → inventory)."""
+    explicit = (placement.provider or "").lower()
+    if explicit and explicit != "multi":
+        return explicit
+    native = (placement.native_id or "").lower()
+    vpc = (placement.vpc_id or "").lower()
+    resource = (placement.resource_type or "").lower()
+    if (
+        native.startswith(("gceinstance:", "cloudrunservice:", "cloudfunction:", "gcp:"))
+        or "projects/" in vpc
+        or "/networks/" in vpc
+        or resource.startswith(("gce", "cloudrun", "cloudfunction"))
+    ):
+        return "gcp"
+    if (
+        native.startswith("azure")
+        or "/subscriptions/" in vpc
+        or "/virtualnetworks/" in vpc
+        or resource.startswith("azure")
+    ):
+        return "azure"
+    if native.startswith("ec2instance:") or vpc.startswith("vpc-") or resource.startswith("ec2"):
+        return "aws"
+    inv = (inventory_provider or "").lower()
+    if inv and inv != "multi":
+        return inv
+    return "aws"
+
+
+def resolve_peering_provider(
+    peering: PeeringLink,
+    *,
+    inventory_provider: str = "",
+) -> str:
+    explicit = (peering.provider or "").lower()
+    if explicit and explicit != "multi":
+        return explicit
+    sample = f"{peering.local_vpc_id} {peering.remote_vpc_id}".lower()
+    if "projects/" in sample or "/networks/" in sample:
+        return "gcp"
+    if "/subscriptions/" in sample or "/virtualnetworks/" in sample:
+        return "azure"
+    inv = (inventory_provider or "").lower()
+    if inv and inv != "multi":
+        return inv
+    return "aws"

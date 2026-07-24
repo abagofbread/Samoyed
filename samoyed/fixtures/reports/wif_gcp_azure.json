@@ -1,0 +1,170 @@
+{
+  "provider": "azure",
+  "account_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "scope_id": "azure:subscription:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "source": "samoyed-fixture",
+  "description": "Azure MI → federated WIF into GCP → cross-project Secret Manager / GCS crown jewel",
+  "identities": [
+    {
+      "id": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "name": "sp-ci-deploy-dev",
+      "kind": "ServicePrincipal",
+      "provider": "azure",
+      "client_id": "3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "is_caller": true,
+      "display_name": "sp-ci-deploy-dev (leaked CI SP)",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "azure:managedidentity:9f9f9f9f-aaaa-bbbb-cccc-dddddddddddd",
+      "name": "mi-data-sync",
+      "kind": "ManagedIdentity",
+      "provider": "azure",
+      "display_name": "mi-data-sync",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "gcp:serviceaccount:azure-wif@proj-shared.iam.gserviceaccount.com",
+      "name": "azure-wif",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "azure-wif@proj-shared.iam.gserviceaccount.com",
+      "project_id": "proj-shared",
+      "display_name": "Azure WIF bridge SA"
+    },
+    {
+      "id": "gcp:serviceaccount:etl-runtime@proj-shared.iam.gserviceaccount.com",
+      "name": "etl-runtime",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "etl-runtime@proj-shared.iam.gserviceaccount.com",
+      "project_id": "proj-shared",
+      "display_name": "ETL runtime"
+    },
+    {
+      "id": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "name": "data-etl",
+      "kind": "ServiceAccount",
+      "provider": "gcp",
+      "email": "data-etl@proj-pci.iam.gserviceaccount.com",
+      "project_id": "proj-pci",
+      "display_name": "PCI ETL SA"
+    }
+  ],
+  "resources": [
+    {
+      "id": "FunctionApp:data-sync",
+      "concept": "RuntimeBinding",
+      "type": "FunctionApp",
+      "name": "data-sync",
+      "display_name": "data-sync",
+      "execution_role_arn": "azure:managedidentity:9f9f9f9f-aaaa-bbbb-cccc-dddddddddddd",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "KeyVaultSecret:corp-kv-dev/gcp-wif-audience",
+      "concept": "SecretStore",
+      "type": "KeyVaultSecret",
+      "name": "gcp-wif-audience",
+      "display_name": "corp-kv-dev/gcp-wif-audience"
+    },
+    {
+      "id": "CloudRunService:projects/proj-shared/locations/us-east1/services/azure-bridge-etl",
+      "concept": "RuntimeBinding",
+      "type": "CloudRunService",
+      "name": "azure-bridge-etl",
+      "project_id": "proj-shared"
+    },
+    {
+      "id": "GCPSecret:projects/proj-pci/secrets/cardholder-db",
+      "concept": "SecretStore",
+      "type": "GCPSecret",
+      "name": "cardholder-db",
+      "project_id": "proj-pci",
+      "high_value": true
+    },
+    {
+      "id": "GCSBucket:corp-pci-crown-jewel",
+      "concept": "DataStore",
+      "type": "GCSBucket",
+      "name": "corp-pci-crown-jewel",
+      "project_id": "proj-pci",
+      "sensitivity": "pci",
+      "high_value": true
+    }
+  ],
+  "grants": [
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "FunctionApp:data-sync",
+      "rel": "CONTROLS",
+      "role": "Website Contributor",
+      "confidence": "explicit"
+    },
+    {
+      "from": "FunctionApp:data-sync",
+      "to": "azure:managedidentity:9f9f9f9f-aaaa-bbbb-cccc-dddddddddddd",
+      "rel": "EXECUTES_AS",
+      "source": "functionapp-managed-identity",
+      "confidence": "explicit"
+    },
+    {
+      "from": "azure:managedidentity:9f9f9f9f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "KeyVaultSecret:corp-kv-dev/gcp-wif-audience",
+      "rel": "READS",
+      "role": "Key Vault Secrets User",
+      "confidence": "explicit"
+    },
+    {
+      "from": "azure:managedidentity:9f9f9f9f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "gcp:serviceaccount:azure-wif@proj-shared.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "wif",
+      "issuer": "https://login.microsoftonline.com/eeeeeeee-1111-2222-3333-444444444444/v2.0",
+      "confidence": "explicit",
+      "provider_hint": "gcp"
+    },
+    {
+      "from": "gcp:serviceaccount:azure-wif@proj-shared.iam.gserviceaccount.com",
+      "to": "gcp:serviceaccount:etl-runtime@proj-shared.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "actAs",
+      "role": "roles/iam.serviceAccountUser",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:etl-runtime@proj-shared.iam.gserviceaccount.com",
+      "to": "CloudRunService:projects/proj-shared/locations/us-east1/services/azure-bridge-etl",
+      "rel": "CONTROLS",
+      "action": "run.services.update",
+      "confidence": "explicit"
+    },
+    {
+      "from": "CloudRunService:projects/proj-shared/locations/us-east1/services/azure-bridge-etl",
+      "to": "gcp:serviceaccount:etl-runtime@proj-shared.iam.gserviceaccount.com",
+      "rel": "EXECUTES_AS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:etl-runtime@proj-shared.iam.gserviceaccount.com",
+      "to": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "getAccessToken",
+      "role": "roles/iam.serviceAccountTokenCreator",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "to": "GCPSecret:projects/proj-pci/secrets/cardholder-db",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "gcp:serviceaccount:data-etl@proj-pci.iam.gserviceaccount.com",
+      "to": "GCSBucket:corp-pci-crown-jewel",
+      "rel": "READS",
+      "confidence": "explicit"
+    }
+  ],
+  "caller_arn": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd"
+}

@@ -241,12 +241,32 @@ def _grants_for(data: dict[str, Any], from_id: str) -> list[ConceptEdge]:
     return edges
 
 
+# Legacy grant names folded into the single host-credential harvest edge.
+_LEGACY_STEAL_RELS = {
+    "STORES_CREDS_FOR": "CAN_STEAL_CREDS_FROM",
+    "LOGGED_IN_AS": "CAN_STEAL_CREDS_FROM",
+}
+
+
 def _grant_edge(grant: dict[str, Any]) -> ConceptEdge:
     rel = grant.get("rel") or grant.get("relationship") or "READS"
+    rel = _LEGACY_STEAL_RELS.get(rel, rel)
     target = grant.get("to") or grant.get("target")
     props = {k: v for k, v in grant.items() if k not in {"from", "to", "rel", "relationship", "target"}}
     if grant.get("action"):
         props["action"] = grant["action"]
+    # Infer harvest action when upgrading legacy fact edges that lacked one.
+    if rel == "CAN_STEAL_CREDS_FROM" and not props.get("action"):
+        if props.get("store_type") or props.get("path_hint"):
+            props["action"] = "host:credential-store"
+        elif props.get("session_type") or props.get("mechanism") == "lsass-mimikatz":
+            props["action"] = "host:interactive-session"
+        elif grant.get("rel") == "LOGGED_IN_AS":
+            props.setdefault("action", "host:interactive-session")
+            props.setdefault("session_type", "interactive")
+            props.setdefault("mechanism", "lsass-mimikatz")
+        elif grant.get("rel") == "STORES_CREDS_FOR":
+            props.setdefault("action", "host:credential-store")
     props["source"] = "iam-report"
     return ConceptEdge(rel_type=rel, target_native_id=target or "", props=props)
 

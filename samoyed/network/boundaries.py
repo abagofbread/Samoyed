@@ -8,8 +8,30 @@ from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.cloud.providers import make_scope_id
 from samoyed.graph.builder import GraphBuilder, stable_id
 from samoyed.graph.model import GraphSnapshot
-from samoyed.network.model import NETWORK_ENRICHMENT_SOURCE, NetworkInventory
+from samoyed.network.model import (
+    NETWORK_ENRICHMENT_SOURCE,
+    NetworkInventory,
+    resolve_placement_provider,
+)
 from samoyed.network.session_graft import ensure_account_boundary
+
+
+def _provider_enum(provider: str) -> CloudProvider:
+    p = (provider or "aws").lower()
+    if p == "gcp":
+        return CloudProvider.GCP
+    if p == "azure":
+        return CloudProvider.AZURE
+    return CloudProvider.AWS
+
+
+def _boundary_prefixes(provider: str) -> tuple[str, str]:
+    p = (provider or "aws").lower()
+    if p == "gcp":
+        return "gcp:vpc", "gcp:subnet"
+    if p == "azure":
+        return "azure:vnet", "azure:subnet"
+    return "aws:vpc", "aws:subnet"
 
 
 def synthesize_network_boundaries(
@@ -25,6 +47,7 @@ def synthesize_network_boundaries(
     If a placement has a VPC but no subnet, compute hosts directly in the VPC.
     Account ScopeBoundary nodes are tagged with ``boundary_kind=account``.
     Idempotent: existing native_ids are reused; duplicate HOSTED_IN edges are skipped.
+    Supports multi-cloud inventories (per-placement provider).
     """
     stats = {
         "vpc_boundaries": 0,
@@ -36,21 +59,27 @@ def synthesize_network_boundaries(
         return stats
 
     vpc_accounts: dict[str, str] = {}
+    vpc_providers: dict[str, str] = {}
     subnet_vpcs: dict[str, str] = {}
     for placement in inventory.placements:
+        provider = resolve_placement_provider(placement, inventory_provider=inventory.provider)
         if placement.vpc_id:
             if placement.account_id:
                 vpc_accounts.setdefault(placement.vpc_id, placement.account_id)
+            vpc_providers.setdefault(placement.vpc_id, provider)
             for subnet_id in placement.subnet_ids:
                 subnet_vpcs.setdefault(subnet_id, placement.vpc_id)
 
-    provider = (inventory.provider or "aws").lower()
-    provider_enum = CloudProvider.GCP if provider == "gcp" else CloudProvider.AWS
-    vpc_prefix = "gcp:vpc" if provider == "gcp" else "aws:vpc"
-    subnet_prefix = "gcp:subnet" if provider == "gcp" else "aws:subnet"
-
     vpc_node_ids: dict[str, str] = {}
     for vpc_id, account_id in sorted(vpc_accounts.items()):
+        from samoyed.network.model import NetworkPlacement
+
+        provider = vpc_providers.get(vpc_id) or resolve_placement_provider(
+            NetworkPlacement(native_id="", vpc_id=vpc_id),
+            inventory_provider=inventory.provider,
+        )
+        provider_enum = _provider_enum(provider)
+        vpc_prefix, _subnet_prefix = _boundary_prefixes(provider)
         native_id = f"{vpc_prefix}:{vpc_id}"
         existed = stable_id("NetworkBoundary", native_id) in builder.snapshot.nodes
         node_id = _ensure_vpc_boundary(
@@ -66,14 +95,26 @@ def synthesize_network_boundaries(
             stats["vpc_boundaries"] += 1
 
         if account_id:
-            if provider == "gcp":
-                from samoyed.network.session_graft import ensure_scope_boundary
+            from samoyed.network.session_graft import ensure_scope_boundary
 
+            if provider == "gcp":
                 account_node = ensure_scope_boundary(
                     builder, make_scope_id(CloudProvider.GCP, "project", account_id)
                 )
                 if _tag_scope_boundary(
                     builder.snapshot, account_node, account_id, kind="project", provider=provider_enum
+                ):
+                    stats["account_boundaries_tagged"] += 1
+            elif provider == "azure":
+                account_node = ensure_scope_boundary(
+                    builder, make_scope_id(CloudProvider.AZURE, "subscription", account_id)
+                )
+                if _tag_scope_boundary(
+                    builder.snapshot,
+                    account_node,
+                    account_id,
+                    kind="subscription",
+                    provider=provider_enum,
                 ):
                     stats["account_boundaries_tagged"] += 1
             else:
@@ -83,18 +124,37 @@ def synthesize_network_boundaries(
             if _add_hosted_in(builder, node_id, account_node):
                 stats["hosted_in_edges"] += 1
 
-    # Also tag any other account/project ScopeBoundary already present (session root).
+    # Also tag any other account/project/subscription ScopeBoundary already present.
     for node_id, node in list(builder.snapshot.nodes.items()):
         if node.label != "ScopeBoundary":
             continue
         native = str(node.props.get("native_id") or "")
-        account_id = str(node.props.get("account_id") or node.props.get("project_id") or "")
-        if native.startswith("aws:account:") or native.startswith("gcp:project:") or account_id:
+        account_id = str(
+            node.props.get("account_id")
+            or node.props.get("project_id")
+            or node.props.get("subscription_id")
+            or ""
+        )
+        if (
+            native.startswith("aws:account:")
+            or native.startswith("gcp:project:")
+            or native.startswith("azure:subscription:")
+            or account_id
+        ):
             if not account_id and ":" in native:
                 account_id = native.rsplit(":", 1)[-1]
             if native.startswith("gcp:project:"):
                 if _tag_scope_boundary(
                     builder.snapshot, node_id, account_id, kind="project", provider=CloudProvider.GCP
+                ):
+                    stats["account_boundaries_tagged"] += 1
+            elif native.startswith("azure:subscription:"):
+                if _tag_scope_boundary(
+                    builder.snapshot,
+                    node_id,
+                    account_id,
+                    kind="subscription",
+                    provider=CloudProvider.AZURE,
                 ):
                     stats["account_boundaries_tagged"] += 1
             elif _tag_account_boundary(builder.snapshot, node_id, account_id):
@@ -106,6 +166,9 @@ def synthesize_network_boundaries(
         if not vpc_node:
             continue
         account_id = vpc_accounts.get(vpc_id, "")
+        provider = vpc_providers.get(vpc_id, "aws")
+        provider_enum = _provider_enum(provider)
+        _vpc_prefix, subnet_prefix = _boundary_prefixes(provider)
         native_id = f"{subnet_prefix}:{subnet_id}"
         existed = stable_id("NetworkBoundary", native_id) in builder.snapshot.nodes
         node_id = _ensure_subnet_boundary(
@@ -164,15 +227,19 @@ def _ensure_vpc_boundary(
         node = builder.snapshot.nodes[existing]
         node.props.setdefault("boundary_kind", "vpc")
         if account_id:
-            key = "project_id" if provider == CloudProvider.GCP else "account_id"
-            node.props.setdefault(key, account_id)
+            if provider == CloudProvider.GCP:
+                node.props.setdefault("project_id", account_id)
+            elif provider == CloudProvider.AZURE:
+                node.props.setdefault("subscription_id", account_id)
             node.props.setdefault("account_id", account_id)
         if cidrs:
             node.props["cidrs"] = list(cidrs)
-        node.props.setdefault("display_name", f"VPC {vpc_id}")
+        label = "VNet" if provider == CloudProvider.AZURE else "VPC"
+        node.props.setdefault("display_name", f"{label} {vpc_id}")
         return existing
+    label = "VNet" if provider == CloudProvider.AZURE else "VPC"
     props: dict[str, Any] = {
-        "display_name": f"VPC {vpc_id}",
+        "display_name": f"{label} {vpc_id}",
         "boundary_kind": "vpc",
         "vpc_id": vpc_id,
         "account_id": account_id,
@@ -182,6 +249,8 @@ def _ensure_vpc_boundary(
     }
     if provider == CloudProvider.GCP and account_id:
         props["project_id"] = account_id
+    if provider == CloudProvider.AZURE and account_id:
+        props["subscription_id"] = account_id
     return builder.add_concept_node(
         concept_type=ConceptType.NETWORK_BOUNDARY,
         native_id=native_id,
@@ -208,6 +277,8 @@ def _ensure_subnet_boundary(
             node.props.setdefault("account_id", account_id)
             if provider == CloudProvider.GCP:
                 node.props.setdefault("project_id", account_id)
+            if provider == CloudProvider.AZURE:
+                node.props.setdefault("subscription_id", account_id)
         node.props.setdefault("display_name", f"Subnet {subnet_id}")
         return existing
     props = {
@@ -221,6 +292,8 @@ def _ensure_subnet_boundary(
     }
     if provider == CloudProvider.GCP and account_id:
         props["project_id"] = account_id
+    if provider == CloudProvider.AZURE and account_id:
+        props["subscription_id"] = account_id
     return builder.add_concept_node(
         concept_type=ConceptType.NETWORK_BOUNDARY,
         native_id=native_id,
@@ -249,11 +322,20 @@ def _tag_scope_boundary(
     if node.props.get("boundary_kind") != kind:
         node.props["boundary_kind"] = kind
         changed = True
-    id_key = "project_id" if kind == "project" else "account_id"
+    if kind == "project":
+        id_key = "project_id"
+    elif kind == "subscription":
+        id_key = "subscription_id"
+    elif kind == "tenant":
+        id_key = "tenant_id"
+    else:
+        id_key = "account_id"
     if identifier and not node.props.get(id_key):
         node.props[id_key] = identifier
         changed = True
     if identifier and kind == "project":
+        node.props.setdefault("account_id", identifier)
+    if identifier and kind == "subscription":
         node.props.setdefault("account_id", identifier)
     if identifier and not node.props.get("native_id"):
         node.props["native_id"] = make_scope_id(provider, kind, identifier)

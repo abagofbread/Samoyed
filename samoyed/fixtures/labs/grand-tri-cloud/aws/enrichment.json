@@ -1,0 +1,55 @@
+{
+  "enrichment_version": 1,
+  "collector": "static-grand-tri-cloud-aws",
+  "collector_mode": "static",
+  "collected_at": "2026-07-24T18:00:00+00:00",
+  "lab_fixture": "grand-tri-cloud",
+  "description": "Bastion hosts a GCP app-deploy key; app-worker has a weak Azure SP client secret; decoy Stripe key is a dead end.",
+  "bindings": [
+    {
+      "target_ref": "arn:aws:iam::111111111111:role/bastion-role",
+      "materials": [
+        {
+          "kind": "gcp_service_account_json",
+          "locator": "/home/ssm-user/.config/gcloud/app-deploy.json",
+          "confidence": "explicit",
+          "evidence": {
+            "file": "/home/ssm-user/.config/gcloud/app-deploy.json",
+            "match": "client_email: app-deploy@proj-app.iam.gserviceaccount.com"
+          },
+          "resolves_to": "app-deploy@proj-app.iam.gserviceaccount.com"
+        }
+      ]
+    },
+    {
+      "target_ref": "EC2Instance:i-appworker01",
+      "materials": [
+        {
+          "kind": "azure_client_secret_env",
+          "locator": "/opt/app-worker/.env:AZURE_CLIENT_SECRET",
+          "confidence": "explicit",
+          "evidence": {
+            "file": "/opt/app-worker/.env",
+            "match": "AZURE_CLIENT_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee AZURE_CLIENT_SECRET=fixture-weak-azure-sp-NOTREAL"
+          },
+          "resolves_to": "azure:serviceprincipal:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        },
+        {
+          "kind": "api_key",
+          "locator": "/opt/app-worker/.env:STRIPE_API_KEY",
+          "confidence": "inferred",
+          "evidence": {
+            "file": "/opt/app-worker/.env",
+            "match": "STRIPE_API_KEY=sk_test_FIXTURE_DEAD_END"
+          },
+          "impact_targets": [
+            {
+              "kind": "external_service",
+              "name": "stripe-test-mode-deadend"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

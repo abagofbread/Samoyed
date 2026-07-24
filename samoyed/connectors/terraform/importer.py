@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from samoyed.cloud.artifacts import ConceptArtifact, ConceptEdge, Evidence
+from samoyed.cloud.capabilities import map_azure_role
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.connectors._shared import aws_scope, build_session_from_artifacts, parse_json_payload
 from samoyed.cloud.providers import make_scope_id
@@ -46,24 +47,37 @@ def import_terraform(
         raise ValueError("No Terraform compute/network resources found")
 
     # Ensure at least a scope-linked placeholder identity when only network facts exist.
-    provider = CloudProvider.GCP if inventory.provider == "gcp" else CloudProvider.AWS
-    scope_id, scope_display = (
-        gcp_scope(account_id) if provider == CloudProvider.GCP else aws_scope(account_id)
-    )
+    if inventory.provider == "gcp":
+        provider = CloudProvider.GCP
+    elif inventory.provider == "azure":
+        provider = CloudProvider.AZURE
+    else:
+        provider = CloudProvider.AWS
+    if provider == CloudProvider.GCP:
+        scope_id, scope_display = gcp_scope(account_id)
+    elif provider == CloudProvider.AZURE:
+        scope_id, scope_display = azure_scope(account_id)
+    else:
+        scope_id, scope_display = aws_scope(account_id)
     if not artifacts:
+        if provider == CloudProvider.GCP:
+            native_id = f"gcp:serviceaccount:terraform@{account_id}.iam.gserviceaccount.com"
+            native_kind, display = "Project", f"project-root:{account_id}"
+        elif provider == CloudProvider.AZURE:
+            native_id = f"azure:serviceprincipal:terraform-{account_id}"
+            native_kind, display = "ServicePrincipal", f"subscription-root:{account_id}"
+        else:
+            native_id = f"arn:aws:iam::{account_id}:root"
+            native_kind, display = "Root", f"account-root:{account_id}"
         artifacts.append(
             ConceptArtifact(
                 concept_type=ConceptType.IDENTITY,
                 provider=provider,
-                native_id=(
-                    f"gcp:serviceaccount:terraform@{account_id}.iam.gserviceaccount.com"
-                    if provider == CloudProvider.GCP
-                    else f"arn:aws:iam::{account_id}:root"
-                ),
+                native_id=native_id,
                 scope_id=scope_id,
                 properties={
-                    "native_kind": "Project" if provider == CloudProvider.GCP else "Root",
-                    "display_name": f"{'project' if provider == CloudProvider.GCP else 'account'}-root:{account_id}",
+                    "native_kind": native_kind,
+                    "display_name": display,
                     "account_id": account_id,
                     "source": "terraform",
                     "is_caller": True,
@@ -164,12 +178,26 @@ def gcp_scope(project_id: str) -> tuple[str, str]:
     return make_scope_id(CloudProvider.GCP, "project", project_id), f"GCP project {project_id}"
 
 
+def azure_scope(subscription_id: str) -> tuple[str, str]:
+    subscription_id = subscription_id or "unknown"
+    return (
+        make_scope_id(CloudProvider.AZURE, "subscription", subscription_id),
+        f"Azure subscription {subscription_id}",
+    )
+
+
 def make_scope_for_account(account_id: str, provider: CloudProvider = CloudProvider.AWS) -> str:
-    return (gcp_scope(account_id) if provider == CloudProvider.GCP else aws_scope(account_id))[0]
+    if provider == CloudProvider.GCP:
+        return gcp_scope(account_id)[0]
+    if provider == CloudProvider.AZURE:
+        return azure_scope(account_id)[0]
+    return aws_scope(account_id)[0]
 
 
 def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[ConceptArtifact], str]:
     resources = list(state.get("resources") or [])
+    if any(str(resource.get("type") or "").startswith("azurerm_") for resource in resources):
+        return _from_azure_tfstate(state)
     if any(str(resource.get("type") or "").startswith("google_") for resource in resources):
         return _from_gcp_tfstate(state)
     inventory = NetworkInventory(provider="aws", source="terraform")
@@ -326,6 +354,7 @@ def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Concept
                 remote_account_id=remote_account,
                 local_cidrs=sorted(set(local_cidrs)),
                 remote_cidrs=sorted(set(remote_cidrs)),
+                provider="aws",
             )
         )
         if local_account and account_id == "unknown":
@@ -358,6 +387,7 @@ def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Concept
             public_ip=str(public_ip) if public_ip else None,
             sg_ids=sg_ids,
             resource_type="EC2Instance",
+            provider="aws",
         )
         inventory.placements.append(placement)
 
@@ -439,6 +469,7 @@ def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Concept
             subnet_ids=subnet_ids,
             sg_ids=sg_ids,
             resource_type="LambdaFunction",
+            provider="aws",
         )
         if vpc_id or sg_ids:
             inventory.placements.append(placement)
@@ -503,6 +534,7 @@ def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Concept
             public_ip=str(dns) if internet_facing and dns else None,
             exposed_internet=internet_facing,
             resource_type="LoadBalancer",
+            provider="aws",
         )
         inventory.placements.append(placement)
         props = _placement_props(placement)
@@ -597,6 +629,14 @@ def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Concept
                     target = _resource_to_native_id(str(resource))
                     if not target:
                         continue
+                    if rel == "CAN_ASSUME_ROLE" or target.startswith("arn:aws:iam:"):
+                        target_concept = ConceptType.IDENTITY
+                    elif target.startswith("S3Bucket:"):
+                        target_concept = ConceptType.DATA_STORE
+                    elif target.startswith("Secret:"):
+                        target_concept = ConceptType.SECRET_STORE
+                    else:
+                        target_concept = ConceptType.DATA_STORE
                     artifacts.append(
                         ConceptArtifact(
                             concept_type=ConceptType.ENTITLEMENT,
@@ -614,13 +654,7 @@ def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Concept
                                     rel_type=rel,
                                     src_native_id=role_arn,
                                     target_native_id=target,
-                                    target_concept_type=(
-                                        ConceptType.DATA_STORE
-                                        if target.startswith("S3Bucket:")
-                                        else ConceptType.SECRET_STORE
-                                        if target.startswith("Secret:")
-                                        else ConceptType.DATA_STORE
-                                    ),
+                                    target_concept_type=target_concept,
                                     props={"action": action, "resource": resource, "source": "terraform"},
                                 )
                             ],
@@ -693,6 +727,699 @@ def _from_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Concept
     return inventory, deduped, account_id
 
 
+def _from_azure_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[ConceptArtifact], str]:
+    """Extract portable Azure identity, workload, and network artifacts from tfstate."""
+    resources = list(state.get("resources") or [])
+    inventory = NetworkInventory(provider="azure", source="terraform")
+    artifacts: list[ConceptArtifact] = []
+    subscription_id = _azure_subscription_from_provider(state) or "unknown"
+    entries: list[dict[str, Any]] = []
+    vnets: dict[str, dict[str, Any]] = {}
+    mi_by_id: dict[str, str] = {}  # ARM id or name → principal_id
+    mi_by_principal: dict[str, str] = {}  # principal_id → native_id
+    known_resources: dict[str, str] = {}  # ARM id / name → native_id
+    secret_by_vault: dict[str, list[str]] = {}
+
+    for res in resources:
+        rtype = str(res.get("type") or "")
+        if not rtype.startswith("azurerm_") or (res.get("mode") or "managed") not in {"managed", "data"}:
+            continue
+        for inst in res.get("instances") or [{"attributes": res.get("attributes") or {}}]:
+            attrs = inst.get("attributes") or inst.get("values") or {}
+            if not isinstance(attrs, dict):
+                attrs = {}
+            entry = {"type": rtype, "name": res.get("name"), "attrs": attrs}
+            entries.append(entry)
+            subscription_id = _azure_subscription_id(attrs, subscription_id)
+            if rtype == "azurerm_virtual_network":
+                vnet_key = str(attrs.get("id") or attrs.get("name") or res.get("name"))
+                vnets[vnet_key] = attrs
+            elif rtype == "azurerm_user_assigned_identity":
+                principal = str(attrs.get("principal_id") or "")
+                arm_id = str(attrs.get("id") or "")
+                name = str(attrs.get("name") or res.get("name") or "")
+                if principal:
+                    native = f"azure:managedidentity:{principal}"
+                    mi_by_principal[principal] = native
+                    if arm_id:
+                        mi_by_id[arm_id] = principal
+                    if name:
+                        mi_by_id[name] = principal
+                        mi_by_id[name.lower()] = principal
+
+    for vnet_id, attrs in vnets.items():
+        cidrs = [str(c) for c in (attrs.get("address_space") or []) if c]
+        if attrs.get("address_prefix"):
+            cidrs.append(str(attrs["address_prefix"]))
+        if cidrs:
+            inventory.vpc_cidrs[vnet_id] = sorted(set(cidrs))
+            name = str(attrs.get("name") or "")
+            if name and name not in inventory.vpc_cidrs:
+                inventory.vpc_cidrs[name] = list(inventory.vpc_cidrs[vnet_id])
+
+    role_assignments: list[dict[str, Any]] = []
+
+    for entry in entries:
+        rtype, attrs = entry["type"], entry["attrs"]
+        sub = _azure_subscription_id(attrs, subscription_id)
+        scope = make_scope_for_account(sub, CloudProvider.AZURE)
+        name = str(attrs.get("name") or entry["name"] or "unknown")
+        arm_id = str(attrs.get("id") or "")
+
+        if rtype == "azurerm_role_assignment":
+            role_assignments.append(entry)
+            continue
+
+        if rtype == "azurerm_subnet":
+            network = str(
+                attrs.get("virtual_network_id")
+                or attrs.get("virtual_network_name")
+                or ""
+            )
+            prefixes = [str(p) for p in (attrs.get("address_prefixes") or []) if p]
+            if attrs.get("address_prefix"):
+                prefixes.append(str(attrs["address_prefix"]))
+            if network and prefixes:
+                inventory.vpc_cidrs.setdefault(network, []).extend(prefixes)
+        elif rtype == "azurerm_network_security_group":
+            nsg_id = arm_id or f"nsg:{name}"
+            for rule in attrs.get("security_rule") or []:
+                if isinstance(rule, dict):
+                    inventory.sg_rules.append(_azure_sg_rule(nsg_id, rule))
+        elif rtype == "azurerm_network_security_rule":
+            nsg_id = str(
+                attrs.get("network_security_group_id")
+                or attrs.get("network_security_group_name")
+                or f"nsg:{name}"
+            )
+            inventory.sg_rules.append(_azure_sg_rule(nsg_id, attrs))
+        elif rtype == "azurerm_virtual_network_peering":
+            local = str(
+                attrs.get("virtual_network_id")
+                or attrs.get("virtual_network_name")
+                or ""
+            )
+            remote = str(attrs.get("remote_virtual_network_id") or "")
+            local_sub = _azure_subscription_from_resource_id(local) or sub
+            remote_sub = _azure_subscription_from_resource_id(remote) or sub
+            inventory.peerings.append(
+                PeeringLink(
+                    id=str(attrs.get("id") or attrs.get("name") or name),
+                    status="active" if attrs.get("allow_virtual_network_access", True) else "inactive",
+                    local_vpc_id=local,
+                    remote_vpc_id=remote,
+                    local_account_id=local_sub,
+                    remote_account_id=remote_sub,
+                    local_cidrs=list(inventory.vpc_cidrs.get(local, [])),
+                    remote_cidrs=list(inventory.vpc_cidrs.get(remote, [])),
+                    provider="azure",
+                )
+            )
+        elif rtype == "azurerm_user_assigned_identity":
+            principal = str(attrs.get("principal_id") or "")
+            if not principal:
+                continue
+            native = f"azure:managedidentity:{principal}"
+            artifacts.append(
+                _azure_identity(native, sub, "ManagedIdentity", "terraform:azurerm_user_assigned_identity", name)
+            )
+        elif rtype in {"azurerm_linux_virtual_machine", "azurerm_windows_virtual_machine"}:
+            native_id = f"AzureVM:{arm_id or name}"
+            known_resources[arm_id] = native_id
+            known_resources[name] = native_id
+            vnet_id, subnet_ids, private_ips, public_ip, sg_ids = _azure_vm_network(attrs)
+            placement = NetworkPlacement(
+                native_id=native_id,
+                account_id=sub,
+                vpc_id=vnet_id,
+                subnet_ids=subnet_ids,
+                private_ips=private_ips,
+                public_ip=public_ip,
+                sg_ids=sg_ids,
+                resource_type="AzureVM",
+                provider="azure",
+            )
+            inventory.placements.append(placement)
+            edges, mi_native = _azure_executes_as_edges(attrs, mi_by_id, mi_by_principal, sub, artifacts)
+            props = _placement_props(placement)
+            props.update(
+                {
+                    "display_name": name,
+                    "resource_type": "AzureVM",
+                    "execution_role_arn": mi_native,
+                    "is_caller": bool(public_ip),
+                    "is_scenario_start": bool(public_ip),
+                }
+            )
+            artifacts.append(
+                ConceptArtifact(
+                    ConceptType.RUNTIME_BINDING,
+                    CloudProvider.AZURE,
+                    native_id,
+                    scope,
+                    props,
+                    Evidence(f"terraform:{rtype}", {"id": native_id}),
+                    edges=edges,
+                )
+            )
+        elif rtype in {
+            "azurerm_linux_function_app",
+            "azurerm_windows_function_app",
+            "azurerm_function_app",
+            "azurerm_linux_web_app",
+            "azurerm_windows_web_app",
+            "azurerm_app_service",
+        }:
+            kind = "FunctionApp" if "function" in rtype else "WebApp"
+            native_id = f"{kind}:{name}"
+            known_resources[arm_id] = native_id
+            known_resources[name] = native_id
+            edges, mi_native = _azure_executes_as_edges(attrs, mi_by_id, mi_by_principal, sub, artifacts)
+            artifacts.append(
+                ConceptArtifact(
+                    ConceptType.RUNTIME_BINDING,
+                    CloudProvider.AZURE,
+                    native_id,
+                    scope,
+                    {
+                        "resource_type": kind,
+                        "display_name": name,
+                        "subscription_id": sub,
+                        "execution_role_arn": mi_native,
+                        "source": "terraform",
+                    },
+                    Evidence(f"terraform:{rtype}", {"id": native_id}),
+                    edges=edges,
+                )
+            )
+        elif rtype == "azurerm_key_vault":
+            native_id = f"KeyVault:{name}"
+            known_resources[arm_id] = native_id
+            known_resources[name] = native_id
+            artifacts.append(
+                ConceptArtifact(
+                    ConceptType.SECRET_STORE,
+                    CloudProvider.AZURE,
+                    native_id,
+                    scope,
+                    {
+                        "resource_type": "KeyVault",
+                        "vault_name": name,
+                        "display_name": name,
+                        "subscription_id": sub,
+                        "source": "terraform",
+                    },
+                    Evidence("terraform:azurerm_key_vault", {"vault": name}),
+                )
+            )
+        elif rtype == "azurerm_key_vault_secret":
+            vault = str(attrs.get("key_vault_id") or "")
+            vault_name = _azure_resource_name(vault) or "vault"
+            secret_name = str(attrs.get("name") or name)
+            native_id = f"KeyVaultSecret:{vault_name}/{secret_name}"
+            secret_by_vault.setdefault(vault_name, []).append(native_id)
+            known_resources[arm_id] = native_id
+            artifacts.append(
+                ConceptArtifact(
+                    ConceptType.SECRET_STORE,
+                    CloudProvider.AZURE,
+                    native_id,
+                    scope,
+                    {
+                        "resource_type": "KeyVaultSecret",
+                        "secret_name": secret_name,
+                        "vault_name": vault_name,
+                        "display_name": f"{vault_name}/{secret_name}",
+                        "subscription_id": sub,
+                        "source": "terraform",
+                        "high_value": True,
+                    },
+                    Evidence("terraform:azurerm_key_vault_secret", {"secret": secret_name}),
+                )
+            )
+        elif rtype == "azurerm_storage_account":
+            native_id = f"StorageAccount:{name}"
+            known_resources[arm_id] = native_id
+            known_resources[name] = native_id
+            artifacts.append(
+                ConceptArtifact(
+                    ConceptType.DATA_STORE,
+                    CloudProvider.AZURE,
+                    native_id,
+                    scope,
+                    {
+                        "resource_type": "StorageAccount",
+                        "account_name": name,
+                        "display_name": name,
+                        "subscription_id": sub,
+                        "source": "terraform",
+                    },
+                    Evidence("terraform:azurerm_storage_account", {"account": name}),
+                )
+            )
+        elif rtype == "azurerm_container_registry":
+            native_id = f"AcrRegistry:{name}"
+            known_resources[arm_id] = native_id
+            known_resources[name] = native_id
+            artifacts.append(
+                ConceptArtifact(
+                    ConceptType.REGISTRY_STORE,
+                    CloudProvider.AZURE,
+                    native_id,
+                    scope,
+                    {
+                        "resource_type": "AcrRegistry",
+                        "display_name": name,
+                        "subscription_id": sub,
+                        "source": "terraform",
+                    },
+                    Evidence("terraform:azurerm_container_registry", {"registry": name}),
+                )
+            )
+        elif rtype == "azurerm_automation_account":
+            native_id = f"AutomationAccount:{name}"
+            known_resources[arm_id] = native_id
+            known_resources[name] = native_id
+            edges, mi_native = _azure_executes_as_edges(attrs, mi_by_id, mi_by_principal, sub, artifacts)
+            artifacts.append(
+                ConceptArtifact(
+                    ConceptType.RUNTIME_BINDING,
+                    CloudProvider.AZURE,
+                    native_id,
+                    scope,
+                    {
+                        "resource_type": "AutomationAccount",
+                        "display_name": name,
+                        "subscription_id": sub,
+                        "execution_role_arn": mi_native,
+                        "source": "terraform",
+                    },
+                    Evidence("terraform:azurerm_automation_account", {"id": native_id}),
+                    edges=edges,
+                )
+            )
+        elif rtype == "azurerm_federated_identity_credential":
+            parent = str(attrs.get("parent_id") or "")
+            principal = mi_by_id.get(parent) or _azure_principal_from_identity_id(parent)
+            mi_native = f"azure:managedidentity:{principal}" if principal else parent
+            issuer = str(attrs.get("issuer") or "")
+            subject = str(attrs.get("subject") or "")
+            trust_id = f"AzureFIC:{attrs.get('id') or name}"
+            artifacts.append(
+                ConceptArtifact(
+                    ConceptType.TRUST,
+                    CloudProvider.AZURE,
+                    trust_id,
+                    scope,
+                    {
+                        "native_kind": "FederatedIdentityCredential",
+                        "display_name": name,
+                        "issuer": issuer,
+                        "subject": subject,
+                        "subscription_id": sub,
+                        "source": "terraform",
+                    },
+                    Evidence("terraform:azurerm_federated_identity_credential", {"id": trust_id}),
+                )
+            )
+            if mi_native:
+                if principal and mi_native not in mi_by_principal.values():
+                    artifacts.append(
+                        _azure_identity(
+                            mi_native, sub, "ManagedIdentity", "terraform:federated-parent", name
+                        )
+                    )
+                artifacts.append(
+                    ConceptArtifact(
+                        ConceptType.ENTITLEMENT,
+                        CloudProvider.AZURE,
+                        f"terraform:azure-fic:{trust_id}:{mi_native}",
+                        scope,
+                        {
+                            "principal": trust_id,
+                            "target": mi_native,
+                            "mechanism": "wif/oidc-federation",
+                            "source": "terraform",
+                        },
+                        Evidence("terraform:azurerm_federated_identity_credential", {"issuer": issuer}),
+                        edges=[
+                            ConceptEdge(
+                                "CAN_ASSUME_ROLE",
+                                mi_native,
+                                ConceptType.IDENTITY,
+                                src_native_id=trust_id,
+                                props={
+                                    "mechanism": "wif/oidc-federation",
+                                    "issuer": issuer,
+                                    "subject": subject,
+                                },
+                            )
+                        ],
+                    )
+                )
+    for entry in role_assignments:
+        attrs = entry["attrs"]
+        sub = _azure_subscription_id(attrs, subscription_id)
+        scope = make_scope_for_account(sub, CloudProvider.AZURE)
+        name = str(attrs.get("name") or entry["name"] or "unknown")
+        role_name = str(
+            attrs.get("role_definition_name")
+            or _azure_role_name_from_id(attrs.get("role_definition_id"))
+            or ""
+        )
+        mapping = map_azure_role(role_name) if role_name else None
+        if not mapping:
+            continue
+        principal_raw = str(attrs.get("principal_id") or "")
+        principal_type = str(attrs.get("principal_type") or "ServicePrincipal")
+        if principal_raw in mi_by_principal or principal_raw in set(mi_by_id.values()):
+            principal_native = f"azure:managedidentity:{principal_raw}"
+            kind = "ManagedIdentity"
+        else:
+            principal_native = f"azure:{principal_type.lower()}:{principal_raw}"
+            kind = principal_type
+        artifacts.append(
+            _azure_identity(principal_native, sub, kind, "terraform:azurerm_role_assignment")
+        )
+        assignment_scope = str(attrs.get("scope") or "")
+        targets = _azure_targets_for_assignment(
+            assignment_scope, mapping, known_resources, secret_by_vault
+        )
+        rel = mapping.capability.value
+        edges = [
+            ConceptEdge(
+                rel,
+                target_id,
+                _azure_resource_concept(mapping.resource_type, target_id),
+                src_native_id=principal_native,
+                props={"role": role_name, "scope": assignment_scope},
+            )
+            for target_id in targets
+        ]
+        artifacts.append(
+            ConceptArtifact(
+                ConceptType.ENTITLEMENT,
+                CloudProvider.AZURE,
+                f"terraform:azure-ra:{attrs.get('id') or attrs.get('name') or name}",
+                scope,
+                {
+                    "role_name": role_name,
+                    "principal_id": principal_raw,
+                    "scope": assignment_scope,
+                    "source": "terraform",
+                },
+                Evidence("terraform:azurerm_role_assignment", {"role": role_name}),
+                edges=edges,
+            )
+        )
+
+    deduped = _dedupe_artifacts(artifacts)
+    if not any(a.properties.get("is_caller") for a in deduped):
+        for art in deduped:
+            if art.concept_type == ConceptType.RUNTIME_BINDING and art.properties.get("public_ip"):
+                art.properties["is_caller"] = True
+                art.properties["is_scenario_start"] = True
+                break
+        else:
+            for art in deduped:
+                if art.concept_type == ConceptType.RUNTIME_BINDING and art.properties.get(
+                    "resource_type"
+                ) == "AzureVM":
+                    art.properties["is_caller"] = True
+                    art.properties["is_scenario_start"] = True
+                    break
+
+    return inventory, deduped, subscription_id
+
+
+def _azure_subscription_from_provider(state: dict[str, Any]) -> str | None:
+    for key in ("subscription_id", "subscriptionId"):
+        if state.get(key):
+            return str(state[key])
+    for conf in state.get("provider_config") or []:
+        if not isinstance(conf, dict):
+            continue
+        exprs = conf.get("expressions") or conf.get("config") or {}
+        if isinstance(exprs, dict):
+            for key in ("subscription_id", "subscriptionId"):
+                val = exprs.get(key)
+                if isinstance(val, dict) and val.get("constant_value"):
+                    return str(val["constant_value"])
+                if isinstance(val, str) and val:
+                    return val
+    return None
+
+
+def _azure_subscription_id(attrs: dict[str, Any], fallback: str = "unknown") -> str:
+    for key in ("subscription_id", "subscriptionId"):
+        if attrs.get(key):
+            return str(attrs[key])
+    for value in (attrs.get("id"), attrs.get("scope"), attrs.get("key_vault_id"), attrs.get("parent_id")):
+        sub = _azure_subscription_from_resource_id(str(value or ""))
+        if sub:
+            return sub
+    return fallback
+
+
+def _azure_subscription_from_resource_id(resource_id: str) -> str | None:
+    match = re.search(r"/subscriptions/([^/]+)", resource_id or "", re.I)
+    return match.group(1) if match else None
+
+
+def _azure_resource_name(resource_id: str) -> str | None:
+    if not resource_id:
+        return None
+    parts = [p for p in resource_id.rstrip("/").split("/") if p]
+    return parts[-1] if parts else None
+
+
+def _azure_role_name_from_id(role_definition_id: Any) -> str | None:
+    if not role_definition_id:
+        return None
+    text = str(role_definition_id)
+    # Built-in role GUID map is large; keep common lab names when the id ends with a name fragment.
+    if "/" in text:
+        return text.rstrip("/").split("/")[-1]
+    return text
+
+
+def _azure_sg_rule(nsg_id: str, rule: dict[str, Any]) -> SgIngressRule:
+    direction = str(rule.get("direction") or "Inbound").lower()
+    if direction.startswith("in"):
+        direction = "ingress"
+    cidrs: list[str] = []
+    for key in ("source_address_prefix", "source_address_prefixes"):
+        val = rule.get(key)
+        if isinstance(val, list):
+            cidrs.extend(str(x) for x in val if x and str(x) not in {"*", "Internet"})
+            if any(str(x) in {"*", "Internet", "0.0.0.0/0"} for x in val):
+                cidrs.append("0.0.0.0/0")
+        elif val:
+            cidrs.append("0.0.0.0/0" if str(val) in {"*", "Internet"} else str(val))
+    port = rule.get("destination_port_range") or rule.get("destination_port_ranges")
+    from_port = to_port = None
+    if isinstance(port, list) and port:
+        port = port[0]
+    if port and str(port) != "*":
+        try:
+            if "-" in str(port):
+                a, b = str(port).split("-", 1)
+                from_port, to_port = int(a), int(b)
+            else:
+                from_port = to_port = int(port)
+        except ValueError:
+            pass
+    return SgIngressRule(
+        sg_id=str(nsg_id),
+        direction=direction,
+        cidrs=cidrs,
+        from_port=from_port,
+        to_port=to_port,
+        protocol=str(rule.get("protocol") or "*"),
+    )
+
+
+def _azure_vm_network(
+    attrs: dict[str, Any],
+) -> tuple[str, list[str], list[str], str | None, list[str]]:
+    private_ips: list[str] = []
+    if attrs.get("private_ip_address"):
+        private_ips.append(str(attrs["private_ip_address"]))
+    public_ip = attrs.get("public_ip_address")
+    if isinstance(public_ip, list):
+        public_ip = public_ip[0] if public_ip else None
+    subnet_ids: list[str] = []
+    vnet_id = ""
+    for key in ("subnet_id", "virtual_network_id"):
+        if attrs.get(key):
+            if "subnet" in key:
+                subnet_ids.append(str(attrs[key]))
+            else:
+                vnet_id = str(attrs[key])
+    # Common tfstate shape: nested network attrs or tags for lab fixtures.
+    tags = attrs.get("tags") if isinstance(attrs.get("tags"), dict) else {}
+    vnet_id = vnet_id or str(tags.get("vpc_id") or tags.get("vnet_id") or attrs.get("vnet_id") or "")
+    if attrs.get("subnet_ids"):
+        subnet_ids.extend(str(x) for x in attrs["subnet_ids"])
+    sg_ids = [str(x) for x in (attrs.get("network_security_group_ids") or attrs.get("sg_ids") or [])]
+    if attrs.get("network_security_group_id"):
+        sg_ids.append(str(attrs["network_security_group_id"]))
+    return vnet_id, subnet_ids, private_ips, str(public_ip) if public_ip else None, sg_ids
+
+
+def _azure_identity_block(attrs: dict[str, Any]) -> dict[str, Any]:
+    identity = attrs.get("identity") or {}
+    if isinstance(identity, list):
+        identity = identity[0] if identity else {}
+    return identity if isinstance(identity, dict) else {}
+
+
+def _azure_executes_as_edges(
+    attrs: dict[str, Any],
+    mi_by_id: dict[str, str],
+    mi_by_principal: dict[str, str],
+    sub: str,
+    artifacts: list[ConceptArtifact],
+) -> tuple[list[ConceptEdge], str | None]:
+    identity = _azure_identity_block(attrs)
+    principal = str(identity.get("principal_id") or "")
+    identity_ids = identity.get("identity_ids") or identity.get("identity_id") or []
+    if isinstance(identity_ids, str):
+        identity_ids = [identity_ids]
+    for iid in identity_ids:
+        principal = principal or mi_by_id.get(str(iid)) or _azure_principal_from_identity_id(str(iid))
+    if not principal:
+        return [], None
+    native = f"azure:managedidentity:{principal}"
+    mi_by_principal.setdefault(principal, native)
+    artifacts.append(
+        _azure_identity(native, sub, "ManagedIdentity", "terraform:azure-identity-block")
+    )
+    return [
+        ConceptEdge(
+            "EXECUTES_AS",
+            native,
+            ConceptType.IDENTITY,
+            props={"resource_type": "ManagedIdentity", "mechanism": "azure-managed-identity"},
+        )
+    ], native
+
+
+def _azure_principal_from_identity_id(arm_id: str) -> str | None:
+    # Best-effort: some fixtures embed principal as a trailing GUID segment after identities/.
+    match = re.search(r"/userAssignedIdentities/([^/]+)", arm_id or "", re.I)
+    if match and re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        match.group(1),
+        re.I,
+    ):
+        return match.group(1)
+    return None
+
+
+def _azure_identity(
+    native_id: str,
+    subscription_id: str,
+    kind: str,
+    source: str,
+    display_name: str | None = None,
+) -> ConceptArtifact:
+    return ConceptArtifact(
+        ConceptType.IDENTITY,
+        CloudProvider.AZURE,
+        native_id,
+        make_scope_for_account(subscription_id, CloudProvider.AZURE),
+        {
+            "native_kind": kind,
+            "display_name": display_name or native_id,
+            "subscription_id": subscription_id,
+            "source": "terraform",
+        },
+        Evidence(source, {"principal": native_id}),
+    )
+
+
+def _azure_resource_concept(resource_type: str | None, target_id: str = "") -> ConceptType:
+    if resource_type in {"KeyVaultSecret", "KeyVault"} or target_id.startswith(
+        ("KeyVault:", "KeyVaultSecret:")
+    ):
+        return ConceptType.SECRET_STORE
+    if resource_type == "StorageAccount" or target_id.startswith("StorageAccount:"):
+        return ConceptType.DATA_STORE
+    if resource_type == "AcrRegistry" or target_id.startswith("AcrRegistry:"):
+        return ConceptType.REGISTRY_STORE
+    if resource_type == "Identity" or target_id.startswith("azure:"):
+        return ConceptType.IDENTITY
+    if resource_type in {"AzureVM", "WebApp", "FunctionApp", "AutomationAccount"} or target_id.startswith(
+        ("AzureVM:", "WebApp:", "FunctionApp:", "AutomationAccount:")
+    ):
+        return ConceptType.RUNTIME_BINDING
+    return ConceptType.DATA_STORE
+
+
+def _azure_targets_for_assignment(
+    scope: str,
+    mapping: Any,
+    known_resources: dict[str, str],
+    secret_by_vault: dict[str, list[str]],
+) -> list[str]:
+    targets: list[str] = []
+    if scope in known_resources:
+        targets.append(known_resources[scope])
+    name = _azure_resource_name(scope) or ""
+    if name and name in known_resources:
+        targets.append(known_resources[name])
+
+    kv_match = re.search(r"/Microsoft\.KeyVault/vaults/([^/]+)", scope or "", re.I)
+    if kv_match:
+        vault = kv_match.group(1)
+        kid = f"KeyVault:{vault}"
+        targets.append(kid)
+        if mapping.resource_type == "KeyVaultSecret":
+            targets.extend(secret_by_vault.get(vault, []))
+            if not secret_by_vault.get(vault):
+                targets.append(f"KeyVaultSecret:{vault}/*")
+
+    storage_match = re.search(
+        r"/Microsoft\.Storage/storageAccounts/([^/]+)", scope or "", re.I
+    )
+    if storage_match:
+        targets.append(f"StorageAccount:{storage_match.group(1)}")
+
+    web_match = re.search(r"/Microsoft\.Web/sites/([^/]+)", scope or "", re.I)
+    if web_match:
+        kind = mapping.resource_type if mapping.resource_type in {"WebApp", "FunctionApp"} else "WebApp"
+        targets.append(f"{kind}:{web_match.group(1)}")
+
+    auto_match = re.search(
+        r"/Microsoft\.Automation/automationAccounts/([^/]+)", scope or "", re.I
+    )
+    if auto_match:
+        targets.append(f"AutomationAccount:{auto_match.group(1)}")
+
+    acr_match = re.search(
+        r"/Microsoft\.ContainerRegistry/registries/([^/]+)", scope or "", re.I
+    )
+    if acr_match:
+        targets.append(f"AcrRegistry:{acr_match.group(1)}")
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for t in targets:
+        if t and t not in seen:
+            seen.add(t)
+            ordered.append(t)
+    if ordered:
+        return ordered
+    sub = _azure_subscription_from_resource_id(scope or "")
+    if sub and re.fullmatch(r"/subscriptions/[^/]+/?", scope or "", re.I):
+        return [f"azure:subscription:{sub}"]
+    if mapping.resource_type:
+        return [f"{mapping.resource_type}:*"]
+    return [scope or "azure:subscription"]
+
+
 def _from_gcp_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[ConceptArtifact], str]:
     """Extract portable GCP identity, workload, and network artifacts from tfstate."""
     resources = list(state.get("resources") or [])
@@ -752,6 +1479,7 @@ def _from_gcp_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Con
                 remote_account_id=remote_project,
                 local_cidrs=list(inventory.vpc_cidrs.get(local, [])),
                 remote_cidrs=list(inventory.vpc_cidrs.get(remote, [])),
+                provider="gcp",
             ))
         elif rtype == "google_service_account":
             email = str(attrs.get("email") or f"{name}@{project}.iam.gserviceaccount.com")
@@ -768,9 +1496,17 @@ def _from_gcp_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Con
             access = iface.get("access_config") or []
             public_ip = (access[0].get("nat_ip") if isinstance(access, list) and access and isinstance(access[0], dict) else None)
             private_ip = iface.get("network_ip") or attrs.get("network_ip")
-            placement = NetworkPlacement(native_id=native_id, account_id=project, vpc_id=network,
-                subnet_ids=[str(subnet)] if subnet else [], private_ips=[str(private_ip)] if private_ip else [],
-                public_ip=str(public_ip) if public_ip else None, sg_ids=[], resource_type="GCEInstance")
+            placement = NetworkPlacement(
+                native_id=native_id,
+                account_id=project,
+                vpc_id=network,
+                subnet_ids=[str(subnet)] if subnet else [],
+                private_ips=[str(private_ip)] if private_ip else [],
+                public_ip=str(public_ip) if public_ip else None,
+                sg_ids=[],
+                resource_type="GCEInstance",
+                provider="gcp",
+            )
             inventory.placements.append(placement)
             sa = attrs.get("service_account") or []
             sa = sa[0] if isinstance(sa, list) and sa else sa
@@ -818,10 +1554,17 @@ def _from_gcp_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Con
                 {"native_kind": "WorkloadIdentityPoolProvider" if rtype.endswith("_provider") else "WorkloadIdentityPool",
                  "display_name": name, "project_id": project, "source": "terraform"},
                 Evidence(f"terraform:{rtype}", {"id": native_id})))
-        elif rtype in {"google_project_iam_binding", "google_project_iam_member", "google_service_account_iam_member"}:
+        elif rtype in {
+            "google_project_iam_binding",
+            "google_project_iam_member",
+            "google_service_account_iam_member",
+            "google_storage_bucket_iam_member",
+            "google_storage_bucket_iam_binding",
+        }:
             role = str(attrs.get("role") or "")
             members = attrs.get("members") or [attrs.get("member")]
             target_sa = str(attrs.get("service_account_id") or "")
+            bucket = str(attrs.get("bucket") or "")
             for member in members:
                 if not member:
                     continue
@@ -829,10 +1572,48 @@ def _from_gcp_tfstate(state: dict[str, Any]) -> tuple[NetworkInventory, list[Con
                 artifacts.append(_gcp_identity(principal, project, "Principal", "terraform:gcp-iam-member"))
                 target = _gcp_principal(target_sa) if target_sa else principal
                 edges = []
-                if "serviceAccountTokenCreator" in role or "workloadIdentityUser" in role or rtype == "google_service_account_iam_member":
-                    edges.append(ConceptEdge("CAN_ASSUME_ROLE", target, ConceptType.IDENTITY, props={"role": role, "mechanism": "gcp-iam"}))
+                if "serviceAccountTokenCreator" in role or "workloadIdentityUser" in role or (
+                    rtype == "google_service_account_iam_member" and target_sa
+                ):
+                    edges.append(
+                        ConceptEdge(
+                            "CAN_ASSUME_ROLE",
+                            target,
+                            ConceptType.IDENTITY,
+                            src_native_id=principal,
+                            props={"role": role, "mechanism": "gcp-iam"},
+                        )
+                    )
+                if bucket and ("storage." in role or "objectAdmin" in role or "objectViewer" in role or "admin" in role.lower()):
+                    bucket_native = f"GCSBucket:{bucket}"
+                    rel = "CONTROLS" if "admin" in role.lower() else "READS"
+                    edges.append(
+                        ConceptEdge(
+                            rel,
+                            bucket_native,
+                            ConceptType.DATA_STORE,
+                            src_native_id=principal,
+                            props={"role": role, "mechanism": "gcp-storage-iam"},
+                        )
+                    )
+                    artifacts.append(
+                        ConceptArtifact(
+                            ConceptType.DATA_STORE,
+                            CloudProvider.GCP,
+                            bucket_native,
+                            scope,
+                            {
+                                "resource_type": "GCSBucket",
+                                "bucket_name": bucket,
+                                "display_name": bucket,
+                                "project_id": project,
+                                "source": "terraform",
+                            },
+                            Evidence("terraform:gcp-storage-iam", {"bucket": bucket}),
+                        )
+                    )
                 artifacts.append(ConceptArtifact(ConceptType.ENTITLEMENT, CloudProvider.GCP,
-                    f"terraform:gcp-iam:{principal}:{role}:{target}", scope,
+                    f"terraform:gcp-iam:{principal}:{role}:{target}:{bucket}", scope,
                     {"principal": principal, "role": role, "source": "terraform"},
                     Evidence(f"terraform:{rtype}", {"role": role}), edges=edges))
 
@@ -889,6 +1670,10 @@ def _iter_policy_statements(doc: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _action_to_rel(action: str) -> str | None:
     a = action.lower()
+    if a in {"sts:assumerole", "sts:assumerolewithsaml", "sts:assumerolewithwebidentity"}:
+        return "CAN_ASSUME_ROLE"
+    if a in {"iam:passrole"}:
+        return "CAN_ASSUME_ROLE"
     if a in {"*", "s3:*"} or a.endswith(":*") and a.startswith("s3:"):
         return "CONTROLS"
     if "put" in a or "delete" in a or "write" in a:
@@ -903,6 +1688,11 @@ def _action_to_rel(action: str) -> str | None:
 def _resource_to_native_id(resource: str) -> str | None:
     if resource in {"*", "arn:aws:s3:::*"}:
         return None
+    if resource.startswith("arn:aws:iam:") and ":role/" in resource and not resource.endswith("/*"):
+        # Concrete role ARN (not a wildcard path).
+        if "*" not in resource.split(":role/", 1)[-1]:
+            return resource
+        return None
     if resource.startswith("arn:aws:s3:::"):
         bucket = resource.split(":::", 1)[1].split("/")[0]
         return f"S3Bucket:{bucket}" if bucket and bucket != "*" else None
@@ -914,7 +1704,7 @@ def _resource_to_native_id(resource: str) -> str | None:
 
 
 def _placement_props(placement: NetworkPlacement) -> dict[str, Any]:
-    return {
+    props = {
         "resource_type": placement.resource_type or "EC2Instance",
         "vpc_id": placement.vpc_id,
         "subnet_ids": list(placement.subnet_ids),
@@ -925,6 +1715,9 @@ def _placement_props(placement: NetworkPlacement) -> dict[str, Any]:
         "source": "terraform",
         "display_name": placement.native_id,
     }
+    if placement.provider:
+        props["provider"] = placement.provider
+    return props
 
 
 def _account_from_arn(arn: str | None) -> str | None:
@@ -954,7 +1747,7 @@ def _parse_tf_resources_light(path: Path) -> list[dict[str, Any]]:
     text = path.read_text(encoding="utf-8")
     resources: list[dict[str, Any]] = []
     pattern = re.compile(
-        r'resource\s+"(?P<type>(?:aws|google)_[^"]+)"\s+"(?P<name>[^"]+)"\s*\{(?P<body>.*?)\n\}',
+        r'resource\s+"(?P<type>(?:aws|google|azurerm)_[^"]+)"\s+"(?P<name>[^"]+)"\s*\{(?P<body>.*?)\n\}',
         re.DOTALL,
     )
     for match in pattern.finditer(text):
@@ -981,6 +1774,17 @@ def _parse_tf_resources_light(path: Path) -> list[dict[str, Any]]:
             "email",
             "service_account_email",
             "secret_id",
+            "subscription_id",
+            "address_prefix",
+            "virtual_network_name",
+            "remote_virtual_network_id",
+            "principal_id",
+            "role_definition_name",
+            "scope",
+            "key_vault_id",
+            "parent_id",
+            "issuer",
+            "subject",
         ):
             m = re.search(rf'{key}\s*=\s*"([^"]+)"', body)
             if m:

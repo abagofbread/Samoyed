@@ -88,6 +88,32 @@ def auth_logout(request: Request, response: Response):
     return logout(request, response)
 
 
+@app.post("/api/sessions/bloodhound")
+async def create_bloodhound_session(
+    file: UploadFile = File(...),
+    caller_arn: str | None = Form(None),
+):
+    """Import BloodHound / AzureHound / SharpHound JSON via file upload."""
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(400, "Empty file")
+    try:
+        record = SESSION_STORE.create_import_session(
+            "bloodhound",
+            payload,
+            caller_arn=caller_arn or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid JSON: {exc}")
+    return {
+        "session_id": record.session_id,
+        "caller_arn": record.caller_arn,
+        "metadata": record.metadata,
+    }
+
+
 @app.post("/api/sessions/cartography")
 def create_cartography_session(req: CartographyImportRequest):
     from samoyed.cloud.concepts import CloudProvider

@@ -1,0 +1,30 @@
+{
+  "enrichment_version": 1,
+  "collector": "static-grand-tri-cloud-gcp",
+  "collector_mode": "static",
+  "collected_at": "2026-07-24T18:05:00+00:00",
+  "lab_fixture": "grand-tri-cloud",
+  "description": "Decoy ADC on staging scratch host \u2014 dead end (no PCI path).",
+  "bindings": [
+    {
+      "target_ref": "decoy-metrics@proj-staging.iam.gserviceaccount.com",
+      "materials": [
+        {
+          "kind": "api_key",
+          "locator": "/var/secrets/datadog.key",
+          "confidence": "inferred",
+          "evidence": {
+            "file": "/var/secrets/datadog.key",
+            "match": "dd_api_key=FIXTURE"
+          },
+          "impact_targets": [
+            {
+              "kind": "external_service",
+              "name": "datadog-staging-deadend"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

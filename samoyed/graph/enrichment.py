@@ -31,8 +31,6 @@ PIVOT_REL_TYPES = frozenset(
         "UNLOCKS",
         "MOUNTED_INTO",
         "REFERENCES",
-        "LOGGED_IN_AS",
-        "STORES_CREDS_FOR",
         "CAN_STEAL_CREDS_FROM",
         "FEEDS",
     }

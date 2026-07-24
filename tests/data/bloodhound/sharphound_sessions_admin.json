@@ -1,0 +1,117 @@
+{
+  "files": [
+    {
+      "meta": {
+        "methods": 127999,
+        "type": "users",
+        "count": 2,
+        "version": 5
+      },
+      "data": [
+        {
+          "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-1101",
+          "Properties": {
+            "name": "ALICE@CONTOSO.LOCAL",
+            "domain": "CONTOSO.LOCAL",
+            "displayname": "Alice Helpdesk",
+            "samaccountname": "alice"
+          },
+          "Aces": [],
+          "MemberOf": [
+            {
+              "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-2101",
+              "ObjectType": "Group"
+            }
+          ]
+        },
+        {
+          "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-1102",
+          "Properties": {
+            "name": "BOB@CONTOSO.LOCAL",
+            "domain": "CONTOSO.LOCAL",
+            "displayname": "Bob Domain Admin Candidate",
+            "samaccountname": "bob"
+          },
+          "Aces": [],
+          "MemberOf": [
+            {
+              "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-512",
+              "ObjectType": "Group"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "meta": {
+        "methods": 127999,
+        "type": "groups",
+        "count": 2,
+        "version": 5
+      },
+      "data": [
+        {
+          "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-2101",
+          "Properties": {
+            "name": "HELPDESK@CONTOSO.LOCAL",
+            "domain": "CONTOSO.LOCAL",
+            "displayname": "Helpdesk"
+          },
+          "Members": [
+            {
+              "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-1101",
+              "ObjectType": "User"
+            }
+          ],
+          "Aces": []
+        },
+        {
+          "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-512",
+          "Properties": {
+            "name": "DOMAIN ADMINS@CONTOSO.LOCAL",
+            "domain": "CONTOSO.LOCAL",
+            "displayname": "Domain Admins"
+          },
+          "Members": [
+            {
+              "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-1102",
+              "ObjectType": "User"
+            }
+          ],
+          "Aces": []
+        }
+      ]
+    },
+    {
+      "meta": {
+        "methods": 127999,
+        "type": "computers",
+        "count": 1,
+        "version": 5
+      },
+      "data": [
+        {
+          "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-1001",
+          "Properties": {
+            "name": "WS01.CONTOSO.LOCAL",
+            "domain": "CONTOSO.LOCAL",
+            "displayname": "WS01"
+          },
+          "LocalAdmins": [
+            {
+              "ObjectIdentifier": "S-1-5-21-1111111111-2222222222-3333333333-2101",
+              "ObjectType": "Group"
+            }
+          ],
+          "Sessions": [
+            {
+              "UserSID": "S-1-5-21-1111111111-2222222222-3333333333-1102",
+              "ComputerSID": "S-1-5-21-1111111111-2222222222-3333333333-1001"
+            }
+          ],
+          "Aces": []
+        }
+      ]
+    }
+  ]
+}

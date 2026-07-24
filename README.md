@@ -53,9 +53,15 @@ samoyed whoami
 # samoyed import-path .samoyed/GCPGoat
 # samoyed import-fixture corp-mesh-gcp | lab-gcp | wif-aws-gcp | intercloud-host-pivot
 
-# Live Azure (az login or SP env vars + pip install 'samoyed[azure]')
-samoyed enum --provider azure
-samoyed whoami --provider azure
+# Live Azure (az login / SP env / SP JSON — auto-detected; pip install 'samoyed[azure]')
+samoyed enum
+samoyed whoami
+# Starter lab: git clone https://github.com/ine-labs/AzureGoat.git .samoyed/AzureGoat
+# samoyed import-path .samoyed/AzureGoat
+# samoyed import-fixture lab-azure | corp-mesh-azure | wif-aws-azure | wif-gcp-azure | intercloud-tri-cloud | grand-tri-cloud
+# samoyed import-fixture bloodhound-entra-lab | hybrid-mimikatz-entra
+# samoyed import-bloodhound ./azurehound.json
+# samoyed intercloud-map --session-id <id>
 
 # Live Kubernetes enumeration (requires kubeconfig + pip install 'samoyed[k8s]')
 samoyed enum --provider kubernetes

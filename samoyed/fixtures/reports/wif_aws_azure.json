@@ -1,0 +1,153 @@
+{
+  "provider": "azure",
+  "account_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "scope_id": "azure:subscription:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "source": "samoyed-fixture",
+  "description": "Azure MI → federated WIF into AWS → cross-account Secrets Manager / S3",
+  "identities": [
+    {
+      "id": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "name": "sp-ci-deploy-dev",
+      "kind": "ServicePrincipal",
+      "provider": "azure",
+      "client_id": "3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "is_caller": true,
+      "display_name": "sp-ci-deploy-dev (leaked CI SP)",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "name": "mi-release-runner",
+      "kind": "ManagedIdentity",
+      "provider": "azure",
+      "display_name": "mi-release-runner",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "arn:aws:iam::222222222222:role/AzureFederatedDeploy",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "222222222222",
+      "display_name": "AzureFederatedDeploy"
+    },
+    {
+      "id": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "222222222222",
+      "display_name": "ReleasePublisher"
+    },
+    {
+      "id": "arn:aws:iam::333333333333:role/ProdSecretsReader",
+      "kind": "Role",
+      "provider": "aws",
+      "account_id": "333333333333",
+      "display_name": "ProdSecretsReader (cross-account)"
+    }
+  ],
+  "resources": [
+    {
+      "id": "WebApp:release-api",
+      "concept": "RuntimeBinding",
+      "type": "WebApp",
+      "name": "release-api",
+      "display_name": "release-api",
+      "execution_role_arn": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "subscription_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    },
+    {
+      "id": "KeyVaultSecret:corp-kv-dev/aws-oidc-client",
+      "concept": "SecretStore",
+      "type": "KeyVaultSecret",
+      "name": "aws-oidc-client",
+      "display_name": "corp-kv-dev/aws-oidc-client"
+    },
+    {
+      "id": "Secret:arn:aws:secretsmanager:us-east-1:333333333333:secret:prod/db/master",
+      "concept": "SecretStore",
+      "type": "Secret",
+      "name": "prod/db/master",
+      "account_id": "333333333333",
+      "high_value": true
+    },
+    {
+      "id": "S3Bucket:corp-prod-customer-exports",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "corp-prod-customer-exports",
+      "account_id": "333333333333",
+      "high_value": true
+    },
+    {
+      "id": "S3Bucket:corp-release-artifacts",
+      "concept": "DataStore",
+      "type": "S3Bucket",
+      "name": "corp-release-artifacts",
+      "account_id": "222222222222"
+    }
+  ],
+  "grants": [
+    {
+      "from": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd",
+      "to": "WebApp:release-api",
+      "rel": "CONTROLS",
+      "role": "Website Contributor",
+      "confidence": "explicit"
+    },
+    {
+      "from": "WebApp:release-api",
+      "to": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "rel": "EXECUTES_AS",
+      "source": "webapp-managed-identity",
+      "confidence": "explicit"
+    },
+    {
+      "from": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "to": "KeyVaultSecret:corp-kv-dev/aws-oidc-client",
+      "rel": "READS",
+      "role": "Key Vault Secrets User",
+      "confidence": "explicit"
+    },
+    {
+      "from": "azure:managedidentity:8e8e8e8e-ffff-1111-2222-333333333333",
+      "to": "arn:aws:iam::222222222222:role/AzureFederatedDeploy",
+      "rel": "CAN_ASSUME_ROLE",
+      "mechanism": "wif",
+      "issuer": "https://login.microsoftonline.com/eeeeeeee-1111-2222-3333-444444444444/v2.0",
+      "confidence": "explicit",
+      "provider_hint": "aws"
+    },
+    {
+      "from": "arn:aws:iam::222222222222:role/AzureFederatedDeploy",
+      "to": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "to": "S3Bucket:corp-release-artifacts",
+      "rel": "WRITES",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::222222222222:role/ReleasePublisher",
+      "to": "arn:aws:iam::333333333333:role/ProdSecretsReader",
+      "rel": "CAN_ASSUME_ROLE",
+      "confidence": "explicit",
+      "notes": "cross-account STS"
+    },
+    {
+      "from": "arn:aws:iam::333333333333:role/ProdSecretsReader",
+      "to": "Secret:arn:aws:secretsmanager:us-east-1:333333333333:secret:prod/db/master",
+      "rel": "READS",
+      "confidence": "explicit"
+    },
+    {
+      "from": "arn:aws:iam::333333333333:role/ProdSecretsReader",
+      "to": "S3Bucket:corp-prod-customer-exports",
+      "rel": "READS",
+      "confidence": "explicit"
+    }
+  ],
+  "caller_arn": "azure:serviceprincipal:3f3f3f3f-aaaa-bbbb-cccc-dddddddddddd"
+}

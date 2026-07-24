@@ -139,8 +139,13 @@ def _intents_for_peering(
     cross_account = bool(local_account and remote_account and local_account != remote_account)
 
     if cross_account:
-        if (inventory.provider or "aws").lower() == "gcp":
+        from samoyed.network.model import resolve_peering_provider
+
+        provider = resolve_peering_provider(peering, inventory_provider=inventory.provider)
+        if provider == "gcp":
             account_native = f"gcp:project:{remote_account}"
+        elif provider == "azure":
+            account_native = f"azure:subscription:{remote_account}"
         else:
             account_native = f"aws:account:{remote_account}"
         peers_props = {

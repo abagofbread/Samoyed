@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
+LABS_DIR = Path(__file__).resolve().parent / "labs"
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,8 @@ class FixtureSpec:
     description: str
     demo: bool = True
     tags: tuple[str, ...] = ()
+    # When set, load via ``import-path`` semantics (tfstate tree + companion enrichments).
+    lab_dir: str | None = None
 
 
 FIXTURES: tuple[FixtureSpec, ...] = (
@@ -121,6 +124,16 @@ FIXTURES: tuple[FixtureSpec, ...] = (
         tags=("gcp", "terraform", "vpc-peering", "network", "cross-project", "cloud-run", "gcs", "wif"),
     ),
     FixtureSpec(
+        id="corp-mesh-azure",
+        connector="terraform",
+        filename="corp_mesh_azure.tfstate",
+        description=(
+            "Two-subscription Azure mesh: DMZ bastion MI → App Service MI → "
+            "Key Vault crown jewel, VNet peering, Automation Owner path, ACR/storage"
+        ),
+        tags=("azure", "terraform", "vnet-peering", "network", "cross-subscription", "keyvault", "managed-identity"),
+    ),
+    FixtureSpec(
         id="lab-gcp",
         connector="iam-report",
         filename="lab_gcp_leaked_credential.json",
@@ -150,6 +163,76 @@ FIXTURES: tuple[FixtureSpec, ...] = (
         ),
         tags=("aws", "gcp", "wif", "intercloud", "cloudbuild", "cross-account"),
     ),
+    FixtureSpec(
+        id="wif-aws-azure",
+        connector="iam-report",
+        filename="wif_aws_azure.json",
+        description=(
+            "Azure CI SP → WebApp MI → federated WIF into AWS → "
+            "cross-account Secrets Manager/S3"
+        ),
+        tags=("aws", "azure", "wif", "intercloud", "webapp"),
+    ),
+    FixtureSpec(
+        id="wif-gcp-azure",
+        connector="iam-report",
+        filename="wif_gcp_azure.json",
+        description=(
+            "Azure CI SP → FunctionApp MI → federated WIF into GCP → "
+            "cross-project Secret Manager/GCS"
+        ),
+        tags=("gcp", "azure", "wif", "intercloud", "functionapp"),
+    ),
+    FixtureSpec(
+        id="intercloud-tri-cloud",
+        connector="iam-report",
+        filename="intercloud_tri_cloud.json",
+        description=(
+            "Compromised CI host with AWS + GCP + Azure creds; WIF bridges touch all three providers"
+        ),
+        tags=("aws", "gcp", "azure", "host", "intercloud", "wif", "tri-cloud"),
+    ),
+    FixtureSpec(
+        id="grand-tri-cloud",
+        connector="terraform",
+        filename="",
+        lab_dir="grand-tri-cloud",
+        description=(
+            "Patient-zero corp-mesh-aws → bastion GCP app-deploy → Azure weak SP; "
+            "per-env terraform + enrichment.json (import-path autoload)"
+        ),
+        tags=(
+            "aws",
+            "gcp",
+            "azure",
+            "terraform",
+            "enrichment",
+            "intercloud",
+            "tri-cloud",
+            "vpc-peering",
+            "boundaries",
+        ),
+    ),
+    FixtureSpec(
+        id="bloodhound-entra-lab",
+        connector="bloodhound",
+        filename="bloodhound_entra_lab.json",
+        description=(
+            "AzureHound OpenGraph lab: App Admin MemberOf → AZAddSecret → SP → "
+            "AZMGGrantRole / GlobalAdmin"
+        ),
+        tags=("azure", "bloodhound", "entra", "add-secret", "global-admin"),
+    ),
+    FixtureSpec(
+        id="hybrid-mimikatz-entra",
+        connector="bloodhound",
+        filename="hybrid_mimikatz_entra.json",
+        description=(
+            "Hybrid BloodHound story: HasSession (LSASS/mimikatz) → SyncedToADUser → "
+            "Entra group → Key Vault secrets"
+        ),
+        tags=("azure", "ad", "bloodhound", "hybrid", "mimikatz", "keyvault"),
+    ),
 )
 
 
@@ -165,6 +248,7 @@ def list_fixtures(*, demo_only: bool = False) -> list[dict[str, Any]]:
             "description": s.description,
             "tags": list(s.tags),
             "demo": s.demo,
+            **({"lab_dir": s.lab_dir} if s.lab_dir else {}),
         }
         for s in specs
     ]
@@ -178,7 +262,20 @@ def get_fixture(fixture_id: str) -> FixtureSpec:
     raise KeyError(f"Unknown fixture '{fixture_id}'. Known: {known}")
 
 
+def fixture_lab_path(fixture_id: str) -> Path | None:
+    spec = get_fixture(fixture_id)
+    if not spec.lab_dir:
+        return None
+    path = LABS_DIR / spec.lab_dir
+    if not path.is_dir():
+        raise FileNotFoundError(f"Fixture lab directory missing: {path}")
+    return path
+
+
 def fixture_path(fixture_id: str) -> Path:
+    lab = fixture_lab_path(fixture_id)
+    if lab is not None:
+        return lab
     spec = get_fixture(fixture_id)
     path = REPORTS_DIR / spec.filename
     if not path.is_file():
@@ -187,4 +284,7 @@ def fixture_path(fixture_id: str) -> Path:
 
 
 def read_fixture_bytes(fixture_id: str) -> bytes:
-    return fixture_path(fixture_id).read_bytes()
+    path = fixture_path(fixture_id)
+    if path.is_dir():
+        raise IsADirectoryError(f"Fixture '{fixture_id}' is a lab directory; use load_fixture_session")
+    return path.read_bytes()

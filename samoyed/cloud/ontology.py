@@ -159,6 +159,10 @@ CROSS_LAYER_EDGES: tuple[dict[str, str], ...] = (
     {"rel": "RUNS_ON", "meaning": "Workload/task placed on host (topology; escalate via CAN_ESCAPE_TO)"},
     {"rel": "CAN_ACCESS", "meaning": "Identity reaches management API"},
     {"rel": "CAN_ASSUME_ROLE", "meaning": "Trust allows identity→role pivot"},
+    {
+        "rel": "MEMBER_OF",
+        "meaning": "Principal belongs to a directory group (Entra ID / on-prem AD); nest for effective rights",
+    },
     {"rel": "CAN_REACH", "meaning": "Network path allows interaction (SG-lite / internet ingress)"},
     {"rel": "VPC_PEERS", "meaning": "Compute reaches a peered cross-account boundary via VPC peering"},
     {

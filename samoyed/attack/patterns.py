@@ -579,13 +579,59 @@ AZURE_ATTACK_PATTERNS: tuple[AttackPattern, ...] = (
         required_actions=frozenset({"azure:keyvault.vaults.write"}),
         target="admin_outcome",
     ),
+    AttackPattern(
+        id="azure-automation-runbook",
+        name="Automation runbook as privileged identity",
+        description="Publish/run an Automation runbook that executes as a privileged managed identity / Owner.",
+        provider=CloudProvider.AZURE,
+        required_actions=frozenset(
+            {"azure:automation.runbooks.write", "azure:automation.jobs.write"}
+        ),
+        target="admin_outcome",
+    ),
+    AttackPattern(
+        id="azure-website-deploy",
+        name="Website / Function deploy",
+        description="Modify App Service or Function App code/config to steal the site's managed identity.",
+        provider=CloudProvider.AZURE,
+        required_actions=frozenset({"azure:web.sites.write"}),
+        target="execution_roles",
+    ),
+    AttackPattern(
+        id="azure-acr-push",
+        name="Push to Azure Container Registry",
+        description="Push a malicious image that workloads will pull (supply-chain).",
+        provider=CloudProvider.AZURE,
+        required_actions=frozenset({"azure:containerregistry.repositories.write"}),
+        target="admin_outcome",
+    ),
+    AttackPattern(
+        id="azure-add-app-secret",
+        name="Add application / service principal credential",
+        description="Application Administrator / App.ReadWrite can inject a secret and assume the SP.",
+        provider=CloudProvider.AZURE,
+        required_actions=frozenset({"azure:graph.applications.addPassword"}),
+        target="any_role",
+    ),
+    AttackPattern(
+        id="azure-logic-app-contributor",
+        name="Logic App workflow abuse",
+        description="Modify Logic App workflows that run as a privileged identity.",
+        provider=CloudProvider.AZURE,
+        required_actions=frozenset({"azure:logic.workflows.write"}),
+        target="execution_roles",
+    ),
 )
 
 HOST_ATTACK_PATTERNS: tuple[AttackPattern, ...] = (
     AttackPattern(
         id="host-interactive-session",
         name="Interactive session token theft",
-        description="LSASS / mimikatz / token duplication on a workstation with a logged-in cloud user.",
+        description=(
+            "LSASS / mimikatz / token duplication on a workstation with a logged-in cloud user. "
+            "BloodHound HasSession edges map to CAN_STEAL_CREDS_FROM with mechanism=lsass-mimikatz "
+            "(action host:interactive-session)."
+        ),
         provider=CloudProvider.AWS,
         required_actions=frozenset({"host:interactive-session"}),
         target="stored_identities",

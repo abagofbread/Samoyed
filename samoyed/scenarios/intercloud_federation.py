@@ -6,7 +6,7 @@ from samoyed.path_engine.search import find_attack_paths
 
 
 class IntercloudFederationScenario:
-    """Prefer caller blast-radius paths that cross an AWS/GCP identity boundary."""
+    """Prefer caller blast-radius paths that cross ≥2 of {aws, gcp, azure}."""
 
     name = "intercloud-federation"
 
@@ -24,10 +24,22 @@ def _crosses_providers(graph: GraphSnapshot, path: PathResult) -> bool:
             continue
         provider = str(node.props.get("provider") or "")
         native = str(node.props.get("native_id") or "")
-        if provider in {"aws", "gcp"}:
+        if provider in {"aws", "gcp", "azure"}:
             providers.add(provider)
         elif native.startswith("arn:aws"):
             providers.add("aws")
         elif native.startswith(("gcp:", "GCSBucket:", "GCPSecret:")):
             providers.add("gcp")
-    return providers == {"aws", "gcp"}
+        elif native.startswith(
+            (
+                "azure:",
+                "StorageAccount:",
+                "KeyVault:",
+                "KeyVaultSecret:",
+                "AzureVM:",
+                "WebApp:",
+                "FunctionApp:",
+            )
+        ):
+            providers.add("azure")
+    return len(providers) >= 2

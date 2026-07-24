@@ -213,6 +213,16 @@ class SessionStore:
                 session_store=self,
                 inventory_source="gcp-enum",
             )
+        elif credentials.provider == CloudProvider.AZURE:
+            from samoyed.enumerators.azure.network import collect_azure_network_inventory
+
+            network_inventory = collect_azure_network_inventory(ctx)
+            network_stats = enrich_network_reachability(
+                builder,
+                network_inventory,
+                session_store=self,
+                inventory_source="azure-enum",
+            )
 
         metadata = {
             "artifact_count": len(artifacts),

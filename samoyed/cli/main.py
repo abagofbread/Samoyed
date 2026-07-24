@@ -558,6 +558,18 @@ def import_path_cmd(
         payload if isinstance(payload, (bytes, str)) else json.dumps(payload),
         session_id=session_id,
     )
+    enrich_runs: list[dict] = []
+    if resolved_connector == "terraform":
+        from samoyed.connectors.terraform.autoload import apply_companion_enrichments
+
+        enrich_runs = apply_companion_enrichments(SESSION_STORE, record.session_id, path)
+        if enrich_runs:
+            record = SESSION_STORE.get(record.session_id) or record
+            record.metadata["companion_enrichments"] = [
+                {"path": r.get("path"), "materials_applied": r.get("materials_applied")}
+                for r in enrich_runs
+            ]
+            SESSION_STORE._persist(record)
     typer.echo(f"Session {record.session_id}")
     typer.echo(f"Connector: {resolved_connector}")
     typer.echo(f"Caller: {record.caller_arn}")
@@ -565,6 +577,40 @@ def import_path_cmd(
     net = record.metadata.get("network_enrichment") or {}
     if net:
         typer.echo(f"Network edges: {net.get('network_edges', 0)}")
+    if enrich_runs:
+        typer.echo(f"Companion enrichments: {len(enrich_runs)}")
+        for run in enrich_runs:
+            typer.echo(f"  - {run.get('path')}: materials={run.get('materials_applied', 0)}")
+
+
+@app.command("import-bloodhound")
+def import_bloodhound_cmd(
+    path: Path = typer.Argument(..., help="BloodHound / AzureHound / SharpHound JSON file"),
+    caller_arn: Optional[str] = typer.Option(
+        None,
+        help="Principal native id / ARN to treat as blast-radius start",
+    ),
+    session_id: Optional[str] = typer.Option(None, help="Optional session id override"),
+) -> None:
+    """Import BloodHound CE / AzureHound / SharpHound JSON into a Samoyed session."""
+    if not path.is_file():
+        typer.echo(f"File not found: {path}", err=True)
+        raise typer.Exit(1)
+    try:
+        record = SESSION_STORE.create_import_session(
+            "bloodhound",
+            path.read_bytes(),
+            caller_arn=caller_arn,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        typer.echo(f"BloodHound import failed: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Session {record.session_id}")
+    typer.echo(f"Caller: {record.caller_arn}")
+    typer.echo(f"Nodes: {record.metadata.get('node_count', 0)}")
+    typer.echo(f"BH edges: {record.metadata.get('bh_edge_count', 0)}")
+    typer.echo("Run: samoyed scenario leaked-credential --session-id " + record.session_id)
 
 
 @app.command("import-cartography")
@@ -817,6 +863,25 @@ def paths_cmd(
     typer.echo(json.dumps([_path_to_dict(p) for p in results], indent=2, default=str))
 
 
+@app.command("intercloud-map")
+def intercloud_map_cmd(
+    session_id: Optional[str] = typer.Option(
+        None,
+        "--session-id",
+        "-s",
+        help="Session id, short name, or omit for most recent",
+    ),
+) -> None:
+    """Describe cross-cloud ScopeBoundaries, WIF/OIDC bridges, grafts, and top paths."""
+    from samoyed.attack.intercloud_map import describe_intercloud_paths
+
+    payload = describe_intercloud_paths(SESSION_STORE, session_id=session_id)
+    if payload.get("error"):
+        typer.echo(payload["error"], err=True)
+        raise typer.Exit(1)
+    typer.echo(json.dumps(payload, indent=2, default=str))
+
+
 @sessions_app.command("clear")
 def sessions_clear_cmd(
     include_demos: bool = typer.Option(False, "--include-demos", help="Also delete demo/fixture sessions"),
@@ -896,7 +961,7 @@ def init_extension_cmd(
 def _resolve_provider(
     provider: str | None, *, profile: str | None = None, key_file: Path | None = None
 ) -> str:
-    """Prefer explicitly requested providers; otherwise detect GCP credentials safely."""
+    """Prefer explicitly requested providers; otherwise detect GCP/Azure credentials safely."""
     if provider and provider != "auto":
         return provider
     if profile:
@@ -906,6 +971,10 @@ def _resolve_provider(
             key_data = json.loads(key_file.read_text(encoding="utf-8"))
             if key_data.get("type") == "service_account" and key_data.get("project_id"):
                 return "gcp"
+            # Azure SP JSON / az ad sp create-for-rbac style
+            if key_data.get("clientId") or key_data.get("appId") or key_data.get("client_id"):
+                if key_data.get("tenantId") or key_data.get("tenant") or key_data.get("tenant_id"):
+                    return "azure"
         except (OSError, ValueError, json.JSONDecodeError):
             pass
     if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
@@ -913,7 +982,35 @@ def _resolve_provider(
     adc_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
     if adc_path.is_file():
         return "gcp"
+    if _azure_credentials_present():
+        return "azure"
     return "aws"
+
+
+def _azure_credentials_present() -> bool:
+    """True when env / CLI cache strongly suggest an Azure subscription context."""
+    has_sub = bool(os.environ.get("AZURE_SUBSCRIPTION_ID"))
+    has_sp = bool(
+        os.environ.get("AZURE_CLIENT_ID")
+        and os.environ.get("AZURE_TENANT_ID")
+        and (os.environ.get("AZURE_CLIENT_SECRET") or os.environ.get("AZURE_CLIENT_CERTIFICATE_PATH"))
+    )
+    if has_sub and has_sp:
+        return True
+    profile = Path.home() / ".azure" / "azureProfile.json"
+    msal_cache = Path.home() / ".azure" / "msal_token_cache.json"
+    has_cli = profile.is_file() or msal_cache.is_file()
+    if has_sub and has_cli:
+        return True
+    if has_sp and has_sub:
+        return True
+    if profile.is_file():
+        try:
+            data = json.loads(profile.read_text(encoding="utf-8"))
+            return bool(data.get("subscriptions"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return False
+    return False
 
 
 def _load_provider_credential(provider: str, **kwargs):

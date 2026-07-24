@@ -132,15 +132,24 @@ def gcp_member_native_id(member: str) -> str:
     return f"gcp:member:{member}"
 
 
-# Azure built-in role name fragments → capability
+# Azure built-in role name fragments → capability (order matters: more specific first)
 AZURE_ROLE_MAP: list[tuple[str, CapabilityType, str | None]] = [
+    ("Key Vault Secrets Officer", CapabilityType.CONTROLS, "KeyVaultSecret"),
     ("Key Vault Secrets User", CapabilityType.READS, "KeyVaultSecret"),
     ("Key Vault Administrator", CapabilityType.CONTROLS, "KeyVaultSecret"),
     ("Storage Blob Data Reader", CapabilityType.READS, "StorageAccount"),
     ("Storage Blob Data Contributor", CapabilityType.WRITES, "StorageAccount"),
+    ("Storage Blob Data Owner", CapabilityType.CONTROLS, "StorageAccount"),
+    ("Virtual Machine Contributor", CapabilityType.CONTROLS, "AzureVM"),
+    ("AcrPush", CapabilityType.WRITES, "AcrRegistry"),
+    ("AcrPull", CapabilityType.READS, "AcrRegistry"),
+    ("Website Contributor", CapabilityType.CONTROLS, "WebApp"),
+    ("Automation Contributor", CapabilityType.CONTROLS, "AutomationAccount"),
+    ("Logic App Contributor", CapabilityType.CONTROLS, "LogicApp"),
+    ("Managed Identity Operator", CapabilityType.CONTROLS, "Identity"),
+    ("User Access Administrator", CapabilityType.CONTROLS, "Identity"),
     ("Owner", CapabilityType.CONTROLS, None),
     ("Contributor", CapabilityType.CONTROLS, None),
-    ("User Access Administrator", CapabilityType.CONTROLS, "Identity"),
 ]
 
 
@@ -213,19 +222,34 @@ def gcp_role_to_actions(role: str) -> set[str]:
 
 
 def azure_role_to_actions(role_name: str) -> set[str]:
-    name = role_name.lower()
+    name = role_name.lower().strip()
     out: set[str] = set()
     if "owner" in name or "user access administrator" in name:
         out.add("azure:authorization.roleAssignments.write")
-    if "contributor" in name:
+    if name == "contributor":
         out.add("azure:authorization.roleAssignments.write")
     if "virtual machine contributor" in name:
         out.add("azure:compute.virtualMachines.write")
         out.add("azure:compute.virtualMachines.runCommand")
-    if "key vault administrator" in name:
+    if "key vault administrator" in name or "key vault secrets officer" in name:
         out.add("azure:keyvault.vaults.write")
+        out.add("azure:keyvault.secrets.set")
     if "managed identity operator" in name:
         out.add("azure:managedIdentity.userAssignedIdentities.assign")
+    if "automation contributor" in name:
+        out.add("azure:automation.runbooks.write")
+        out.add("azure:automation.jobs.write")
+        out.add("azure:authorization.roleAssignments.write")
+    if "website contributor" in name:
+        out.add("azure:web.sites.write")
+        out.add("azure:web.sites/config/write")
+    if "logic app contributor" in name:
+        out.add("azure:logic.workflows.write")
+    if "acrpush" in name:
+        out.add("azure:containerregistry.repositories.write")
+    if "application administrator" in name or "cloud application administrator" in name:
+        out.add("azure:graph.applications.addPassword")
+        out.add("azure:graph.servicePrincipals.addPassword")
     return out
 
 
