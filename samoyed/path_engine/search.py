@@ -363,12 +363,21 @@ def _blast_impact_tier(graph: GraphSnapshot, path: PathResult) -> int:
         return 55
     if last_rel in {"CAN_ESCAPE_TO", "EXECUTES_AS", "PROJECTS_TO"}:
         return 65
+    if last_rel == "CAN_REACH":
+        # Network reachability onto inventored compute is a real blast story.
+        if concept in {"RuntimeBinding", "Workload"} and not stub:
+            return 62
+        if concept in _RESOURCEISH_CONCEPTS and not stub:
+            return 50
+        return 32
     if last_rel == "READS":
         if superseded or noise or stub:
             return 12 if not superseded else 5
         if concept in _RESOURCEISH_CONCEPTS or node_id.startswith("Resource:"):
             return 42
         return 30
+    if concept in {"RuntimeBinding", "Workload"} and not stub:
+        return 46 if hvt else 40
     if concept == "Identity":
         return 48 if hvt else 35
     if is_outcome:

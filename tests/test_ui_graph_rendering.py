@@ -433,6 +433,71 @@ if (forceDist > 900) {{
   throw new Error(`force layout too sparse for linked pair: ${{forceDist}}`);
 }}
 
+// Soft pulls must not leave residual overlaps after computeLayout's final separator.
+const stackedCompute = {{
+  nodes: [
+    {{ id: "c1", label: "ComputeContext", concept_type: "RuntimeBinding", display_name: "web-tier-alpha" }},
+    {{ id: "c2", label: "ComputeContext", concept_type: "RuntimeBinding", display_name: "web-tier-beta" }},
+    {{ id: "c3", label: "ComputeContext", concept_type: "RuntimeBinding", display_name: "web-tier-gamma" }},
+  ],
+  edges: [
+    {{ src: "c1", rel: "CAN_REACH", dst: "c2" }},
+    {{ src: "c2", rel: "CAN_REACH", dst: "c3" }},
+  ],
+}};
+display.normalize(stackedCompute, {{ layoutMode: "force", showBoundaryBoxes: false, showAllResourceAccess: true }});
+const sepNodes = stackedCompute.nodes.filter((n) => !display.isBoundaryNode(n));
+const sepPos = display.computeLayout(sepNodes, stackedCompute.edges, "c1");
+for (let i = 0; i < sepNodes.length; i++) {{
+  for (let j = i + 1; j < sepNodes.length; j++) {{
+    const a = sepPos[sepNodes[i].id];
+    const b = sepPos[sepNodes[j].id];
+    const dx = Math.abs(a.x - b.x);
+    const dy = Math.abs(a.y - b.y);
+    if (dx < 48 && dy < 36) {{
+      throw new Error(`post-layout compute overlap ${{sepNodes[i].id}} vs ${{sepNodes[j].id}}`);
+    }}
+  }}
+}}
+if (display.isHiddenDisplayNode(sepNodes[0])) {{
+  throw new Error("ComputeContext must remain visible for path/blast rendering");
+}}
+
+// Packed co-members must stay on the grid (global spacing must not shred packs).
+{{
+  const packGraph = {{
+    nodes: [
+      {{ id: "p1", label: "ComputeContext", concept_type: "RuntimeBinding", display_name: "pack-a" }},
+      {{ id: "p2", label: "ComputeContext", concept_type: "RuntimeBinding", display_name: "pack-b" }},
+      {{ id: "p3", label: "ComputeContext", concept_type: "RuntimeBinding", display_name: "pack-c" }},
+      {{ id: "vpc", label: "NetworkBoundary", concept_type: "NetworkBoundary",
+         boundary_kind: "vpc", native_id: "aws:vpc:vpc-pack", display_name: "VPC" }},
+    ],
+    edges: [
+      {{ src: "p1", rel: "CAN_REACH", dst: "p2" }},
+      {{ src: "p2", rel: "CAN_REACH", dst: "p3" }},
+      {{ src: "p1", rel: "HOSTED_IN", dst: "vpc" }},
+      {{ src: "p2", rel: "HOSTED_IN", dst: "vpc" }},
+      {{ src: "p3", rel: "HOSTED_IN", dst: "vpc" }},
+    ],
+  }};
+  display.normalize(packGraph, {{ layoutMode: "force", showBoundaryBoxes: true, showAllResourceAccess: true }});
+  const packVisible = packGraph.nodes.filter((n) => !display.isBoundaryNode(n));
+  const packPos = display.computeLayout(
+    packVisible,
+    [{{ src: "p1", rel: "CAN_REACH", dst: "p2" }}, {{ src: "p2", rel: "CAN_REACH", dst: "p3" }}],
+    "p1",
+  );
+  const d12 = Math.hypot(packPos.p1.x - packPos.p2.x, packPos.p1.y - packPos.p2.y);
+  const d13 = Math.hypot(packPos.p1.x - packPos.p3.x, packPos.p1.y - packPos.p3.y);
+  if (d12 < 40 || d13 < 40) {{
+    throw new Error(`pack members stacked: d12=${{d12}} d13=${{d13}}`);
+  }}
+  if (d12 > 280 || d13 > 360) {{
+    throw new Error(`pack shredded by spacing: d12=${{d12}} d13=${{d13}}`);
+  }}
+}}
+
 // Force + boxes: members of one VPC stay packed (box-as-supernode layout).
 display.normalize(graph, {{ layoutMode: "force", showBoundaryBoxes: true, showAllResourceAccess: true }});
 const boxedForce = display.computeLayout(visible, edges, "caller");
@@ -736,3 +801,153 @@ if (display.findBoundaryBoxAt(nested, -10, -10) !== null) {{
     result = subprocess.run([node, "-e", script], capture_output=True, text=True)
     if result.returncode != 0:
         raise AssertionError(result.stderr or result.stdout)
+
+
+def test_path_layout_switch_preserves_boundary_hulls() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for frontend graph contract test")
+
+    app_js = Path(__file__).parents[1] / "samoyed" / "api" / "static" / "app.js"
+    script = f"""
+require({json.dumps(str(app_js))});
+const display = globalThis.SamoyedGraphDisplay;
+const graph = {{
+  nodes: [
+    {{ id: "web", label: "ComputeContext", concept_type: "RuntimeBinding", display_name: "web" }},
+    {{ id: "db", label: "ComputeContext", concept_type: "RuntimeBinding", display_name: "db" }},
+    {{ id: "role", label: "Principal", concept_type: "Identity", display_name: "role", is_caller: true }},
+    {{ id: "vpc1", label: "NetworkBoundary", concept_type: "NetworkBoundary",
+       boundary_kind: "vpc", native_id: "aws:vpc:vpc-1", display_name: "VPC-1" }},
+    {{ id: "sub1", label: "NetworkBoundary", concept_type: "NetworkBoundary",
+       boundary_kind: "subnet", native_id: "aws:subnet:s1", display_name: "sub-1" }},
+  ],
+  edges: [
+    {{ src: "role", rel: "CAN_ASSUME_ROLE", dst: "web" }},
+    {{ src: "web", rel: "CAN_REACH", dst: "db" }},
+    {{ src: "web", rel: "HOSTED_IN", dst: "sub1" }},
+    {{ src: "db", rel: "HOSTED_IN", dst: "sub1" }},
+    {{ src: "sub1", rel: "HOSTED_IN", dst: "vpc1" }},
+  ],
+}};
+const pathNodes = graph.nodes.filter((n) => ["web", "db", "role"].includes(n.id));
+const pathEdges = [
+  {{ src: "role", rel: "CAN_ASSUME_ROLE", dst: "web" }},
+  {{ src: "web", rel: "CAN_REACH", dst: "db" }},
+];
+for (const mode of ["force", "swim", "diamond", "sugiyama", "helio", "space", "hierarchy"]) {{
+  display.normalize(graph, {{ showBoundaryBoxes: true, layoutMode: mode, showAllResourceAccess: true }});
+  display._setViewStateForTests({{ keepSparseBoundarySubnets: true, pathBoxesActive: true, showBoundaryBoxes: true }});
+  // Rebuild boundaries like path render does on every layout switch.
+  const boundaries = display.buildBoundaryModel(graph);
+  display._setViewStateForTests({{ keepSparseBoundarySubnets: true }});
+  // Put boundaries onto state via normalize (already set) — ensure model non-empty.
+  if (!display.getState().boundaries?.length) throw new Error("missing boundaries");
+  const positions = display.computeLayout(pathNodes, pathEdges, "role", {{
+    forceFlat: false,
+    useBoundaryBoxes: true,
+    keepSparseSubnets: true,
+  }});
+  display._setViewStateForTests({{ keepSparseBoundarySubnets: true, pathBoxesActive: true }});
+  const hulls = display.computeBoundaryHullsFromPositions(
+    positions, pathNodes, display.getState().boundaries,
+  );
+  if (!hulls.length) {{
+    throw new Error(`mode ${{mode}}: expected path boundary hulls after layout switch`);
+  }}
+  if (!hulls.some((h) => h.kind === "vpc" || h.kind === "subnet")) {{
+    throw new Error(`mode ${{mode}}: expected vpc/subnet hull, got ${{hulls.map((h) => h.kind)}}`);
+  }}
+}}
+"""
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+
+def test_path_query_keeps_relevant_boundary_boxes() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for frontend graph contract test")
+
+    app_js = Path(__file__).parents[1] / "samoyed" / "api" / "static" / "app.js"
+    script = f"""
+require({json.dumps(str(app_js))});
+const display = globalThis.SamoyedGraphDisplay;
+const graph = {{
+  nodes: [
+    {{ id: "web", label: "ComputeContext", concept_type: "RuntimeBinding",
+       display_name: "web", vpc_id: "vpc-1", account_id: "111" }},
+    {{ id: "db", label: "ComputeContext", concept_type: "RuntimeBinding",
+       display_name: "db", vpc_id: "vpc-1", account_id: "111" }},
+    {{ id: "role", label: "Principal", concept_type: "Identity", display_name: "role" }},
+    {{ id: "vpc1", label: "NetworkBoundary", concept_type: "NetworkBoundary",
+       boundary_kind: "vpc", native_id: "aws:vpc:vpc-1", display_name: "VPC-1",
+       account_id: "111" }},
+    {{ id: "sub1", label: "NetworkBoundary", concept_type: "NetworkBoundary",
+       boundary_kind: "subnet", native_id: "aws:subnet:subnet-1", display_name: "sub-1",
+       account_id: "111" }},
+  ],
+  edges: [
+    {{ src: "role", rel: "CAN_ASSUME_ROLE", dst: "web" }},
+    {{ src: "web", rel: "CAN_REACH", dst: "db" }},
+    {{ src: "web", rel: "HOSTED_IN", dst: "sub1" }},
+    {{ src: "db", rel: "HOSTED_IN", dst: "sub1" }},
+    {{ src: "sub1", rel: "HOSTED_IN", dst: "vpc1" }},
+  ],
+}};
+display.normalize(graph, {{ showBoundaryBoxes: true, showAllResourceAccess: true, layoutMode: "force" }});
+const visibleIds = new Set(["web", "db", "role"]);
+const relevant = display.relevantBoundariesForNodes(visibleIds);
+if (!relevant.some((b) => b.kind === "vpc" || b.kind === "subnet")) {{
+  throw new Error(`expected VPC/subnet boxes for path nodes, got ${{JSON.stringify(relevant.map(b => b.kind))}}`);
+}}
+// Sparse path (single host) still keeps a box with keepSparseSubnets.
+const sparse = display.selectDrawableBoundaries(
+  display.getState().boundaries,
+  new Set(["web"]),
+  {{ keepSparseSubnets: true }},
+);
+if (!sparse.length) {{
+  throw new Error("sparse path should still get a relevant boundary box");
+}}
+const tight = display.selectDrawableBoundaries(
+  display.getState().boundaries,
+  new Set(["web"]),
+  {{ keepSparseSubnets: false }},
+);
+// Full-graph mode may hide single-member subnets; path mode must be more permissive.
+if (sparse.length < tight.length) {{
+  throw new Error("path keepSparse should not drop below full-graph selection");
+}}
+"""
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+
+def test_layout_mode_targets_focused_generated_graph() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for frontend graph contract test")
+
+    app_js = Path(__file__).parents[1] / "samoyed" / "api" / "static" / "app.js"
+    script = f"""
+require({json.dumps(str(app_js))});
+const display = globalThis.SamoyedGraphDisplay;
+
+display._setViewStateForTests({{ graphViewSwapped: false, generatedPaths: null }});
+if (display.isGeneratedGraphFocused()) {{
+  throw new Error("full graph focus: generated should not be focused");
+}}
+
+display._setViewStateForTests({{
+  graphViewSwapped: true,
+  generatedPaths: [{{ node_ids: ["a", "b"], steps: [] }}],
+}});
+if (!display.isGeneratedGraphFocused()) {{
+  throw new Error("swapped path view should be the focused graph");
+}}
+
+display._setViewStateForTests({{ graphViewSwapped: true, generatedPaths: null }});
+if (display.isGeneratedGraphFocused()) {{
+  throw new Error("swapped without paths is not a focused generated graph");
+}}
+"""
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)

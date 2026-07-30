@@ -31,7 +31,13 @@ const state = {
   showBoundaryBoxes: true,
   boundaries: [],
   boundaryRects: [],
+  pathBoundaryRects: [],
   boxPeeringEdges: [],
+  pathBoxPeeringEdges: [],
+  // When true, keep single-member subnet boxes (path/blast subgraphs).
+  keepSparseBoundarySubnets: false,
+  // Path/blast view currently has relevant boundary boxes to preserve across relayout.
+  pathBoxesActive: false,
   // Active bounding-box drag: { boundaryId, memberIds, lastX, lastY }
   boxDrag: null,
   // swim | diamond | helio | space | hierarchy | sugiyama | force
@@ -424,9 +430,15 @@ const INTERESTING_DATASTORE_TYPES = new Set([
   "EC2Instance",
   "LambdaFunction",
   "Lambda",
+  "GCEInstance",
+  "CloudFunction",
+  "VirtualMachine",
+  "AzureVM",
+  "AppService",
+  "FunctionApp",
 ]);
 
-const INTERESTING_DATASTORE_NATIVE = /^(S3Bucket|S3|Secret|SSMParameter|ECRRepository|EC2Instance|LambdaFunction|DynamoDB|RdsInstance|RdsCluster|GCSBucket|StorageAccount|SQSQueue|SNSTopic|KMSKey):/i;
+const INTERESTING_DATASTORE_NATIVE = /^(S3Bucket|S3|Secret|SSMParameter|ECRRepository|EC2Instance|LambdaFunction|GCEInstance|CloudFunction|VirtualMachine|AzureVM|AppService|FunctionApp|DynamoDB|RdsInstance|RdsCluster|GCSBucket|StorageAccount|SQSQueue|SNSTopic|KMSKey):/i;
 
 function isInterestingDataStore(node) {
   if (!node) return false;
@@ -1233,7 +1245,7 @@ function orderLayerByBarycenter(layerIds, prevPositions, undirected) {
     });
 }
 
-function enforceMinSpacing(positions, nodes, { iterations = 48, pads = null } = {}) {
+function enforceMinSpacing(positions, nodes, { iterations = 48, pads = null, ignorePair = null } = {}) {
   if (!positions || !nodes?.length) return positions;
   const nodeById = graphNodeMap(nodes);
   const ids = nodes.map((n) => n.id).filter((id) => positions[id]);
@@ -1246,6 +1258,7 @@ function enforceMinSpacing(positions, nodes, { iterations = 48, pads = null } = 
       for (let j = i + 1; j < ids.length; j += 1) {
         const a = ids[i];
         const b = ids[j];
+        if (ignorePair && ignorePair(a, b)) continue;
         const fa = estimateNodeFootprint(nodeById.get(a));
         const fb = estimateNodeFootprint(nodeById.get(b));
         const minDx = (fa.width + fb.width) / 2 + padXY.x;
@@ -2556,8 +2569,8 @@ function ejectUnhostedFromBoundaryBoxes(positions, nodes, boundaries, pad = 40, 
   return positions;
 }
 
-function layoutForce(nodes, edges, rootId) {
-  if (state.showBoundaryBoxes && (state.boundaries || []).length) {
+function layoutForce(nodes, edges, rootId, opts = {}) {
+  if (!opts.forceFlat && state.showBoundaryBoxes && (state.boundaries || []).length) {
     const drawable = selectDrawableBoundaries(
       state.boundaries,
       new Set(nodes.map((n) => n.id)),
@@ -2744,7 +2757,21 @@ function finalizeBoundaryRects(positions, nodes, boundaries, seedRects = []) {
   return [...rectById.values()];
 }
 
-function computeLayout(nodes, edges, rootId) {
+function computeLayout(nodes, edges, rootId, opts = {}) {
+  const prevSparse = state.keepSparseBoundarySubnets;
+  if (opts.keepSparseSubnets != null) {
+    state.keepSparseBoundarySubnets = Boolean(opts.keepSparseSubnets);
+  }
+  try {
+    return computeLayoutInner(nodes, edges, rootId, opts);
+  } finally {
+    if (opts.keepSparseSubnets != null) {
+      state.keepSparseBoundarySubnets = prevSparse;
+    }
+  }
+}
+
+function computeLayoutInner(nodes, edges, rootId, opts = {}) {
   const mode = state.layoutMode || "force";
   let result;
   if (mode === "swim") {
@@ -2761,7 +2788,7 @@ function computeLayout(nodes, edges, rootId) {
   } else if (mode === "sugiyama") {
     result = layoutSugiyama(nodes, edges, rootId);
   } else if (mode === "force") {
-    result = layoutForce(nodes, edges, rootId);
+    result = layoutForce(nodes, edges, rootId, opts);
   } else {
     // diamond (default fallback)
     result = {
@@ -2773,7 +2800,12 @@ function computeLayout(nodes, edges, rootId) {
 
   const positions = result.positions || {};
   const modeName = state.layoutMode || "force";
-  const boxesOn = state.showBoundaryBoxes && state.boundaries?.length;
+  // Path/blast can force boxes on/off without mutating the toolbar toggle.
+  const boxesOn = opts.forceFlat
+    ? false
+    : (opts.useBoundaryBoxes != null
+      ? Boolean(opts.useBoundaryBoxes)
+      : state.showBoundaryBoxes && state.boundaries?.length);
   const forceWithBoxes = modeName === "force" && boxesOn;
 
   if (forceWithBoxes) {
@@ -2784,7 +2816,10 @@ function computeLayout(nodes, edges, rootId) {
     const packUnits = collectBoundaryPackUnits(drawable, visibleIds)
       .filter((u) => !String(u.metaId).endsWith(":direct"));
     rePackBoundaryUnits(positions, nodes, packUnits);
-    enforceMinSpacing(positions, nodes, { iterations: 16 });
+    enforceMinSpacing(positions, nodes, {
+      iterations: 16,
+      ignorePair: samePackIgnorePair(packUnits),
+    });
     rePackBoundaryUnits(positions, nodes, packUnits);
     // Keep edge neighbors near after packing (esp. unhosted principals).
     pullConnectedNeighbors(positions, nodes, edges, {
@@ -2822,7 +2857,17 @@ function computeLayout(nodes, edges, rootId) {
       idealPad: 140,
     });
     attractBoundaryNeighbors(positions, nodes, edges, state.boundaries);
-    enforceMinSpacing(positions, nodes, { iterations: 18 });
+    {
+      const ids = new Set(nodes.map((n) => n.id).filter((id) => positions[id]));
+      const units = collectBoundaryPackUnits(
+        selectDrawableBoundaries(state.boundaries, ids),
+        ids,
+      );
+      enforceMinSpacing(positions, nodes, {
+        iterations: 18,
+        ignorePair: samePackIgnorePair(units),
+      });
+    }
     applyBoxRules();
     pullConnectedNeighbors(positions, nodes, edges, {
       iterations: 6,
@@ -2833,7 +2878,63 @@ function computeLayout(nodes, edges, rootId) {
     ejectUnhostedFromBoundaryBoxes(positions, nodes, state.boundaries, 40, edges);
   }
 
+  // Soft pulls can restack nodes — finish without shredding boundary packs.
+  finalizeNodeSpacing(positions, nodes, edges);
+
   state.boundaryRects = [];
+  return positions;
+}
+
+/** Same pack-unit members stay on the pack grid; don't let global spacing explode them. */
+function samePackIgnorePair(units) {
+  const packOf = new Map();
+  for (const unit of units || []) {
+    for (const id of unit.members || []) {
+      packOf.set(id, unit.metaId);
+    }
+  }
+  if (!packOf.size) return null;
+  return (a, b) => {
+    const pa = packOf.get(a);
+    const pb = packOf.get(b);
+    return Boolean(pa && pb && pa === pb);
+  };
+}
+
+/**
+ * Terminal spacing pass: restore pack grids, re-assert box rules, then separate
+ * only pairs that are not co-members of the same pack (unhosted ↔ pack, pack↔pack).
+ */
+function finalizeNodeSpacing(positions, nodes, edges) {
+  if (!positions || !nodes?.length) return positions;
+  const boxesOn = state.showBoundaryBoxes && state.boundaries?.length;
+  if (!boxesOn) {
+    enforceMinSpacing(positions, nodes, { iterations: 48 });
+    return positions;
+  }
+
+  const visibleIds = new Set(nodes.map((n) => n.id).filter((id) => positions[id]));
+  const drawable = selectDrawableBoundaries(state.boundaries, visibleIds);
+  const packUnits = collectBoundaryPackUnits(drawable, visibleIds);
+  const leafPacks = packUnits.filter((u) => !String(u.metaId).endsWith(":direct"));
+  rePackBoundaryUnits(positions, nodes, leafPacks);
+  placeVpcDirectComputeAtTop(positions, nodes, state.boundaries);
+  separateSubnetBoxesPreferNoOverlap(positions, nodes, state.boundaries, 32, edges);
+  placeVpcDirectComputeAtTop(positions, nodes, state.boundaries);
+  separateVpcBoxesPreferNoOverlap(positions, nodes, state.boundaries, 40, edges);
+  placeVpcDirectComputeAtTop(positions, nodes, state.boundaries);
+  separateAccountBoxesNeverOverlap(positions, nodes, state.boundaries, 56, edges);
+  ejectUnhostedFromBoundaryBoxes(positions, nodes, state.boundaries, 40, edges);
+
+  // Include vpc-direct packs so their internal grids are also preserved.
+  const allUnits = collectBoundaryPackUnits(
+    selectDrawableBoundaries(state.boundaries, visibleIds),
+    visibleIds,
+  );
+  enforceMinSpacing(positions, nodes, {
+    iterations: 40,
+    ignorePair: samePackIgnorePair(allUnits),
+  });
   return positions;
 }
 
@@ -2954,8 +3055,8 @@ function separateOverlappingBoundaryBoxes(positions, nodes, boundaries, opts = {
 }
 
 /** @deprecated alias — maps to computeLayout for older tests */
-function computeLayeredLayout(nodes, edges, rootId) {
-  return computeLayout(nodes, edges, rootId);
+function computeLayeredLayout(nodes, edges, rootId, opts = {}) {
+  return computeLayout(nodes, edges, rootId, opts);
 }
 
 function packBoundaryClusters(positions, nodes, boundaries) {
@@ -2985,7 +3086,7 @@ function packBoundaryClusters(positions, nodes, boundaries) {
  * Choose which boundaries to draw. Drops empty boxes and redundant subnet
  * wrappers (single-subnet VPCs / single-leaf subnets).
  */
-function selectDrawableBoundaries(boundaries, visibleIds) {
+function selectDrawableBoundaries(boundaries, visibleIds, opts = {}) {
   const byId = new Map(boundaries.map((b) => [b.id, b]));
   const childrenOf = new Map();
   for (const b of boundaries) childrenOf.set(b.id, []);
@@ -2995,28 +3096,38 @@ function selectDrawableBoundaries(boundaries, visibleIds) {
 
   const visibleLeaves = (b) => (b.leafMemberIds || []).filter((id) => visibleIds.has(id));
   const skip = new Set();
+  // Path/blast subgraphs often touch one host per subnet — still show those boxes.
+  const keepSparse = opts.keepSparseSubnets ?? state.keepSparseBoundarySubnets;
 
   for (const b of boundaries) {
     if (!visibleLeaves(b).length) skip.add(b.id);
   }
 
-  for (const b of boundaries) {
-    if (skip.has(b.id) || b.kind !== "subnet") continue;
-    const parent = b.parentId ? byId.get(b.parentId) : null;
-    if (!parent || skip.has(parent.id)) continue;
-    if (parent.kind !== "vpc") continue;
-    const siblingSubnets = (childrenOf.get(parent.id) || [])
-      .map((id) => byId.get(id))
-      .filter((c) => c && c.kind === "subnet" && !skip.has(c.id));
-    const parentDirect = (parent.memberIds || []).filter((id) => visibleIds.has(id));
-    if (siblingSubnets.length <= 1 && parentDirect.length === 0) {
-      skip.add(b.id);
-      continue;
+  if (!keepSparse) {
+    for (const b of boundaries) {
+      if (skip.has(b.id) || b.kind !== "subnet") continue;
+      const parent = b.parentId ? byId.get(b.parentId) : null;
+      if (!parent || skip.has(parent.id)) continue;
+      if (parent.kind !== "vpc") continue;
+      const siblingSubnets = (childrenOf.get(parent.id) || [])
+        .map((id) => byId.get(id))
+        .filter((c) => c && c.kind === "subnet" && !skip.has(c.id));
+      const parentDirect = (parent.memberIds || []).filter((id) => visibleIds.has(id));
+      if (siblingSubnets.length <= 1 && parentDirect.length === 0) {
+        skip.add(b.id);
+        continue;
+      }
+      if (visibleLeaves(b).length <= 1) skip.add(b.id);
     }
-    if (visibleLeaves(b).length <= 1) skip.add(b.id);
   }
 
   return boundaries.filter((b) => !skip.has(b.id));
+}
+
+/** Boundaries that intersect a path/blast node set (for layout + drawing). */
+function relevantBoundariesForNodes(visibleIds) {
+  if (!state.showBoundaryBoxes || !state.boundaries?.length || !visibleIds?.size) return [];
+  return selectDrawableBoundaries(state.boundaries, visibleIds, { keepSparseSubnets: true });
 }
 
 /**
@@ -3095,17 +3206,26 @@ function computeBoundaryHullsFromPositions(positions, nodes, boundaries) {
   return [...rectById.values()];
 }
 
-function computeLiveBoundaryHulls() {
-  if (!state.showBoundaryBoxes || !state.network || !state.boundaries?.length) return [];
-  const nodes = state.nodesDS?.get() || [];
+function computeLiveBoundaryHulls(opts = {}) {
+  const network = opts.network || state.network;
+  const nodesDS = opts.nodesDS || state.nodesDS;
+  if (!state.showBoundaryBoxes || !network || !state.boundaries?.length) return [];
+  const nodes = nodesDS?.get() || [];
   const ids = nodes.map((n) => n.id);
+  if (!ids.length) return [];
   let positions;
   try {
-    positions = state.network.getPositions(ids);
+    positions = network.getPositions(ids);
   } catch {
     return [];
   }
-  return computeBoundaryHullsFromPositions(positions, nodes, state.boundaries);
+  const prevSparse = state.keepSparseBoundarySubnets;
+  if (opts.keepSparseSubnets) state.keepSparseBoundarySubnets = true;
+  try {
+    return computeBoundaryHullsFromPositions(positions, nodes, state.boundaries);
+  } finally {
+    state.keepSparseBoundarySubnets = prevSparse;
+  }
 }
 
 /** Border hit of center→center segment on a rect (for box↔box peering). */
@@ -3123,11 +3243,21 @@ function rectBorderPointToward(rect, towardX, towardY) {
   return { x: cx + dx * t, y: cy + dy * t };
 }
 
-function drawBoundaryBoxes(ctx) {
+function drawBoundaryBoxes(ctx, opts = {}) {
   if (!state.showBoundaryBoxes) return;
   // Always size boxes from live node positions (drag/layout), not frozen layout rects.
-  const hulls = computeLiveBoundaryHulls();
-  state.boundaryRects = hulls;
+  const network = opts.network || state.network;
+  const nodesDS = opts.nodesDS || state.nodesDS;
+  const hulls = computeLiveBoundaryHulls({
+    network,
+    nodesDS,
+    keepSparseSubnets: Boolean(opts.keepSparseSubnets),
+  });
+  if (opts.storePath) {
+    state.pathBoundaryRects = hulls;
+  } else {
+    state.boundaryRects = hulls;
+  }
   if (!hulls.length) return;
 
   const paintOrder = [...hulls].sort((a, b) => {
@@ -3206,11 +3336,21 @@ function findBoundaryBoxAt(rects, x, y) {
   return hits[0];
 }
 
-function memberIdsForBoundary(boundaryId) {
+function memberIdsForBoundary(boundaryId, nodesDS = null) {
   const boundary = (state.boundaries || []).find((b) => b.id === boundaryId);
   if (!boundary) return [];
-  const visible = new Set((state.nodesDS?.get() || []).map((n) => n.id));
+  const ds = nodesDS || state.nodesDS;
+  const visible = new Set((ds?.get() || []).map((n) => n.id));
   return (boundary.leafMemberIds || []).filter((id) => visible.has(id));
+}
+
+function nodesDsForNetwork(network) {
+  if (network && network === state.pathNetwork) return state.pathNodesDS;
+  return state.nodesDS;
+}
+
+function isPathViewportNetwork(network) {
+  return Boolean(network && network === state.pathNetwork);
 }
 
 function pointerToNetworkCanvas(network, event, { allowOutside = false } = {}) {
@@ -3245,24 +3385,40 @@ function translateBoundaryBoxMembers(network, memberIds, dx, dy) {
   } catch {
     return;
   }
+  const ds = nodesDsForNetwork(network);
+  const pinFixed = isPathViewportNetwork(network);
+  const updates = [];
   for (const id of memberIds) {
     const p = positions[id];
     if (!p) continue;
-    network.moveNode(id, p.x + dx, p.y + dy);
+    const x = p.x + dx;
+    const y = p.y + dy;
+    try {
+      network.moveNode(id, x, y);
+    } catch {
+      /* ignore */
+    }
+    // Keep DataSet coords in sync (path nodes stay fixed after layout).
+    if (ds?.get(id)) {
+      const update = { id, x, y };
+      if (pinFixed) update.fixed = true;
+      updates.push(update);
+    }
   }
+  if (updates.length && ds) ds.update(updates);
 }
 
 /**
  * Drag empty space inside a bounding box to move the box + its member nodes.
  * Node hits still win (drag the node instead).
+ * Wired per canvas so full-graph and path/blast viewports both support it.
  */
-function wireBoundaryBoxDragging(network) {
-  const container = document.getElementById("graph");
+function wireBoundaryBoxDragging(network, container) {
   if (!network || !container || container.dataset.boxDragWired === "1") return;
   container.dataset.boxDragWired = "1";
 
   const endDrag = () => {
-    if (!state.boxDrag) return;
+    if (!state.boxDrag || state.boxDrag.network !== network) return;
     state.boxDrag = null;
     try {
       network.setOptions({ interaction: { dragView: true } });
@@ -3275,24 +3431,33 @@ function wireBoundaryBoxDragging(network) {
 
   container.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
-    if (!state.showBoundaryBoxes || state.network !== network) return;
+    if (!state.showBoundaryBoxes) return;
     if (nodeIdAtPointer(network, event)) return;
 
     const canvasPos = pointerToNetworkCanvas(network, event);
     if (!canvasPos) return;
 
-    const hulls = computeLiveBoundaryHulls();
-    state.boundaryRects = hulls;
+    const pathView = isPathViewportNetwork(network);
+    const nodesDS = nodesDsForNetwork(network);
+    const hulls = computeLiveBoundaryHulls({
+      network,
+      nodesDS,
+      keepSparseSubnets: pathView || state.pathBoxesActive,
+    });
+    if (pathView) state.pathBoundaryRects = hulls;
+    else state.boundaryRects = hulls;
+
     const box = findBoundaryBoxAt(hulls, canvasPos.x, canvasPos.y);
     if (!box) return;
 
-    const memberIds = memberIdsForBoundary(box.id);
+    const memberIds = memberIdsForBoundary(box.id, nodesDS);
     if (!memberIds.length) return;
 
     event.preventDefault();
     event.stopPropagation();
 
     state.boxDrag = {
+      network,
       boundaryId: box.id,
       memberIds,
       lastX: canvasPos.x,
@@ -3313,7 +3478,7 @@ function wireBoundaryBoxDragging(network) {
   }, true);
 
   container.addEventListener("pointermove", (event) => {
-    if (state.boxDrag) {
+    if (state.boxDrag && state.boxDrag.network === network) {
       const canvasPos = pointerToNetworkCanvas(network, event, { allowOutside: true });
       if (!canvasPos) return;
       const dx = canvasPos.x - state.boxDrag.lastX;
@@ -3322,6 +3487,7 @@ function wireBoundaryBoxDragging(network) {
         state.boxDrag.lastX = canvasPos.x;
         state.boxDrag.lastY = canvasPos.y;
         translateBoundaryBoxMembers(network, state.boxDrag.memberIds, dx, dy);
+        network.redraw();
       }
       return;
     }
@@ -3339,7 +3505,9 @@ function wireBoundaryBoxDragging(network) {
       container.style.cursor = "";
       return;
     }
-    const box = findBoundaryBoxAt(state.boundaryRects || [], canvasPos.x, canvasPos.y);
+    const pathView = isPathViewportNetwork(network);
+    const rects = pathView ? state.pathBoundaryRects : state.boundaryRects;
+    const box = findBoundaryBoxAt(rects || [], canvasPos.x, canvasPos.y);
     container.style.cursor = box ? "grab" : "";
   });
 
@@ -3347,13 +3515,15 @@ function wireBoundaryBoxDragging(network) {
   container.addEventListener("pointercancel", endDrag);
 }
 
-function drawBoxPeeringEdges(ctx) {
-  if (!state.showBoundaryBoxes || !state.boxPeeringEdges?.length || !state.boundaryRects?.length) {
+function drawBoxPeeringEdges(ctx, opts = {}) {
+  const rects = opts.rects || state.boundaryRects;
+  const peeringEdges = opts.peeringEdges || state.boxPeeringEdges;
+  if (!state.showBoundaryBoxes || !peeringEdges?.length || !rects?.length) {
     return;
   }
-  const rectById = new Map(state.boundaryRects.map((r) => [r.id, r]));
+  const rectById = new Map(rects.map((r) => [r.id, r]));
 
-  for (const edge of state.boxPeeringEdges) {
+  for (const edge of peeringEdges) {
     const a = rectById.get(edge.src);
     const b = rectById.get(edge.dst);
     if (!a || !b) continue;
@@ -3735,10 +3905,13 @@ function initNetwork() {
   state.network = new vis.Network(container, { nodes: state.nodesDS, edges: state.edgesDS }, options);
 
   state.network.on("beforeDrawing", (ctx) => {
-    drawBoundaryBoxes(ctx);
+    drawBoundaryBoxes(ctx, { network: state.network, nodesDS: state.nodesDS });
   });
   state.network.on("afterDrawing", (ctx) => {
-    drawBoxPeeringEdges(ctx);
+    drawBoxPeeringEdges(ctx, {
+      rects: state.boundaryRects,
+      peeringEdges: state.boxPeeringEdges,
+    });
   });
 
   state.network.on("click", (params) => {
@@ -3759,7 +3932,7 @@ function initNetwork() {
   });
 
   wireEdgeInteractionHandlers(state.network, state.edgesDS);
-  wireBoundaryBoxDragging(state.network);
+  wireBoundaryBoxDragging(state.network, document.getElementById("graph"));
 
   window.addEventListener("resize", () => {
     resizeGraphNetworks();
@@ -3986,6 +4159,25 @@ function initPathGraph() {
     },
   );
 
+  state.pathNetwork.on("beforeDrawing", (ctx) => {
+    drawBoundaryBoxes(ctx, {
+      network: state.pathNetwork,
+      nodesDS: state.pathNodesDS,
+      storePath: true,
+      // Path/blast subgraphs keep single-host subnet/VPC boxes across layout switches.
+      keepSparseSubnets: state.pathBoxesActive || state.keepSparseBoundarySubnets,
+    });
+  });
+  state.pathNetwork.on("afterDrawing", (ctx) => {
+    drawBoxPeeringEdges(ctx, {
+      rects: state.pathBoundaryRects,
+      peeringEdges: state.pathBoxPeeringEdges,
+    });
+  });
+  state.pathNetwork.on("dragEnd", () => {
+    state.pathNetwork?.redraw();
+  });
+
   state.pathNetwork.on("doubleClick", (params) => {
     if (params.nodes.length) openNodeDetail(params.nodes[0]);
   });
@@ -3996,6 +4188,7 @@ function initPathGraph() {
   });
 
   wireEdgeInteractionHandlers(state.pathNetwork, state.pathEdgesDS);
+  wireBoundaryBoxDragging(state.pathNetwork, document.getElementById("pathGraph"));
 }
 
 function fitGraphView(opts = {}) {
@@ -4050,6 +4243,42 @@ function applyGraphLayout(visibleNodes, edges, { fit = false } = {}) {
   }
 }
 
+/** True when the attack-path / generated graph occupies the main (focused) viewport. */
+function isGeneratedGraphFocused() {
+  if (!state.generatedPaths?.length) return false;
+  const mainHost = typeof document !== "undefined"
+    ? document.getElementById("mainGraphHost")
+    : null;
+  const graphEl = typeof document !== "undefined"
+    ? document.getElementById("graph")
+    : null;
+  // Prefer DOM host membership when available; fall back to swap flag (tests / early boot).
+  if (mainHost && graphEl) return !mainHost.contains(graphEl);
+  return Boolean(state.graphViewSwapped);
+}
+
+/**
+ * Re-layout whichever graph is on the main viewport (toolbar Layout / Re-layout).
+ * When paths are swapped into focus, only the path subgraph is recomputed.
+ */
+function relayoutFocusedGraph({ fit = true } = {}) {
+  if (isGeneratedGraphFocused()) {
+    // Keep swap flag aligned with the DOM host so later relayouts stay on-path.
+    state.graphViewSwapped = true;
+    renderGeneratedPathGraph(state.generatedPaths, { fit });
+    return;
+  }
+  if (!state.graph || !state.nodesDS) return;
+  const { nodes: visibleNodes, edges } = normalizeGraphForDisplay(state.graph);
+  const layoutEdges = annotateEdgeSourceIndex(edges);
+  // Keep DataSets if already populated — only reposition.
+  if (state.nodesDS.get()?.length) {
+    applyGraphLayout(visibleNodes, layoutEdges, { fit });
+  } else {
+    renderGraph(state.graph);
+  }
+}
+
 function restoreLayoutModePreference() {
   const stored = localStorage.getItem("samoyed-layout-mode");
   const allowed = new Set(LAYOUT_MODE_IDS);
@@ -4069,7 +4298,7 @@ function setLayoutMode(mode) {
   localStorage.setItem("samoyed-layout-mode", mode);
   const select = document.getElementById("layoutMode");
   if (select && select.value !== mode) select.value = mode;
-  if (state.graph) renderGraph(state.graph);
+  relayoutFocusedGraph({ fit: true });
 }
 
 function renderGraph(graph) {
@@ -4205,6 +4434,10 @@ function updateMiniGraphSectionVisibility() {
 
 function clearGeneratedPathGraph() {
   state.generatedPaths = null;
+  state.pathBoundaryRects = [];
+  state.pathBoxPeeringEdges = [];
+  state.pathBoxesActive = false;
+  state.keepSparseBoundarySubnets = false;
   if (state.pathNodesDS) state.pathNodesDS.clear();
   if (state.pathEdgesDS) state.pathEdgesDS.clear();
   updateMiniGraphSectionVisibility();
@@ -4236,6 +4469,8 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
   }
 
   const { nodeIds, steps } = collectPathSubgraph(paths);
+  // Path / blast views keep ComputeContext (and other) hops that survive display
+  // filters — do not apply leaf-resource collapse here.
   const visibleNodes = state.graph.nodes.filter((n) => nodeIds.has(n.id) && !isHiddenDisplayNode(n));
   if (!visibleNodes.length) {
     clearGeneratedPathGraph();
@@ -4245,7 +4480,57 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
   const rootId = paths[0]?.node_ids?.[0] || visibleNodes[0].id;
   const nodeById = graphNodeMap(visibleNodes);
   const stepEdges = resolveStepEdges(steps);
-  const positions = computeLayeredLayout(visibleNodes, stepEdges, rootId);
+  const visibleIds = new Set(visibleNodes.map((n) => n.id));
+
+  // Always refresh from the full session graph so layout switches cannot drop boxes.
+  if (state.graph) {
+    state.boundaries = buildBoundaryModel(state.graph);
+  }
+  const relevantBoxes = relevantBoundariesForNodes(visibleIds);
+  const useBoxes = Boolean(state.showBoundaryBoxes && relevantBoxes.length);
+  state.pathBoxesActive = useBoxes;
+  state.keepSparseBoundarySubnets = useBoxes;
+  const drawableIds = new Set(relevantBoxes.map((b) => b.id));
+  if (useBoxes) {
+    if (state.boxPeeringEdges?.length) {
+      state.pathBoxPeeringEdges = state.boxPeeringEdges.filter(
+        (e) => drawableIds.has(e.src) && drawableIds.has(e.dst),
+      );
+    } else {
+      const allBoundaryIds = new Set(
+        (state.graph.nodes || []).filter(isBoundaryNode).map((n) => n.id),
+      );
+      const collapsed = collapseBoundaryHopEdges(state.graph.edges || [], allBoundaryIds);
+      state.pathBoxPeeringEdges = buildBoxPeeringEdges(
+        state.graph,
+        state.boundaries,
+        visibleIds,
+        collapsed,
+      );
+    }
+  } else {
+    state.pathBoxPeeringEdges = [];
+    state.pathBoundaryRects = [];
+  }
+  // Prefer box↔box peering over node-level VPC_PEERS when boxes apply.
+  const layoutEdges = useBoxes
+    ? stepEdges.filter((e) => !isPeeringNetworkEdge(e))
+    : stepEdges;
+
+  const positions = computeLayeredLayout(visibleNodes, layoutEdges, rootId, {
+    forceFlat: !useBoxes,
+    useBoundaryBoxes: useBoxes,
+    keepSparseSubnets: useBoxes,
+  });
+  // computeLayout restores the prior sparse flag — keep path mode sticky while active.
+  state.keepSparseBoundarySubnets = useBoxes;
+  if (useBoxes) {
+    state.pathBoundaryRects = computeBoundaryHullsFromPositions(
+      positions,
+      visibleNodes,
+      state.boundaries,
+    );
+  }
   const emptyResult = Boolean(paths[0]?.empty);
 
   state.pathNodesDS.clear();
@@ -4253,6 +4538,8 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
   state.pathNodesDS.add(
     visibleNodes.map((node) => {
       const vis = toVisNode(node, positions[node.id]);
+      // Pin coordinates so hulls survive DataSet rebuild / layout switches.
+      if (positions[node.id]) vis.fixed = true;
       if (node.id === rootId) {
         vis.color = SELECTED_NODE_COLOR;
         vis.borderWidth = 3;
@@ -4263,7 +4550,7 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
       return vis;
     }),
   );
-  state.pathEdgesDS.add(buildPathViewEdges(stepEdges, nodeById));
+  state.pathEdgesDS.add(buildPathViewEdges(layoutEdges, nodeById));
 
   const badge = document.getElementById("pathGraphBadge");
   if (badge) {
@@ -4277,7 +4564,10 @@ function renderGeneratedPathGraph(paths, { fit = true } = {}) {
       const pathEl = document.getElementById("pathGraph");
       if (pathEl) resizeNetworkToContainer(state.pathNetwork, pathEl);
       state.pathNetwork.fit({ animation: { duration: 400, easingFunction: "easeInOutQuad" } });
+      state.pathNetwork.redraw();
     });
+  } else {
+    state.pathNetwork?.redraw();
   }
 }
 
@@ -5377,6 +5667,8 @@ globalThis.SamoyedGraphDisplay = {
   layoutConnectedComponent,
   computeLayout,
   enforceMinSpacing,
+  finalizeNodeSpacing,
+  samePackIgnorePair,
   pullConnectedNeighbors,
   untangleEdgeCrossings,
   layoutSwim,
@@ -5400,13 +5692,40 @@ globalThis.SamoyedGraphDisplay = {
   findBoundaryBoxAt,
   memberIdsForBoundary,
   isBoundaryNode,
+  isHiddenDisplayNode,
+  isGeneratedGraphFocused,
+  relevantBoundariesForNodes,
+  relayoutFocusedGraph,
+  setLayoutMode,
+  _setViewStateForTests(partial = {}) {
+    if (partial.graphViewSwapped != null) state.graphViewSwapped = Boolean(partial.graphViewSwapped);
+    if (Object.prototype.hasOwnProperty.call(partial, "generatedPaths")) {
+      state.generatedPaths = partial.generatedPaths;
+    }
+    if (partial.layoutMode != null) state.layoutMode = String(partial.layoutMode);
+    if (partial.keepSparseBoundarySubnets != null) {
+      state.keepSparseBoundarySubnets = Boolean(partial.keepSparseBoundarySubnets);
+    }
+    if (partial.pathBoxesActive != null) {
+      state.pathBoxesActive = Boolean(partial.pathBoxesActive);
+    }
+    if (partial.showBoundaryBoxes != null) {
+      state.showBoundaryBoxes = Boolean(partial.showBoundaryBoxes);
+    }
+  },
   getState: () => ({
     layoutMode: state.layoutMode,
     showBoundaryBoxes: state.showBoundaryBoxes,
     boundaryRects: state.boundaryRects,
+    pathBoundaryRects: state.pathBoundaryRects,
     boxPeeringEdges: state.boxPeeringEdges,
     boundaries: state.boundaries,
+    graphViewSwapped: state.graphViewSwapped,
+    generatedPaths: state.generatedPaths,
+    pathBoxesActive: state.pathBoxesActive,
+    keepSparseBoundarySubnets: state.keepSparseBoundarySubnets,
   }),
+  buildBoundaryModel,
 };
 
 if (typeof document !== "undefined" && typeof vis !== "undefined") {
@@ -5561,8 +5880,15 @@ document.getElementById("toggleAllResourceAccess")?.addEventListener("change", (
 });
 document.getElementById("toggleBoundaryBoxes")?.addEventListener("change", (event) => {
   state.showBoundaryBoxes = !!event.target.checked;
-  // Re-layout: box rects / box peering depend on this toggle.
-  if (state.graph) renderGraph(state.graph);
+  // Re-layout focused viewport; box rects / box peering depend on this toggle.
+  if (isGeneratedGraphFocused()) {
+    relayoutFocusedGraph({ fit: true });
+  } else if (state.graph) {
+    renderGraph(state.graph);
+    if (state.generatedPaths?.length) {
+      renderGeneratedPathGraph(state.generatedPaths, { fit: false });
+    }
+  }
 });
 document.getElementById("layoutMode")?.addEventListener("change", (event) => {
   setLayoutMode(event.target.value);
@@ -5583,9 +5909,7 @@ document.getElementById("exportPathGraph").onclick = () => {
 };
 document.getElementById("swapGraphViews").onclick = swapGraphViews;
 document.getElementById("relayoutGraph").onclick = () => {
-  const { nodes: visibleNodes, edges } = normalizeGraphForDisplay(state.graph);
-  const layoutEdges = annotateEdgeSourceIndex(edges);
-  applyGraphLayout(visibleNodes, layoutEdges, { fit: true });
+  relayoutFocusedGraph({ fit: true });
 };
 document.getElementById("clearHighlight").onclick = clearHighlight;
 document.getElementById("focusCaller").onclick = () => {

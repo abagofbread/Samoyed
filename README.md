@@ -1,111 +1,200 @@
 # Samoyed
 
-BloodHound for cloud — ingest identity and resource data, build an attack-path graph, and query blast radius from leaked credentials, compromised workloads, and supply-chain pivots. Very much a work in progress, user beware.
+**BloodHound for cloud.**
 
-## Features (v0.1)
+Samoyed turns cloud identity, trust, and network reachability into an attack-path graph — then answers the question that matters after a leak, a pod escape, or a WIF pivot: *what can this compromise actually reach?*
 
-- Live AWS enumeration from profiles or key files (permission-bounded)
-- Provider-agnostic concept ontology (AWS, GCP, Azure, K8s, Docker — extensible)
-- Attack-path search with evidence-backed edges
-- `leaked-credential` scenario
-- FastAPI + interactive graph UI (force-directed, path highlighting)
-- MCP server for Cursor/Claude agent queries
-- `.samoyed/` extension workspace for custom enumerators
-- **Cartography connector** — import Lyft/CNCF [Cartography](https://github.com/cartography-cncf/cartography) Neo4j graphs for attack-path analysis
+Multi-cloud by design. AWS, GCP, Azure, and Kubernetes map into one ontology. Paths carry evidence. Agents and analysts query the same graph.
+
+![grand-tri-cloud walkthrough — full mesh, focused path, blast radius](docs/images/grand-tri-cloud-walkthrough.gif)
+
+<p align="center"><em>grand-tri-cloud lab — 211 nodes across AWS / GCP / Azure. Bastion patient-zero → app tier → PCI ETL role → Full S3 admin.</em></p>
+
+```bash
+pip install -e ".[dev,mcp]"
+samoyed import-fixture grand-tri-cloud
+samoyed scenario intercloud-federation
+export SAMOYED_PASSWORD='dev'
+samoyed ui   # http://127.0.0.1:8000
+```
+
+---
+
+## What it does
+
+| Capability | Why it matters |
+|---|---|
+| **Attack-path search** | Blast radius from a leaked key, compromised SA, host theft, or supply-chain write — not just asset inventory |
+| **Shared ontology** | Identities, entitlements, trust, runtimes, workloads, secrets, and data across providers — extensible via plugins |
+| **Live enum + offline ingest** | Profiles / ADC / `az login`, or import iam-report, Terraform state, CloudFox, BloodHound CE, Cartography |
+| **Network without noise** | VPC peering and SG-lite reachability as `CAN_REACH` / `VPC_PEERS` / `BRIDGES_TO` — no VPC/SG node soup |
+| **Inter-cloud pivots** | WIF / OIDC / synced identities auto-graft peer sessions; `intercloud-map` surfaces the bridges |
+| **API probing** | When IAM list is denied, probe high-value APIs and promote successes into the graph |
+| **Agent-native** | MCP server for Cursor/Claude — mark compromise, find paths, run scenarios from chat |
+| **Interactive UI** | Force-directed graph, path highlight, markings, session browser |
+
+---
 
 ## Install
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,mcp]"
-pre-commit install     # gitleaks: block secrets before commit
+# Optional cloud extras:
+# pip install -e ".[gcp]" / ".[azure]" / ".[k8s]"
+pre-commit install
 docker compose up -d   # optional Neo4j persistence
 ```
 
-## Usage
+Requires Python 3.9+.
+
+---
+
+## Sixty-second demo
+
+No cloud account. Bundled field-shaped reports:
 
 ```bash
-# Offline demo reports (field-realistic iam-report / cloudfox / authz JSON — no cloud account)
-samoyed import-fixture lab-aws
-samoyed scenario leaked-credential --session-id fixture-lab-aws
-
-samoyed import-fixture k8s-lab
-samoyed scenario compromised-sa --session-id fixture-k8s-lab
-
-samoyed import-fixture enterprise-aws   # multi-hop corp environment
-samoyed import-fixture host-pivot        # compromised laptop → cloud creds
-samoyed import-fixture cicd-supply-chain # supply-chain dependency marking demo
-
-# List bundled fixtures
-samoyed import-fixture --list
-
-# Emulated vulnerable AWS lab (LocalStack — no lab data in repo)
-samoyed firing-range up
-samoyed firing-range seed
-samoyed firing-range enum
-# See firing-range/README.md
-
-# Live GCP (ADC / GOOGLE_APPLICATION_CREDENTIALS / SA JSON — auto-detected)
-# pip install 'samoyed[gcp]'
-samoyed enum
-samoyed whoami
-# Starter lab: git clone https://github.com/ine-labs/GCPGoat.git .samoyed/GCPGoat
-# samoyed import-path .samoyed/GCPGoat
-# samoyed import-fixture corp-mesh-gcp | lab-gcp | wif-aws-gcp | intercloud-host-pivot
-
-# Live Azure (az login / SP env / SP JSON — auto-detected; pip install 'samoyed[azure]')
-samoyed enum
-samoyed whoami
-# Starter lab: git clone https://github.com/ine-labs/AzureGoat.git .samoyed/AzureGoat
-# samoyed import-path .samoyed/AzureGoat
-# samoyed import-fixture lab-azure | corp-mesh-azure | wif-aws-azure | wif-gcp-azure | intercloud-tri-cloud | grand-tri-cloud
-# samoyed import-fixture bloodhound-entra-lab | hybrid-mimikatz-entra
-# samoyed import-bloodhound ./azurehound.json
-# samoyed intercloud-map --session-id <id>
-
-# Live Kubernetes enumeration (requires kubeconfig + pip install 'samoyed[k8s]')
-samoyed enum --provider kubernetes
-samoyed whoami --provider kubernetes
-
-# Live enumeration (IAM/RBAC APIs when available)
-samoyed enum --profile attacker
-
-# Leaked key without IAM list access — brute-force API probes
-samoyed probe --key-file leaked-aws.json
-samoyed probe --list                              # show probe catalog
-samoyed probe --key-file leaked.json --report-only  # JSON report only
-samoyed enum --probe-only --key-file leaked.json    # probe → graph session
-samoyed enum --with-probe --key-file leaked.json    # probe + IAM enum
-
-# Optional custom probes: .samoyed/probes.json
-
-# Import Cartography asset graph (read-only Neo4j; separate from Samoyed session DB)
-export CARTOGRAPHY_NEO4J_URI=bolt://localhost:7687
-samoyed cartography-status
-samoyed import-cartography --caller-arn arn:aws:iam::123456789012:user/alice --account-id 123456789012
-samoyed scenario leaked-credential --session-id <session-id>
-
-# Full scenario (enum + blast-radius paths)
-samoyed scenario leaked-credential --profile attacker
-
-# Query paths for a session
-samoyed paths <session-id> --target-concept SecretStore
-
-# Web UI + API
-export SAMOYED_PASSWORD='choose-a-strong-password'
+samoyed import-fixture grand-tri-cloud
+samoyed scenario intercloud-federation
 samoyed ui
-# Open http://127.0.0.1:8000 — sign in at /login
-# Binding beyond localhost auto-generates a password if none is set
 
-# MCP server (add to Cursor MCP config)
-samoyed mcp
-
-# Scaffold custom extension
-samoyed init-extension enumerator my_custom_api
-samoyed init-extension connector my_graph_source
+# Smaller starters
+samoyed import-fixture lab-aws
+samoyed scenario leaked-credential
+samoyed import-fixture enterprise-aws      # marketing EC2 → CI/CD → EKS → vault
+samoyed import-fixture --list
 ```
 
-## MCP config (Cursor)
+![Focused attack path in the UI](docs/images/grand-tri-cloud-path.png)
+
+Bastion in the DMZ can reach `app-api-1`, then PCI ETL, then escape via IMDS into `pci-etl-role` — scored path to full S3 administration.
+
+<details>
+<summary>Full mesh + blast radius stills</summary>
+
+![Full grand-tri-cloud mesh](docs/images/grand-tri-cloud-hero.png)
+
+![Blast radius from compromised](docs/images/grand-tri-cloud-blast.png)
+
+</details>
+
+---
+
+## Live enumeration
+
+Provider is auto-detected from credentials when you omit `--provider`.
+
+```bash
+# AWS
+samoyed enum --profile attacker
+samoyed whoami --profile attacker
+
+# GCP (ADC / GOOGLE_APPLICATION_CREDENTIALS / SA JSON)
+pip install 'samoyed[gcp]'
+samoyed enum
+samoyed whoami
+
+# Azure (AZURE_SUBSCRIPTION_ID + az login / SP)
+pip install 'samoyed[azure]'
+samoyed enum
+samoyed whoami
+
+# Kubernetes
+pip install 'samoyed[k8s]'
+samoyed enum --provider kubernetes
+```
+
+### Low-priv / leaked keys
+
+When the key cannot list IAM/RBAC, probe what it can actually call:
+
+```bash
+samoyed probe --key-file leaked.json
+samoyed enum --with-probe --key-file leaked.json
+samoyed probe --list
+```
+
+Custom operations live in `.samoyed/probes.json`.
+
+### Emulated AWS lab
+
+Vulnerable topology is seeded into LocalStack — nothing sensitive in the repo:
+
+```bash
+samoyed firing-range up && samoyed firing-range seed && samoyed firing-range enum
+```
+
+See [firing-range/README.md](firing-range/README.md).
+
+---
+
+## Scenarios
+
+| Scenario | Start condition |
+|---|---|
+| `leaked-credential` | Compromised IAM / cloud principal |
+| `compromised-sa` / `pod-escape` | K8s service account or container escape |
+| `host-compromise` | Laptop / workstation with cached cloud creds |
+| `can-reach-other-accounts` | VPC peering / network graft into peer scopes |
+| `intercloud-federation` | WIF / OIDC / foreign assume-role bridges |
+
+```bash
+samoyed scenario leaked-credential --session-id <id>
+samoyed scenario intercloud-federation --session-id <id>
+samoyed intercloud-map --session-id <id>
+```
+
+Start aliases: `caller`, `host`, `compromised`. Target alias: `target_concept=high_value`.
+
+---
+
+## Ingest anything you already have
+
+```bash
+# Terraform / network inventory (offline)
+samoyed import-path ./infra/terraform.tfstate
+samoyed import-path ./network.json --attach-to <session>
+
+# Cartography Neo4j → Samoyed attack session
+export CARTOGRAPHY_NEO4J_URI=bolt://localhost:7687
+samoyed cartography-status
+samoyed import-cartography \
+  --caller-arn arn:aws:iam::123456789012:user/alice \
+  --account-id 123456789012
+
+# BloodHound CE / AzureHound / SharpHound
+samoyed import-bloodhound ./azurehound.json
+
+# Goat labs (clone into gitignored .samoyed/)
+git clone https://github.com/ine-labs/GCPGoat.git .samoyed/GCPGoat
+samoyed import-path .samoyed/GCPGoat
+
+git clone https://github.com/ine-labs/AzureGoat.git .samoyed/AzureGoat
+samoyed import-path .samoyed/AzureGoat
+```
+
+Useful fixtures: `lab-gcp`, `lab-azure`, `corp-mesh-aws`, `corp-mesh-gcp`, `corp-mesh-azure`, `wif-aws-gcp`, `wif-aws-azure`, `wif-gcp-azure`, `bloodhound-entra-lab`, `hybrid-mimikatz-entra`, `cicd-supply-chain`, `vpc-peering-aws`.
+
+`import-path` on a directory merges all `*.tfstate` and auto-applies companion `enrichment.json` files (used by `grand-tri-cloud`).
+
+---
+
+## Web UI
+
+```bash
+export SAMOYED_PASSWORD='choose-a-strong-password'
+samoyed ui
+# http://127.0.0.1:8000 — login at /login
+```
+
+Protects `/` and `/api/*` (except health + auth). Programmatic clients can send `Authorization: Bearer $SAMOYED_API_TOKEN`. Binding beyond localhost without credentials auto-generates a password and prints it to stderr.
+
+OpenAPI: `/openapi.json`.
+
+---
+
+## MCP (Cursor / Claude)
 
 ```json
 {
@@ -118,23 +207,28 @@ samoyed init-extension connector my_graph_source
 }
 ```
 
+Tools include `list_sessions`, `mark_nodes`, `mark_from_alert`, `find_attack_paths`, `get_blast_radius`, `run_scenario`, `describe_intercloud_paths`, and ontology resource `samoyed://ontology`.
+
+```text
+mark_nodes('["arn:aws:iam::123:user/jane"]', compromised=true)
+mark_nodes('["prod-db", "corp-vault"]', high_value=true)
+find_attack_paths(start="compromised", target_concept="high_value")
+```
+
+---
+
 ## Environment
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `NEO4J_URI` | — | Optional Neo4j bolt URI |
-| `NEO4J_USER` | `neo4j` | Neo4j user |
-| `NEO4J_PASSWORD` | `samoyed-dev` | Neo4j password |
-| `CARTOGRAPHY_NEO4J_URI` | falls back to `NEO4J_URI` | Cartography sync database |
-| `CARTOGRAPHY_NEO4J_USER` | falls back to `NEO4J_USER` | Cartography Neo4j user |
-| `CARTOGRAPHY_NEO4J_PASSWORD` | falls back to `NEO4J_PASSWORD` | Cartography Neo4j password |
-| `CARTOGRAPHY_NEO4J_DATABASE` | `neo4j` | Cartography Neo4j database name |
-| `SAMOYED_USERNAME` | `admin` | Web UI login username |
-| `SAMOYED_PASSWORD` | — | Web UI login password (enables auth when set) |
-| `SAMOYED_API_TOKEN` | — | Optional bearer token for API clients |
-| `SAMOYED_SECRET_KEY` | random per process | Session signing secret (set in production) |
-| `SAMOYED_HOME` | `~/.samoyed` | Data root for persisted sessions |
-| `SAMOYED_SESSION_DIR` | `$SAMOYED_HOME/sessions` | Override session storage directory |
+| Variable | Purpose |
+|---|---|
+| `NEO4J_URI` / `USER` / `PASSWORD` | Optional graph persistence (`samoyed-dev` default password) |
+| `CARTOGRAPHY_NEO4J_*` | Cartography sync DB (falls back to `NEO4J_*`) |
+| `SAMOYED_USERNAME` / `SAMOYED_PASSWORD` | Web UI auth (`admin` default user) |
+| `SAMOYED_API_TOKEN` | Bearer token for API clients |
+| `SAMOYED_SECRET_KEY` | Session signing (set in production) |
+| `SAMOYED_HOME` | Data root (default `~/.samoyed`) |
+
+---
 
 ## Development
 
@@ -143,4 +237,11 @@ pytest
 ruff check samoyed tests
 ```
 
-See [AGENTS.md](AGENTS.md) for extension cookbook.
+Extend Samoyed by emitting `ConceptArtifact` objects — never write the graph directly. Scaffold plugins with:
+
+```bash
+samoyed init-extension enumerator my_internal_api
+samoyed init-extension connector my_graph_source
+```
+
+Full extension cookbook, network model, and L1 concept table: **[AGENTS.md](AGENTS.md)**.

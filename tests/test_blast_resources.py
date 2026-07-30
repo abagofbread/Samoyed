@@ -6,7 +6,72 @@ from samoyed.attack.analyzer import apply_attack_analysis
 from samoyed.attack.high_value import enrich_high_value_targets
 from samoyed.cloud.concepts import CloudProvider, ConceptType
 from samoyed.graph.builder import GraphBuilder
+from samoyed.graph.markings import DEFAULT_BLAST_CONCEPTS
+from samoyed.path_engine.custom_query import run_graph_query
 from samoyed.path_engine.search import get_blast_radius
+
+
+def test_default_blast_concepts_include_compute():
+    assert "RuntimeBinding" in DEFAULT_BLAST_CONCEPTS
+    assert "Workload" in DEFAULT_BLAST_CONCEPTS
+
+
+def test_default_path_search_includes_compute_targets():
+    builder = GraphBuilder("paths-to-compute")
+    caller = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:user/alice",
+        props={"native_kind": "User", "is_caller": True},
+    )
+    role = builder.add_concept_node(
+        concept_type=ConceptType.IDENTITY,
+        native_id="arn:aws:iam::1:role/web",
+        props={"native_kind": "Role"},
+    )
+    compute = builder.add_concept_node(
+        concept_type=ConceptType.RUNTIME_BINDING,
+        native_id="EC2Instance:i-web",
+        props={"resource_type": "EC2Instance", "native_kind": "EC2Instance", "name": "web"},
+    )
+    builder.add_edge(src_id=caller, rel_type="CAN_ASSUME_ROLE", dst_id=role, props={})
+    # Instance projects into the role (inbound hop when searching from caller).
+    builder.add_edge(src_id=compute, rel_type="EXECUTES_AS", dst_id=role, props={})
+
+    result = run_graph_query(
+        builder.snapshot,
+        start_node_id=caller,
+        mode="paths",
+        max_depth=4,
+        max_paths=20,
+    )
+    ends = {p["target_match"].get("node_id") for p in result["paths"]}
+    assert compute in ends
+
+
+def test_blast_ranks_can_reach_compute_above_noise_reads():
+    builder = GraphBuilder("blast-can-reach-compute")
+    web = builder.add_concept_node(
+        concept_type=ConceptType.RUNTIME_BINDING,
+        native_id="EC2Instance:i-web",
+        props={"resource_type": "EC2Instance", "name": "web"},
+    )
+    db = builder.add_concept_node(
+        concept_type=ConceptType.RUNTIME_BINDING,
+        native_id="EC2Instance:i-db",
+        props={"resource_type": "EC2Instance", "name": "db"},
+    )
+    noise = builder.add_concept_node(
+        concept_type=ConceptType.DATA_STORE,
+        native_id="Logs:*",
+        props={"resource_type": "Logs", "native_id": "Logs:*"},
+    )
+    builder.add_edge(src_id=web, rel_type="CAN_REACH", dst_id=db, props={"source": "network-enrichment"})
+    builder.add_edge(src_id=web, rel_type="READS", dst_id=noise, props={"action": "logs:DescribeLogGroups"})
+
+    paths = get_blast_radius(builder.snapshot, start_node_id=web, max_depth=2, max_paths=10)
+    ends = [p.target_match.get("node_id") for p in paths]
+    assert db in ends
+    assert ends.index(db) < ends.index(noise)
 
 
 def test_blast_ranks_control_star_above_reads_on_inventored_buckets():

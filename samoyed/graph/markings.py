@@ -5,7 +5,14 @@ from typing import Any
 
 from samoyed.graph.model import GraphSnapshot
 
-DEFAULT_BLAST_CONCEPTS = ["AttackOutcome", "SecretStore", "DataStore", "Identity"]
+DEFAULT_BLAST_CONCEPTS = [
+    "AttackOutcome",
+    "SecretStore",
+    "DataStore",
+    "RuntimeBinding",
+    "Workload",
+    "Identity",
+]
 
 MARKING_COMPROMISED = "is_compromised"
 MARKING_HIGH_VALUE = "is_high_value"
